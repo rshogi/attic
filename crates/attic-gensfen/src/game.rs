@@ -2,14 +2,21 @@
 
 use std::sync::{Arc, Mutex};
 
-use attic_search::{PvInfo, PvSink, QSearch};
-use attic_state::{Position, format_sfen, format_usi_move};
+use attic_search::{PvInfo, PvOutputConfig, PvSink, QSearch};
+use attic_state::{Move, PackedSfen, Position, format_sfen, format_usi_move, sfen_pack};
+use attic_storage::TranspositionTable;
 
 use crate::options::Options;
 
 /// One position's contribution to the corpus.
 pub struct Record {
     pub ply: u16,
+    /// The 32-byte packed position, for the fixed-width output. Kept alongside
+    /// the text form rather than derived later: packing needs the `Position`,
+    /// which is gone by the time a game is serialised.
+    pub packed: PackedSfen,
+    /// `move16` of the played move, for the fixed-width output.
+    pub played16: u16,
     pub sfen: String,
     /// `0` when Black is to move, `1` when White is — the value target is kept
     /// from Black's point of view, so the consumer needs to know whose turn it
@@ -163,6 +170,8 @@ pub fn play_game(
 
         records.push(Record {
             ply: records.len() as u16,
+            packed: sfen_pack(&pos),
+            played16: played.move16(),
             sfen: format_sfen(&pos),
             side: u8::from(!side_to_move_is_black),
             cp: root_cp,
@@ -187,7 +196,35 @@ pub fn play_game(
     }
 }
 
+/// Bytes per `PackedSfenValue`: 32 packed + score + move + ply + result + pad.
+pub const PSV_LEN: usize = 40;
+
 impl Game {
+    /// The game as `PackedSfenValue` records, one per position.
+    ///
+    /// Field order and widths follow upstream's `PackedSfenValue`, little-endian
+    /// throughout. The candidate list has no place in this layout and is
+    /// dropped; a consumer that needs a policy target wants the JSONL form.
+    ///
+    /// `game_result` is stored from the side to move, which is what upstream's
+    /// learner expects, so the game-level result is flipped on White's turns.
+    pub fn to_psv(&self, out: &mut Vec<u8>) {
+        out.reserve(self.records.len() * PSV_LEN);
+        for record in &self.records {
+            let result = if record.side == 0 {
+                self.result
+            } else {
+                -self.result
+            };
+            out.extend_from_slice(&record.packed);
+            out.extend_from_slice(&(record.cp as i16).to_le_bytes());
+            out.extend_from_slice(&record.played16.to_le_bytes());
+            out.extend_from_slice(&record.ply.to_le_bytes());
+            out.push(result as u8);
+            out.push(0);
+        }
+    }
+
     /// One JSONL line, matching the shape the existing corpus converter reads.
     pub fn to_json(&self, engine: &str, depth: i32, multipv: usize) -> String {
         let mut out = String::with_capacity(self.records.len() * 160);
