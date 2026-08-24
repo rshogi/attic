@@ -110,11 +110,15 @@ pub fn play_game(
 ) -> Game {
     let mut pos = Position::startpos();
     let mut records = Vec::new();
+    // Plies played in this game, which is not `records.len()` — the eval-limit
+    // filter drops records without shortening the game — and not `pos.ply()`
+    // either, which counts from the opening's own move number.
+    let mut ply_count = 0u16;
     let mut resign_streak = 0u32;
     let mut undos = Vec::new();
 
     let (result, reason) = loop {
-        if records.len() as u16 >= options.max_ply {
+        if ply_count >= options.max_ply {
             break (0, "max_ply");
         }
 
@@ -161,23 +165,36 @@ pub fn play_game(
         // Spread the opening: always playing the best move from one start
         // position yields one game however many workers run. Later plies stay
         // greedy so the result still reflects best play.
-        let played = if (records.len() as u16) < 30 && lines.len() > 1 {
+        let played = if ply_count < 30 && lines.len() > 1 {
             lines[rng.below(lines.len())].pv[0]
         } else {
             outcome.best_move
         };
 
-        records.push(Record {
-            ply: records.len() as u16,
-            packed: sfen_pack(&pos),
-            sfen: format_sfen(&pos),
-            side: u8::from(!side_to_move_is_black),
-            cp: root_cp,
-            depth: outcome.depth,
-            candidates,
-            played,
-        });
+        // Past the limit the position is already decided, and a mate score is
+        // `VALUE_MATE` rather than a centipawn value at all — neither belongs in
+        // a corpus of evaluations. The game plays on so the result stays real;
+        // only the record is dropped, which is why `ply` counts moves rather
+        // than records.
+        let over_limit = options.eval_limit > 0 && root_cp.abs() > options.eval_limit;
 
+        if !over_limit {
+            records.push(Record {
+                // The position's own move number, so an opening that starts at
+                // move 24 records 24 rather than 0. `sfen_pack` drops the ply,
+                // making this the only place it survives.
+                ply: pos.ply(),
+                packed: sfen_pack(&pos),
+                sfen: format_sfen(&pos),
+                side: u8::from(!side_to_move_is_black),
+                cp: root_cp,
+                depth: outcome.depth,
+                candidates,
+                played,
+            });
+        }
+
+        ply_count += 1;
         undos.push((played, pos.do_move(played)));
     };
 
