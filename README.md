@@ -39,13 +39,25 @@ Network files go in one directory, pointed at by `EvalDir`.
 
 One copy of the network per NUMA node, shared by that node's workers, playing
 games in parallel. Each position records its MultiPV candidates and scores, the
-root score, and the move played, as JSONL.
+root score, and the move played.
 
 ```bash
 attic-gensfen --eval-dir DIR --out FILE \
               [--depth 9] [--nodes N] [--multipv 5] [--threads N] \
-              [--games N] [--positions N] [--fv-scale 28]
+              [--games N] [--positions N] [--fv-scale 28] \
+              [--format jsonl|psv|pack]
 ```
+
+| Format | Record | Contents |
+|---|---|---|
+| `jsonl` | one game per line | positions as SFEN text, candidates as USI text |
+| `psv` | 40 bytes | `PackedSfenValue`: packed position, score, move, ply, result |
+| `pack` | 40 + 4N bytes | `psv`, then N `(move16, centipawn)` candidate pairs |
+
+`pack`'s first 40 bytes are byte-identical to `psv`, so a reader that wants only
+the position and its score can ignore the rest. N comes from `--multipv` and is
+not stored per record; shorter candidate lists are zero-padded so records stay
+seekable by index.
 
 `--depth` and `--nodes` combine; whichever is reached first ends the search.
 `--positions` is checked before a game starts, so a run exceeds it by up to
