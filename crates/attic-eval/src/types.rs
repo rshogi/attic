@@ -16,13 +16,34 @@ use std::fmt;
 
 use attic_storage::{ArenaLayout, ArenaSlice, LargePageArena, Section};
 
+#[cfg(not(any(feature = "sfnn1536", feature = "halfka2304")))]
+compile_error!("select a network: --features sfnn1536 or --features halfka2304");
+
+#[cfg(all(feature = "sfnn1536", feature = "halfka2304"))]
+compile_error!("sfnn1536 and halfka2304 are different networks; select one");
+
+/// The transformed width.
+///
+/// A build-time switch rather than a runtime one because the kernels in
+/// [`crate::simd`] use these as array lengths and chunk counts. Every width is a
+/// multiple of 32, so the SIMD chunking stays exact.
+#[cfg(feature = "sfnn1536")]
 pub const HIDDEN_SIZE: usize = 1_536;
+#[cfg(feature = "halfka2304")]
+pub const HIDDEN_SIZE: usize = 2_304;
+
+/// Unchanged between the two shapes: both are
+/// `FeatureSet<HalfKA_hm2<Side::kFriend>>`, so `features.rs` needs no variant.
 pub const NUM_FEATURES: usize = 73_305;
 pub const LAYER_STACKS: usize = 9;
 
 // fc_0 has 16 outputs; the 16th feeds only the post-fc_2 shortcut, the first 15 feed both activations.
 pub const HIDDEN1_DIMS: usize = 15;
+
+#[cfg(feature = "sfnn1536")]
 pub const HIDDEN2_DIMS: usize = 32;
+#[cfg(feature = "halfka2304")]
+pub const HIDDEN2_DIMS: usize = 64;
 
 pub const FC_0_OUTPUT_DIMS: usize = HIDDEN1_DIMS + 1;
 pub const FC_0_INPUT_DIMS: usize = HIDDEN_SIZE;
@@ -34,7 +55,9 @@ pub const FC_1_PADDED_INPUT_DIMS: usize = 32;
 
 pub const FC_2_OUTPUT_DIMS: usize = 1;
 pub const FC_2_INPUT_DIMS: usize = HIDDEN2_DIMS;
-pub const FC_2_PADDED_INPUT_DIMS: usize = 32;
+// fc_2's input is fc_1's output, which is already a multiple of 32 in both
+// shapes, so there is nothing to pad out to.
+pub const FC_2_PADDED_INPUT_DIMS: usize = HIDDEN2_DIMS;
 
 #[derive(Clone, Debug)]
 pub struct NetHeader {
@@ -71,6 +94,27 @@ impl NetDims {
         fc_1_padded_input: FC_1_PADDED_INPUT_DIMS,
         fc_2_output: FC_2_OUTPUT_DIMS,
         fc_2_padded_input: FC_2_PADDED_INPUT_DIMS,
+    };
+
+    /// `SFNN_HALFKAHM2_2304_15_64` — the shape NAGISA V4 ships
+    /// (`ModelType=SFNNWithoutPsqt;Features=HalfKA_hm2(Friend)[73305->2304x2]`).
+    ///
+    /// The feature set is the same `HalfKA_hm2` as [`STANDARD`](NetDims::STANDARD),
+    /// so nothing in `features.rs` changes. What differs is the transformer
+    /// width (1536 -> 2304) and L2's output (32 -> 64); L1 is still 15+1 wide
+    /// and there are still nine layer stacks. Progress bucketing is external to
+    /// `nn.bin` (`NNUE_SFNN_PROGRESS_EXTERNAL`), so the read sizes here are
+    /// unaffected by it.
+    pub const HALFKA2304: NetDims = NetDims {
+        hidden_size: 2_304,
+        num_features: NUM_FEATURES,
+        layer_stacks: LAYER_STACKS,
+        fc_0_output: FC_0_OUTPUT_DIMS,
+        fc_0_padded_input: 2_304,
+        fc_1_output: 64,
+        fc_1_padded_input: FC_1_PADDED_INPUT_DIMS,
+        fc_2_output: FC_2_OUTPUT_DIMS,
+        fc_2_padded_input: 64,
     };
 }
 
@@ -495,11 +539,17 @@ mod tests {
         assert_eq!(size_of::<i16>(), 2);
     }
 
+    /// The transformed width, per shape. Both arms are asserted so the feature
+    /// cannot silently select the wrong one.
     #[test]
-    fn hidden_size_matches_sfnnwop1536() {
+    fn hidden_size_matches_shape() {
+        #[cfg(not(feature = "halfka2304"))]
         assert_eq!(HIDDEN_SIZE, 1536);
+        #[cfg(feature = "halfka2304")]
+        assert_eq!(HIDDEN_SIZE, 2304);
     }
 
+    /// Unchanged between shapes: both are `HalfKA_hm2`.
     #[test]
     fn num_features_matches_half_ka_hm() {
         assert_eq!(NUM_FEATURES, 5 * 9 * 1629);
@@ -513,22 +563,29 @@ mod tests {
     #[test]
     fn fc_0_shapes_match_spec() {
         assert_eq!(FC_0_OUTPUT_DIMS, 16);
-        assert_eq!(FC_0_INPUT_DIMS, 1536);
-        assert_eq!(FC_0_PADDED_INPUT_DIMS, 1536);
+        assert_eq!(FC_0_INPUT_DIMS, HIDDEN_SIZE);
+        assert_eq!(FC_0_PADDED_INPUT_DIMS, HIDDEN_SIZE);
     }
 
+    /// L2's input is L1's 15 outputs per perspective, padded to 32 — the same
+    /// in both shapes. Only its *output* width moves.
     #[test]
     fn fc_1_shapes_match_spec() {
-        assert_eq!(FC_1_OUTPUT_DIMS, 32);
+        assert_eq!(FC_1_OUTPUT_DIMS, HIDDEN2_DIMS);
         assert_eq!(FC_1_INPUT_DIMS, 30);
         assert_eq!(FC_1_PADDED_INPUT_DIMS, 32);
+
+        #[cfg(not(feature = "halfka2304"))]
+        assert_eq!(HIDDEN2_DIMS, 32);
+        #[cfg(feature = "halfka2304")]
+        assert_eq!(HIDDEN2_DIMS, 64);
     }
 
     #[test]
     fn fc_2_shapes_match_spec() {
         assert_eq!(FC_2_OUTPUT_DIMS, 1);
-        assert_eq!(FC_2_INPUT_DIMS, 32);
-        assert_eq!(FC_2_PADDED_INPUT_DIMS, 32);
+        assert_eq!(FC_2_INPUT_DIMS, HIDDEN2_DIMS);
+        assert_eq!(FC_2_PADDED_INPUT_DIMS, HIDDEN2_DIMS);
     }
 
     #[test]

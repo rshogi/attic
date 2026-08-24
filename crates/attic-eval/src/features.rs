@@ -83,7 +83,7 @@ const F_ROOK: usize = E_HORSE + 81;
 const E_ROOK: usize = F_ROOK + 81;
 const F_DRAGON: usize = E_ROOK + 81;
 const E_DRAGON: usize = F_DRAGON + 81;
-const FE_END: usize = E_DRAGON + 81;
+pub(crate) const FE_END: usize = E_DRAGON + 81;
 
 const SQ_NB: usize = Square::COUNT;
 /// Size of one king-plane block. Both kings share the `[FE_END, E_KING)` span,
@@ -103,7 +103,7 @@ pub const FEATURE_DIMENSION: usize = SQ_K_COUNT * E_KING;
 pub const MAX_ACTIVE_FEATURES: usize = 40;
 
 /// The seven piece kinds that can sit in a hand, in `BonaPiece` plane order.
-const HAND_KINDS: [PieceKind; 7] = [
+pub(crate) const HAND_KINDS: [PieceKind; 7] = [
     PieceKind::Pawn,
     PieceKind::Lance,
     PieceKind::Knight,
@@ -117,7 +117,7 @@ const HAND_KINDS: [PieceKind; 7] = [
 /// the square as-is; White flips it (the enemy king / mirror math then operates
 /// in a canonical own-side-forward frame).
 #[inline]
-fn from_persp(sq: Square, persp: Color) -> Square {
+pub(crate) fn from_persp(sq: Square, persp: Color) -> Square {
     match persp {
         Color::Black => sq,
         // 180° rotation == SQ_NB - 1 - index.
@@ -188,7 +188,7 @@ const HAND_PLANE: [(usize, usize); PieceKind::COUNT] = {
 /// Kings have no board plane — the caller routes them to the shared king plane,
 /// so passing a king is a caller bug, guarded by `debug_assert!`.
 #[inline]
-fn board_plane(kind: PieceKind, promoted: bool, is_friend: bool) -> usize {
+pub(crate) fn board_plane(kind: PieceKind, promoted: bool, is_friend: bool) -> usize {
     debug_assert!(
         kind != PieceKind::King,
         "king has no board plane; caller handles it"
@@ -202,7 +202,7 @@ fn board_plane(kind: PieceKind, promoted: bool, is_friend: bool) -> usize {
 /// Kings are never held in hand, so passing a king is a caller bug, guarded by
 /// `debug_assert!`.
 #[inline]
-fn hand_plane(kind: PieceKind, is_friend: bool) -> usize {
+pub(crate) fn hand_plane(kind: PieceKind, is_friend: bool) -> usize {
     debug_assert!(kind != PieceKind::King, "king is never held in hand");
     let (friend, enemy) = HAND_PLANE[kind.index()];
     if is_friend { friend } else { enemy }

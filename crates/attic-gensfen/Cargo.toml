@@ -1,0 +1,26 @@
+[package]
+name = "attic-gensfen"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+# Teacher-data generation. Drives the search in-process rather than over USI:
+# one process holds one copy of the network and plays many games at once, which
+# is what the external-process pipeline could not do.
+[dependencies]
+attic-eval = { path = "../attic-eval", default-features = false }
+attic-search = { path = "../attic-search", default-features = false }
+attic-state = { path = "../attic-state", default-features = false }
+attic-storage = { path = "../attic-storage" }
+attic-numa = { path = "../attic-numa" }
+
+[features]
+default = ["quick-draw"]
+quick-draw = [
+    "attic-eval/quick-draw",
+    "attic-search/quick-draw",
+    "attic-state/quick-draw",
+]
+# On by default here: this binary exists to generate teacher data from NAGISA V4.
+sfnn1536 = ["attic-eval/sfnn1536", "attic-search/sfnn1536"]
+halfka2304 = ["attic-eval/halfka2304", "attic-search/halfka2304"]

@@ -78,6 +78,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "attic-gensfen"
+version = "9.70.0"
+dependencies = [
+ "attic-eval",
+ "attic-numa",
+ "attic-search",
+ "attic-state",
+ "attic-storage",
+]
+
+[[package]]
 name = "attic-numa"
 version = "9.70.0"
 dependencies = [

@@ -56,12 +56,24 @@ pub fn load_network(path: &Path) -> Result<NnueNetwork, NnueError> {
 /// caller surfaces each as an `info string` line; an empty vector means a clean
 /// load. Structural problems and a version mismatch still fail with an error.
 pub fn load_network_with_warnings(path: &Path) -> Result<(NnueNetwork, Vec<String>), NnueError> {
+    load_network_with_dims(path, &NetDims::STANDARD)
+}
+
+/// Like [`load_network_with_warnings`] but reads the file against `dims`.
+///
+/// The serialization is the same for every SFNN shape — header, feature
+/// transformer, then one block per layer stack — so only the read sizes change.
+/// [`NetDims::HALFKA2304`] loads the network NAGISA V4 ships.
+pub fn load_network_with_dims(
+    path: &Path,
+    dims: &NetDims,
+) -> Result<(NnueNetwork, Vec<String>), NnueError> {
     let bytes = std::fs::read(path).map_err(|e| NnueError::Io {
         path: path.display().to_string(),
         source: e,
     })?;
     let sha256 = sha256::digest(&bytes);
-    parse_from_bytes(&bytes, &NetDims::STANDARD, sha256)
+    parse_from_bytes(&bytes, dims, sha256)
 }
 
 fn parse_from_bytes(
@@ -863,5 +875,29 @@ mod tests {
             out[i] = u8::from_str_radix(std::str::from_utf8(chunk).unwrap(), 16).unwrap();
         }
         out
+    }
+
+    /// Reads a real NAGISA V4 `nn.bin` end to end, when one is pointed at.
+    ///
+    /// Skipped unless `ATTIC_HALFKA2304_NN` names a file — the network is
+    /// 180MB and lives outside this repository.
+    #[test]
+    fn loads_halfka2304_network() {
+        let Ok(path) = std::env::var("ATTIC_HALFKA2304_NN") else {
+            return;
+        };
+        let (net, warnings) =
+            super::load_network_with_dims(std::path::Path::new(&path), &NetDims::HALFKA2304)
+                .expect("HALFKA2304 network should parse");
+        assert_eq!(net.header.version, 0x7AF3_2F16);
+        // The arch string is read but never compared, so it is the one place
+        // the file names its own shape. Fail loudly if we were handed a 1536.
+        assert!(
+            net.header.arch_id.contains("2304x2"),
+            "arch_id={}",
+            net.header.arch_id
+        );
+        // Hash mismatch is expected: NNUE_HASH_VALUE is the 1536 constant.
+        eprintln!("warnings={warnings:?} arch={}", net.header.arch_id);
     }
 }

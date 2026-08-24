@@ -22,6 +22,11 @@ attic-storage = { path = "../attic-storage" }
 [features]
 default = ["quick-draw"]
 quick-draw = ["attic-state/quick-draw", "attic-eval/quick-draw"]
+# Network selection, passed through to attic-eval. Shapes that keep their
+# layer-stack coefficients outside `nn.bin` also make the loader pick up the
+# `progress.bin` beside it.
+sfnn1536 = ["attic-eval/sfnn1536"]
+halfka2304 = ["attic-eval/halfka2304"]
 
 [dev-dependencies]
 serde = { version = "~1.0", features = ["derive"] }

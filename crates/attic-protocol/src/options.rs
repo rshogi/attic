@@ -183,8 +183,9 @@ fn declarations(book_options: BookOptionsVersion) -> Vec<OptionDecl> {
         },
         // NNUE fixed-point output scale (`evaluate_nnue.cpp`): registered
         // adjacent to `EvalDir` in the reference `add_options`. Default 16, the
-        // fixture-capture condition; Suisho-family nets recommend 24+. Threaded
-        // to the eval's live `FV_SCALE` global at each `go` (see the driver).
+        // fixture-capture condition; Suisho-family nets recommend 24+, and the
+        // SFNN shape NAGISA ships was trained at 28. Threaded to the eval's live
+        // `FV_SCALE` global at each `go` (see the driver).
         OptionDecl::Spin {
             name: "FV_SCALE",
             default: 16,

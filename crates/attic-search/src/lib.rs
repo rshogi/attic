@@ -145,7 +145,28 @@ impl Search {
     /// non-fatal warning bodies (hash mismatches) so the driver can emit them as
     /// `info string` lines before `readyok`. An empty vector means a clean load.
     pub fn from_network_file_with_warnings(path: &Path) -> Result<(Self, Vec<String>), NnueError> {
+        #[cfg(feature = "sfnn1536")]
         let (net, warnings) = load_network_with_warnings(path)?;
+
+        // The 2304 shape reads its layer-stack coefficients from a
+        // `progress.bin` next to `nn.bin` rather than from inside it, so the
+        // load is two files. A missing or malformed one is reported as a
+        // warning and leaves every position in bucket 0 — wrong, but wrong
+        // consistently and visibly, rather than failing after `readyok`.
+        #[cfg(feature = "halfka2304")]
+        let (net, warnings) = {
+            let (net, mut warnings) =
+                attic_eval::load_network_with_dims(path, &attic_eval::NetDims::HALFKA2304)?;
+            let coefficients = path.with_file_name("progress.bin");
+            if let Err(err) = attic_eval::progress::load_parameters(&coefficients) {
+                warnings.push(format!(
+                    "progress coefficients not loaded ({}): {err}",
+                    coefficients.display()
+                ));
+            }
+            (net, warnings)
+        };
+
         Ok((Self::new(net), warnings))
     }
 
