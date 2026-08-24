@@ -125,12 +125,26 @@ def launch(node: str, opts: argparse.Namespace, passthrough: list[str]) -> str:
 class Node:
     """One machine's line in the status table."""
 
-    def __init__(self, name: str, procs: int, conc: str, games: int, written: int):
+    def __init__(
+        self, name: str, procs: int, conc: str, games: int, written: int, uptime: int
+    ):
         self.name = name
         self.procs = procs
         self.conc = conc
         self.games = games
         self.written = written
+        self.uptime = uptime
+
+    @property
+    def lifetime_rate(self) -> float | None:
+        """Games per second since the process started.
+
+        A single sample has nothing to difference against, so this is what one
+        `status` call can report. `watch` prefers the rate since its previous
+        frame, which tracks a throttled node instead of averaging over the time
+        before it was throttled.
+        """
+        return self.games / self.uptime if self.uptime > 0 else None
 
     @property
     def alive(self) -> bool:
@@ -158,11 +172,15 @@ def probe(node: str, opts: argparse.Namespace) -> Node:
         f"g=$(grep -ho 'fleet [0-9]*' $log 2>/dev/null | tail -1 | cut -d' ' -f2); "
         f"b=$(du -cb {opts.out}/$(hostname -s)*.bin {opts.out}/$(hostname -s)*.jsonl "
         f"   2>/dev/null | tail -1 | cut -f1); "
-        f'printf "%s %s %s %s" "${{p:-0}}" "${{c:-0}}" "${{g:-0}}" "${{b:-0}}"',
+        f"u=$(ps -o etimes= -p $(pgrep -f '{PATTERN}' 2>/dev/null | head -1) 2>/dev/null "
+        f"   | tr -d ' '); "
+        f'printf "%s %s %s %s %s" "${{p:-0}}" "${{c:-0}}" "${{g:-0}}" "${{b:-0}}" "${{u:-0}}"',
     )
-    f = (out.split() + ["0", "0", "0", "0"])[:4]
+    f = (out.split() + ["0", "0", "0", "0", "0"])[:5]
     num = lambda s: int(s) if s.isdigit() else 0
-    return Node(node, num(f[0]), f[1] if f[1].isdigit() else "-", num(f[2]), num(f[3]))
+    return Node(
+        node, num(f[0]), f[1] if f[1].isdigit() else "-", num(f[2]), num(f[3]), num(f[4])
+    )
 
 
 def stop(node: str, opts: argparse.Namespace) -> str:
@@ -246,7 +264,7 @@ def render(rows: list[Node], rate: dict[str, float] | None) -> None:
     peak = max((r.games for r in rows), default=0) or 1
 
     head = (
-        f"{'NODE':<6} {'PROC':>4} {'CONC':>5} {'GAMES':>9} {'GAMES/S':>8}  "
+        f"{'NODE':<6} {'PROC':>4} {'CONC':>5} {'GAMES':>9} {'GAMES/H':>9}  "
         f"{'PROGRESS':<22} {'WRITTEN':>9}"
     )
     print(paint(head, BOLD, tty))
@@ -255,17 +273,18 @@ def render(rows: list[Node], rate: dict[str, float] | None) -> None:
         if not r.alive:
             print(
                 paint(
-                    f"{r.name:<6} {'—':>4} {'—':>5} {'—':>9} {'—':>8}  "
+                    f"{r.name:<6} {'—':>4} {'—':>5} {'—':>9} {'—':>9}  "
                     f"{'not running':<22} {'—':>9}",
                     GREY,
                     tty,
                 )
             )
             continue
-        speed = f"{rate[r.name]:.2f}" if rate and r.name in rate else "—"
+        per_second = (rate or {}).get(r.name) or r.lifetime_rate
+        speed = f"{per_second * 3600:,.0f}" if per_second else "—"
         print(
             f"{paint(f'{r.name:<6}', CYAN, tty)} {r.procs:>4} {r.conc:>5} "
-            f"{r.games:>9,} {speed:>8}  {bar(r.games / peak, 20, tty)}  "
+            f"{r.games:>9,} {speed:>9}  {bar(r.games / peak, 20, tty)}  "
             f"{human(r.written):>9}"
         )
 
@@ -273,8 +292,11 @@ def render(rows: list[Node], rate: dict[str, float] | None) -> None:
     games = sum(r.games for r in rows)
     written = sum(r.written for r in rows)
     summary = f"{len(live)}/{len(rows)} nodes   {games:,} games   {human(written)}"
-    if rate:
-        summary += f"   {sum(rate.values()):.2f} games/s"
+    total_rate = sum(
+        (rate or {}).get(r.name) or r.lifetime_rate or 0.0 for r in rows
+    )
+    if total_rate:
+        summary += f"   {total_rate * 3600:,.0f} games/h"
     print()
     print(paint(summary, BOLD, tty))
     if tty:
