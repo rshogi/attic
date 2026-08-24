@@ -33,10 +33,11 @@ DEFAULTS = {
     "out": "/raid/work/smorimoto/gensfen",
 }
 
-# `[a]ttic` so the pattern cannot match the shell running it: over SSH the
-# remote shell carries the whole command in its own cmdline, so a plain
-# "attic-gensfen" makes pgrep find itself and pkill kill the connection.
-PATTERN = "[a]ttic-gensfen"
+# Matched with `pgrep -x` against the executable name, never `-f` against the
+# whole cmdline. Over SSH the remote shell carries the entire launch command,
+# binary name included, so a cmdline match counts that shell as a second process
+# — and `pkill -f` would kill the connection issuing it.
+PATTERN = "attic-gensfen"
 
 RESET, BOLD, DIM = "\033[0m", "\033[1m", "\033[2m"
 GREEN, YELLOW, RED, CYAN, GREY = (
@@ -102,7 +103,7 @@ def launch(node: str, opts: argparse.Namespace, passthrough: list[str]) -> str:
     """Start one process on `node`, or explain why not."""
     # Refuse rather than stack a second process on the first: two runs on one
     # machine halve each other and interleave into the same files.
-    if on(node, f"pgrep -f '{PATTERN}' >/dev/null 2>&1")[0] == 0:
+    if on(node, f"pgrep -x '{PATTERN}' >/dev/null 2>&1")[0] == 0:
         return f"{node}: already running"
 
     args = " ".join(shlex.quote(a) for a in passthrough)
@@ -116,7 +117,7 @@ def launch(node: str, opts: argparse.Namespace, passthrough: list[str]) -> str:
 
     # Confirm by looking for the process. A detached launch reports success even
     # when the binary rejects its arguments and exits immediately.
-    if on(node, f"sleep 2; pgrep -f '{PATTERN}' >/dev/null 2>&1")[0] == 0:
+    if on(node, f"sleep 2; pgrep -x '{PATTERN}' >/dev/null 2>&1")[0] == 0:
         return f"{node}: running"
     _, tail = on(node, f"tail -1 {opts.out}/$(hostname -s).log 2>/dev/null")
     return f"{node}: did not start — {tail or 'no output'}"
@@ -158,21 +159,21 @@ def probe(node: str, opts: argparse.Namespace) -> Node:
         # `pgrep -c` prints 0 *and* exits non-zero when nothing matches, so a
         # `|| echo 0` fallback would append a second line.
         f"log={opts.out}/$(hostname -s).log; "
-        f"p=$(pgrep -c -f '{PATTERN}' 2>/dev/null | head -1); "
+        f"p=$(pgrep -c -x '{PATTERN}' 2>/dev/null | head -1); "
         # The governor only logs when it changes something, so an untouched run
         # has no concurrency line at all — fall back to the ceiling it started
         # from rather than reporting zero.
         f"c=$(grep -h concurrency= $log 2>/dev/null | tail -1 "
         f"   | sed 's/.*concurrency=\\([0-9]*\\).*/\\1/'); "
         f"[ -n \"$c\" ] || c=$(grep -ho 'ceiling=[0-9]*' $log 2>/dev/null | tail -1 | cut -d= -f2); "
-        f"[ -n \"$c\" ] || c=$(pgrep -a -f '{PATTERN}' 2>/dev/null | head -1 "
+        f"[ -n \"$c\" ] || c=$(pgrep -a -x '{PATTERN}' 2>/dev/null | head -1 "
         f"   | grep -o -- '--threads [0-9]*' | cut -d' ' -f2); "
         # Every worker reports the process-wide total, so the last line of any
         # of them is the count — no need to sum per-worker figures.
         f"g=$(grep -ho 'fleet [0-9]*' $log 2>/dev/null | tail -1 | cut -d' ' -f2); "
         f"b=$(du -cb {opts.out}/$(hostname -s)*.bin {opts.out}/$(hostname -s)*.jsonl "
         f"   2>/dev/null | tail -1 | cut -f1); "
-        f"u=$(ps -o etimes= -p $(pgrep -f '{PATTERN}' 2>/dev/null | head -1) 2>/dev/null "
+        f"u=$(ps -o etimes= -p $(pgrep -x '{PATTERN}' 2>/dev/null | head -1) 2>/dev/null "
         f"   | tr -d ' '); "
         f'printf "%s %s %s %s %s" "${{p:-0}}" "${{c:-0}}" "${{g:-0}}" "${{b:-0}}" "${{u:-0}}"',
     )
@@ -187,8 +188,8 @@ def stop(node: str, opts: argparse.Namespace) -> str:
     del opts
     _, left = on(
         node,
-        f"pkill -f '{PATTERN}' >/dev/null 2>&1; sleep 2; "
-        f"pgrep -c -f '{PATTERN}' 2>/dev/null | head -1",
+        f"pkill -x '{PATTERN}' >/dev/null 2>&1; sleep 2; "
+        f"pgrep -c -x '{PATTERN}' 2>/dev/null | head -1",
     )
     return f"{node:<5} remaining={left or 0}"
 
