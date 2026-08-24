@@ -127,7 +127,14 @@ class Node:
     """One machine's line in the status table."""
 
     def __init__(
-        self, name: str, procs: int, conc: str, games: int, written: int, uptime: int
+        self,
+        name: str,
+        procs: int,
+        conc: str,
+        games: int,
+        written: int,
+        uptime: int,
+        record_size: int | None,
     ):
         self.name = name
         self.procs = procs
@@ -135,6 +142,18 @@ class Node:
         self.games = games
         self.written = written
         self.uptime = uptime
+        self.record_size = record_size
+
+    @property
+    def positions(self) -> int | None:
+        """Positions written, from the byte count and the record size.
+
+        Exact for the fixed-width formats and unknowable for JSONL, where a
+        record's length depends on the position in it.
+        """
+        if not self.record_size:
+            return None
+        return self.written // self.record_size
 
     @property
     def lifetime_rate(self) -> float | None:
@@ -175,13 +194,39 @@ def probe(node: str, opts: argparse.Namespace) -> Node:
         f"   2>/dev/null | tail -1 | cut -f1); "
         f"u=$(ps -o etimes= -p $(pgrep -x '{PATTERN}' 2>/dev/null | head -1) 2>/dev/null "
         f"   | tr -d ' '); "
-        f'printf "%s %s %s %s %s" "${{p:-0}}" "${{c:-0}}" "${{g:-0}}" "${{b:-0}}" "${{u:-0}}"',
+        # The fixed-width formats have no header, so the record size has to come
+        # from the arguments the run was started with.
+        f"a=$(pgrep -a -x '{PATTERN}' 2>/dev/null | head -1); "
+        f"fmt=$(echo \"$a\" | grep -o -- '--format [a-z]*' | cut -d' ' -f2); "
+        f"mpv=$(echo \"$a\" | grep -o -- '--multipv [0-9]*' | cut -d' ' -f2); "
+        f'printf "%s %s %s %s %s %s %s" "${{p:-0}}" "${{c:-0}}" "${{g:-0}}" '
+        f'"${{b:-0}}" "${{u:-0}}" "${{fmt:-jsonl}}" "${{mpv:-5}}"',
     )
-    f = (out.split() + ["0", "0", "0", "0", "0"])[:5]
+    f = (out.split() + ["0"] * 7)[:7]
     num = lambda s: int(s) if s.isdigit() else 0
     return Node(
-        node, num(f[0]), f[1] if f[1].isdigit() else "-", num(f[2]), num(f[3]), num(f[4])
+        node,
+        num(f[0]),
+        f[1] if f[1].isdigit() else "-",
+        num(f[2]),
+        num(f[3]),
+        num(f[4]),
+        record_bytes(f[5], num(f[6])),
     )
+
+
+def record_bytes(fmt: str, multipv: int) -> int | None:
+    """Bytes per position, or `None` where records are not fixed width.
+
+    `psv` is upstream's 40-byte record; `pack` appends `multipv` pairs of
+    (move16, centipawn). JSONL varies per position, so a byte count says
+    nothing about how many are in it.
+    """
+    if fmt == "psv":
+        return 40
+    if fmt == "pack":
+        return 40 + 4 * max(multipv, 0)
+    return None
 
 
 def stop(node: str, opts: argparse.Namespace) -> str:
@@ -265,8 +310,8 @@ def render(rows: list[Node], rate: dict[str, float] | None) -> None:
     peak = max((r.games for r in rows), default=0) or 1
 
     head = (
-        f"{'NODE':<6} {'PROC':>4} {'CONC':>5} {'GAMES':>9} {'GAMES/H':>9}  "
-        f"{'PROGRESS':<22} {'WRITTEN':>9}"
+        f"{'NODE':<6} {'PROC':>4} {'CONC':>5} {'GAMES':>9} {'GAMES/H':>9} "
+        f"{'POSITIONS':>12}  {'PROGRESS':<22} {'WRITTEN':>9}"
     )
     print(paint(head, BOLD, tty))
 
@@ -274,7 +319,7 @@ def render(rows: list[Node], rate: dict[str, float] | None) -> None:
         if not r.alive:
             print(
                 paint(
-                    f"{r.name:<6} {'—':>4} {'—':>5} {'—':>9} {'—':>9}  "
+                    f"{r.name:<6} {'—':>4} {'—':>5} {'—':>9} {'—':>9} {'—':>12}  "
                     f"{'not running':<22} {'—':>9}",
                     GREY,
                     tty,
@@ -283,16 +328,21 @@ def render(rows: list[Node], rate: dict[str, float] | None) -> None:
             continue
         per_second = (rate or {}).get(r.name) or r.lifetime_rate
         speed = f"{per_second * 3600:,.0f}" if per_second else "—"
+        positions = f"{r.positions:,}" if r.positions is not None else "—"
         print(
             f"{paint(f'{r.name:<6}', CYAN, tty)} {r.procs:>4} {r.conc:>5} "
-            f"{r.games:>9,} {speed:>9}  {bar(r.games / peak, 20, tty)}  "
-            f"{human(r.written):>9}"
+            f"{r.games:>9,} {speed:>9} {positions:>12}  "
+            f"{bar(r.games / peak, 20, tty)}  {human(r.written):>9}"
         )
 
     live = [r for r in rows if r.alive]
     games = sum(r.games for r in rows)
     written = sum(r.written for r in rows)
-    summary = f"{len(live)}/{len(rows)} nodes   {games:,} games   {human(written)}"
+    counted = [r.positions for r in rows if r.positions is not None]
+    summary = f"{len(live)}/{len(rows)} nodes   {games:,} games"
+    if counted:
+        summary += f"   {sum(counted):,} positions"
+    summary += f"   {human(written)}"
     total_rate = sum(
         (rate or {}).get(r.name) or r.lifetime_rate or 0.0 for r in rows
     )
