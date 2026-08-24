@@ -48,13 +48,50 @@ YaneuraOu を 1 とした比です。YaneuraOu 側も同じ評価関数で動か
 
 ## 対応している評価関数
 
-| type | feature                            |
-| ---- | ---------------------------------- |
-| SFNN | `halfkahm2_1536_15_32_k3k3`        |
-| SFNN | `halfkahm2_2304_15_64_progress8ek` |
-| NNUE | `kp_256x2_32_32`                   |
-| NNUE | `halfkp_256x2_32_32`               |
-| NNUE | `halfkp_128x2_32_32`               |
-| NNUE | `halfkp_768x2_16_64`               |
-| SYM  | `kp_128x2_512`                     |
-| SYM  | `halfkp_128x2_512`                 |
+`pack`'s first 40 bytes are byte-identical to `psv`, so a reader that wants only
+the position and its score can ignore the rest. N comes from `--multipv` and is
+not stored per record; shorter candidate lists are zero-padded so records stay
+seekable by index.
+
+`--depth` and `--nodes` combine; whichever is reached first ends the search.
+`--positions` is checked before a game starts, so a run exceeds it by up to
+`workers × game length`.
+
+Worker counts above the machine's physical core count regress.
+
+`scripts/fleet.sh` runs one process per machine over SSH, sizing `--threads`
+from each machine's free physical cores and skipping any that are already busy.
+Arguments are passed through.
+
+```bash
+NODES="node1 node2" scripts/fleet.sh launch --depth 9 --format pack
+scripts/fleet.sh status
+scripts/fleet.sh stop
+```
+
+## Building
+
+Requires `rustup` and `build-essential`. `.cargo/config.toml` applies
+`-C target-cpu=native`, so build on the machine that runs it.
+
+```bash
+cargo build --release -p attic --features sfnn1536
+cargo build --release -p attic --features halfka2304
+cargo build --release -p attic-gensfen --features halfka2304
+```
+
+Linux x86_64 only. The SIMD backend is fixed at build time with no runtime probe:
+AVX-512 (F+BW) if enabled, otherwise AVX2, otherwise scalar. All three are
+bit-identical.
+
+> ⚠ `halfka2304` excludes the AVX-512 path: its tail is fixed at `[u8; 32]` and
+> cannot take L2's 64 outputs (upstream's `kUsePackedTail` is not ported).
+
+## License
+
+GPL-3.0, inherited from upstream YaneuraOu and from attic-shogi. Copyright for
+the ported code belongs to yaneurao, the YaneuraOu contributors, and the author
+of attic-shogi.
+
+- YaneuraOu: <https://github.com/yaneurao/YaneuraOu>
+- attic-shogi: <https://github.com/ishidakei/attic-shogi>
