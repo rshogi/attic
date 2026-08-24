@@ -214,6 +214,21 @@ pub fn play_game(
 /// Bytes per `PackedSfenValue`: 32 packed + score + move + ply + result + pad.
 pub const PSV_LEN: usize = 40;
 
+/// Widest score the fixed-width encodings store, matching the engine's
+/// `VALUE_MATE`.
+///
+/// Scores reach this as `VALUE_MATE - ply`, so a mate at ply 1 is 31999 and
+/// nothing observed exceeds it; `VALUE_INFINITE` (32001) and `VALUE_NONE`
+/// (32002) are search-internal sentinels that never leave the root. Clamping
+/// rather than casting means a sentinel that did escape would land on the mate
+/// score instead of wrapping into a small negative number.
+const CP_LIMIT: i32 = 32000;
+
+/// A search score as it is stored: clamped, then narrowed.
+fn to_stored_cp(cp: i32) -> i16 {
+    cp.clamp(-CP_LIMIT, CP_LIMIT) as i16
+}
+
 impl Game {
     /// The game as `PackedSfenValue` records, one per position.
     ///
@@ -243,7 +258,7 @@ impl Game {
             self.write_psv_prefix(record, out);
             for slot in 0..candidates {
                 let (mv, cp) = match record.candidates.get(slot) {
-                    Some(&(mv, cp)) => (mv.move16(), cp as i16),
+                    Some(&(mv, cp)) => (mv.move16(), to_stored_cp(cp)),
                     None => (0, 0),
                 };
                 out.extend_from_slice(&mv.to_le_bytes());
@@ -263,7 +278,7 @@ impl Game {
             -self.result
         };
         out.extend_from_slice(&record.packed);
-        out.extend_from_slice(&(record.cp as i16).to_le_bytes());
+        out.extend_from_slice(&to_stored_cp(record.cp).to_le_bytes());
         out.extend_from_slice(&record.played.move16().to_le_bytes());
         out.extend_from_slice(&record.ply.to_le_bytes());
         out.push(result as u8);
