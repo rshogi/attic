@@ -36,6 +36,40 @@ DEFAULTS = {
 # "attic-gensfen" makes pgrep find itself and pkill kill the connection.
 PATTERN = "[a]ttic-gensfen"
 
+RESET, BOLD, DIM = "\033[0m", "\033[1m", "\033[2m"
+GREEN, YELLOW, RED, CYAN, GREY = (
+    "\033[32m",
+    "\033[33m",
+    "\033[31m",
+    "\033[36m",
+    "\033[90m",
+)
+
+
+def paint(text: str, colour: str, tty: bool) -> str:
+    return f"{colour}{text}{RESET}" if tty else text
+
+
+def bar(fraction: float, width: int, tty: bool) -> str:
+    """A meter, coloured by how full it is.
+
+    Green while there is room, yellow as it fills, red at the ceiling — the
+    same reading as a utilisation gauge, where a pegged bar is the thing worth
+    noticing.
+    """
+    fraction = max(0.0, min(1.0, fraction))
+    filled = round(fraction * width)
+    colour = GREEN if fraction < 0.7 else YELLOW if fraction < 0.95 else RED
+    return paint("█" * filled, colour, tty) + paint("░" * (width - filled), GREY, tty)
+
+
+def human(n: int) -> str:
+    """Byte count in whichever unit keeps it to three or four digits."""
+    for unit, scale in (("TB", 1 << 40), ("GB", 1 << 30), ("MB", 1 << 20)):
+        if n >= scale:
+            return f"{n / scale:.1f} {unit}"
+    return f"{n / 1024:.0f} KB"
+
 
 def on(node: str, script: str, timeout: int = 60) -> tuple[int, str]:
     """Run `script` on `node`, returning (exit status, stdout).
@@ -86,22 +120,47 @@ def launch(node: str, opts: argparse.Namespace, passthrough: list[str]) -> str:
     return f"{node}: did not start — {tail or 'no output'}"
 
 
-def status(node: str, opts: argparse.Namespace) -> tuple[str, int]:
-    """Processes, concurrency, and bytes written on `node`."""
+class Node:
+    """One machine's line in the status table."""
+
+    def __init__(self, name: str, procs: int, conc: str, games: int, written: int):
+        self.name = name
+        self.procs = procs
+        self.conc = conc
+        self.games = games
+        self.written = written
+
+    @property
+    def alive(self) -> bool:
+        return self.procs > 0
+
+
+def probe(node: str, opts: argparse.Namespace) -> Node:
+    """Processes, concurrency, games, and bytes written on `node`."""
     _, out = on(
         node,
         # `pgrep -c` prints 0 *and* exits non-zero when nothing matches, so a
         # `|| echo 0` fallback would append a second line.
+        f"log={opts.out}/$(hostname -s).log; "
         f"p=$(pgrep -c -f '{PATTERN}' 2>/dev/null | head -1); "
-        f"c=$(grep -h concurrency= {opts.out}/$(hostname -s).log 2>/dev/null "
-        f"   | tail -1 | sed 's/.*concurrency=\\([0-9]*\\).*/\\1/'); "
-        f"b=$(du -cb {opts.out}/$(hostname -s)* 2>/dev/null | tail -1 | cut -f1); "
-        f'printf "%s %s %s" "${{p:-0}}" "${{c:-*}}" "${{b:-0}}"',
+        # The governor only logs when it changes something, so an untouched run
+        # has no concurrency line at all — fall back to the ceiling it started
+        # from rather than reporting zero.
+        f"c=$(grep -h concurrency= $log 2>/dev/null | tail -1 "
+        f"   | sed 's/.*concurrency=\\([0-9]*\\).*/\\1/'); "
+        f"[ -n \"$c\" ] || c=$(grep -ho 'ceiling=[0-9]*' $log 2>/dev/null | tail -1 | cut -d= -f2); "
+        f"[ -n \"$c\" ] || c=$(pgrep -a -f '{PATTERN}' 2>/dev/null | head -1 "
+        f"   | grep -o -- '--threads [0-9]*' | cut -d' ' -f2); "
+        # Every worker reports the process-wide total, so the last line of any
+        # of them is the count — no need to sum per-worker figures.
+        f"g=$(grep -ho 'fleet [0-9]*' $log 2>/dev/null | tail -1 | cut -d' ' -f2); "
+        f"b=$(du -cb {opts.out}/$(hostname -s)*.bin {opts.out}/$(hostname -s)*.jsonl "
+        f"   2>/dev/null | tail -1 | cut -f1); "
+        f'printf "%s %s %s %s" "${{p:-0}}" "${{c:-0}}" "${{g:-0}}" "${{b:-0}}"',
     )
-    fields = out.split()
-    procs, conc, raw = (fields + ["?", "*", "0"])[:3]
-    written = int(raw) if raw.isdigit() else 0
-    return f"{node:<5} proc={procs:<3} conc={conc:<5} {written // 1048576} MB", written
+    f = (out.split() + ["0", "0", "0", "0"])[:4]
+    num = lambda s: int(s) if s.isdigit() else 0
+    return Node(node, num(f[0]), f[1] if f[1].isdigit() else "-", num(f[2]), num(f[3]))
 
 
 def stop(node: str, opts: argparse.Namespace) -> str:
@@ -135,12 +194,41 @@ def main() -> int:
             for line in pool.map(lambda n: stop(n, opts), nodes):
                 print(line)
         else:
-            total = 0
-            for line, written in pool.map(lambda n: status(n, opts), nodes):
-                print(line)
-                total += written
-            print(f"\ntotal {total // 1048576} MB")
+            render(list(pool.map(lambda n: probe(n, opts), nodes)), opts)
     return 0
+
+
+def render(rows: list[Node], opts: argparse.Namespace) -> None:
+    tty = sys.stdout.isatty()
+    # The bar is read against the busiest machine rather than an absolute
+    # ceiling: what matters here is which nodes are lagging the fleet, and
+    # concurrency ceilings differ between machines anyway.
+    peak = max((r.games for r in rows), default=0) or 1
+
+    head = f"{'NODE':<6} {'PROC':>4} {'CONC':>5} {'GAMES':>9}  {'PROGRESS':<22} {'WRITTEN':>9}"
+    print(paint(head, BOLD, tty))
+
+    for r in rows:
+        if not r.alive:
+            print(paint(f"{r.name:<6} {'—':>4} {'—':>5} {'—':>9}  {'not running':<22} {'—':>9}", GREY, tty))
+            continue
+        print(
+            f"{paint(f'{r.name:<6}', CYAN, tty)} {r.procs:>4} {r.conc:>5} "
+            f"{r.games:>9,}  {bar(r.games / peak, 20, tty)}  {human(r.written):>9}"
+        )
+
+    live = [r for r in rows if r.alive]
+    games = sum(r.games for r in rows)
+    written = sum(r.written for r in rows)
+    print()
+    print(
+        paint(
+            f"{len(live)}/{len(rows)} nodes   {games:,} games   {human(written)}",
+            BOLD,
+            tty,
+        )
+    )
+    del opts
 
 
 if __name__ == "__main__":
