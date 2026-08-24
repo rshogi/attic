@@ -65,6 +65,16 @@ seekable by index.
 
 Worker counts above the machine's physical core count regress.
 
+`scripts/fleet.sh` runs one process per machine over SSH, sizing `--threads`
+from each machine's free physical cores and skipping any that are already busy.
+Arguments are passed through.
+
+```bash
+NODES="node1 node2" scripts/fleet.sh launch --depth 9 --format pack
+scripts/fleet.sh status
+scripts/fleet.sh stop
+```
+
 ## Building
 
 Requires `rustup` and `build-essential`. `.cargo/config.toml` applies
