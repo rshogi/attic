@@ -25,7 +25,7 @@ pub fn run(
 ) {
     let suffix = match options.format {
         Format::Jsonl => "jsonl",
-        Format::Psv => "bin",
+        Format::Psv | Format::Pack => "bin",
     };
     let path = options.out.with_extension(format!("w{index:03}.{suffix}"));
     let mut file = match std::fs::OpenOptions::new()
@@ -89,6 +89,11 @@ pub fn run(
             Format::Psv => {
                 let mut buf = Vec::new();
                 game.to_psv(&mut buf);
+                file.write_all(&buf)
+            }
+            Format::Pack => {
+                let mut buf = Vec::new();
+                game.to_pack(&mut buf, options.multipv);
                 file.write_all(&buf)
             }
         };

@@ -13,6 +13,13 @@ pub enum Format {
     /// `PackedSfenValue`: 32-byte packed position, score, move, ply, result,
     /// pad — 40 bytes per position, no candidates.
     Psv,
+    /// `PackedSfenValue` followed by the MultiPV candidates, fixed width.
+    ///
+    /// The first 40 bytes are byte-identical to [`Psv`](Format::Psv), so a
+    /// reader that only wants the position and its score can ignore the rest.
+    /// JSONL carries the same information but stores the position as text,
+    /// which neither packs nor compresses as well.
+    Pack,
 }
 
 impl std::str::FromStr for Format {
@@ -22,7 +29,8 @@ impl std::str::FromStr for Format {
         match s {
             "jsonl" => Ok(Format::Jsonl),
             "psv" => Ok(Format::Psv),
-            other => Err(format!("unknown format {other:?} (jsonl, psv)")),
+            "pack" => Ok(Format::Pack),
+            other => Err(format!("unknown format {other:?} (jsonl, psv, pack)")),
         }
     }
 }
@@ -69,7 +77,7 @@ usage: attic-gensfen --eval-dir DIR --out FILE
                      [--depth 9] [--nodes N] [--multipv 5] [--threads N]
                      [--games N] [--positions N]
                      [--max-ply 320] [--resign-cp 3000] [--resign-count 4]
-                     [--fv-scale 28] [--format jsonl|psv] [--seed 1] [--hash 16]";
+                     [--fv-scale 28] [--format jsonl|psv|pack] [--seed 1] [--hash 16]";
 
     pub fn parse(args: impl Iterator<Item = String>) -> Result<Self, String> {
         let mut eval_dir = None;

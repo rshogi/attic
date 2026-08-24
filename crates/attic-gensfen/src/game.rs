@@ -16,8 +16,6 @@ pub struct Record {
     /// the text form rather than derived later: packing needs the `Position`,
     /// which is gone by the time a game is serialised.
     pub packed: PackedSfen,
-    /// `move16` of the played move, for the fixed-width output.
-    pub played16: u16,
     pub sfen: String,
     /// `0` when Black is to move, `1` when White is — the value target is kept
     /// from Black's point of view, so the consumer needs to know whose turn it
@@ -26,10 +24,11 @@ pub struct Record {
     /// Root score in centipawns, from the side to move.
     pub cp: i32,
     pub depth: i32,
-    /// MultiPV candidates as `(usi move, centipawns)`, best first.
-    pub candidates: Vec<(String, i32)>,
+    /// MultiPV candidates as `(move, centipawns)`, best first. Kept as `Move`
+    /// rather than USI text so both encodings can render it without parsing.
+    pub candidates: Vec<(Move, i32)>,
     /// The move actually played.
-    pub played: String,
+    pub played: Move,
 }
 
 pub struct Game {
@@ -142,9 +141,9 @@ pub fn play_game(
             break (if side_to_move_is_black { -1 } else { 1 }, "mated");
         }
 
-        let candidates: Vec<(String, i32)> = lines
+        let candidates: Vec<(Move, i32)> = lines
             .iter()
-            .map(|info| (format_usi_move(info.pv[0]), i32::from(info.score)))
+            .map(|info| (info.pv[0], i32::from(info.score)))
             .collect();
 
         let root_cp = i32::from(outcome.score);
@@ -172,13 +171,12 @@ pub fn play_game(
         records.push(Record {
             ply: records.len() as u16,
             packed: sfen_pack(&pos),
-            played16: played.move16(),
             sfen: format_sfen(&pos),
             side: u8::from(!side_to_move_is_black),
             cp: root_cp,
             depth: outcome.depth,
             candidates,
-            played: format_usi_move(played),
+            played,
         });
 
         undos.push((played, pos.do_move(played)));
@@ -212,18 +210,48 @@ impl Game {
     pub fn to_psv(&self, out: &mut Vec<u8>) {
         out.reserve(self.records.len() * PSV_LEN);
         for record in &self.records {
-            let result = if record.side == 0 {
-                self.result
-            } else {
-                -self.result
-            };
-            out.extend_from_slice(&record.packed);
-            out.extend_from_slice(&(record.cp as i16).to_le_bytes());
-            out.extend_from_slice(&record.played16.to_le_bytes());
-            out.extend_from_slice(&record.ply.to_le_bytes());
-            out.push(result as u8);
-            out.push(0);
+            self.write_psv_prefix(record, out);
         }
+    }
+
+    /// Like [`to_psv`](Game::to_psv), with `candidates` MultiPV entries appended
+    /// to each record as `(move16, centipawns)` pairs.
+    ///
+    /// Records stay fixed width: a position with fewer candidates than asked for
+    /// is padded with zero moves, so a reader can seek by index. `candidates`
+    /// comes from `--multipv` and is not stored in the file — every record in a
+    /// run has the same width, and mixing runs means knowing which is which.
+    pub fn to_pack(&self, out: &mut Vec<u8>, candidates: usize) {
+        out.reserve(self.records.len() * (PSV_LEN + 4 * candidates));
+        for record in &self.records {
+            self.write_psv_prefix(record, out);
+            for slot in 0..candidates {
+                let (mv, cp) = match record.candidates.get(slot) {
+                    Some(&(mv, cp)) => (mv.move16(), cp as i16),
+                    None => (0, 0),
+                };
+                out.extend_from_slice(&mv.to_le_bytes());
+                out.extend_from_slice(&cp.to_le_bytes());
+            }
+        }
+    }
+
+    /// The 40 bytes both fixed-width encodings begin with.
+    ///
+    /// `game_result` is stored from the side to move, which is what upstream's
+    /// learner expects, so the game-level result is flipped on White's turns.
+    fn write_psv_prefix(&self, record: &Record, out: &mut Vec<u8>) {
+        let result = if record.side == 0 {
+            self.result
+        } else {
+            -self.result
+        };
+        out.extend_from_slice(&record.packed);
+        out.extend_from_slice(&(record.cp as i16).to_le_bytes());
+        out.extend_from_slice(&record.played.move16().to_le_bytes());
+        out.extend_from_slice(&record.ply.to_le_bytes());
+        out.push(result as u8);
+        out.push(0);
     }
 
     /// One JSONL line, matching the shape the existing corpus converter reads.
@@ -257,18 +285,18 @@ impl Game {
             out.push_str(",\"depth\":");
             out.push_str(&record.depth.to_string());
             out.push_str(",\"cand\":[");
-            for (j, (mv, cp)) in record.candidates.iter().enumerate() {
+            for (j, &(mv, cp)) in record.candidates.iter().enumerate() {
                 if j > 0 {
                     out.push(',');
                 }
                 out.push_str("[\"");
-                out.push_str(mv);
+                out.push_str(&format_usi_move(mv));
                 out.push_str("\",");
                 out.push_str(&cp.to_string());
                 out.push(']');
             }
             out.push_str("],\"m\":\"");
-            out.push_str(&record.played);
+            out.push_str(&format_usi_move(record.played));
             out.push_str("\"}");
         }
         out.push_str("]}");
