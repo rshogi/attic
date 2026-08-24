@@ -2,6 +2,31 @@
 
 use std::path::PathBuf;
 
+/// Output encoding. The two consumers want different things: one wants the
+/// candidate distribution a policy target is built from, the other wants the
+/// fixed-width record upstream's own generator writes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    /// One game per line: every position with its MultiPV candidates, scores,
+    /// root score, and played move.
+    Jsonl,
+    /// `PackedSfenValue`: 32-byte packed position, score, move, ply, result,
+    /// pad — 40 bytes per position, no candidates.
+    Psv,
+}
+
+impl std::str::FromStr for Format {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "jsonl" => Ok(Format::Jsonl),
+            "psv" => Ok(Format::Psv),
+            other => Err(format!("unknown format {other:?} (jsonl, psv)")),
+        }
+    }
+}
+
 pub struct Options {
     pub eval_dir: PathBuf,
     pub out: PathBuf,
@@ -30,6 +55,7 @@ pub struct Options {
     pub resign_cp: i32,
     pub resign_count: u32,
     pub fv_scale: i32,
+    pub format: Format,
     pub seed: u64,
     /// Hash size per worker, in MB. Small on purpose: hundreds of workers each
     /// hold one, and a fixed-depth search does not benefit from a large table
@@ -43,7 +69,7 @@ usage: attic-gensfen --eval-dir DIR --out FILE
                      [--depth 9] [--nodes N] [--multipv 5] [--threads N]
                      [--games N] [--positions N]
                      [--max-ply 320] [--resign-cp 3000] [--resign-count 4]
-                     [--fv-scale 28] [--seed 1] [--hash 16]";
+                     [--fv-scale 28] [--format jsonl|psv] [--seed 1] [--hash 16]";
 
     pub fn parse(args: impl Iterator<Item = String>) -> Result<Self, String> {
         let mut eval_dir = None;
@@ -58,6 +84,7 @@ usage: attic-gensfen --eval-dir DIR --out FILE
         let mut resign_cp = 3000;
         let mut resign_count = 4;
         let mut fv_scale = 28;
+        let mut format = Format::Jsonl;
         let mut seed = 1u64;
         let mut hash_mb = 16usize;
 
@@ -80,6 +107,7 @@ usage: attic-gensfen --eval-dir DIR --out FILE
                 "--resign-cp" => resign_cp = parse_field(&value()?, "--resign-cp")?,
                 "--resign-count" => resign_count = parse_field(&value()?, "--resign-count")?,
                 "--fv-scale" => fv_scale = parse_field(&value()?, "--fv-scale")?,
+                "--format" => format = parse_field(&value()?, "--format")?,
                 "--seed" => seed = parse_field(&value()?, "--seed")?,
                 "--hash" => hash_mb = parse_field(&value()?, "--hash")?,
                 other => return Err(format!("unknown flag {other}")),
@@ -111,6 +139,7 @@ usage: attic-gensfen --eval-dir DIR --out FILE
             resign_cp,
             resign_count,
             fv_scale,
+            format,
             seed,
             hash_mb,
         })

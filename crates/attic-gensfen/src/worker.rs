@@ -9,7 +9,7 @@ use attic_search::{PvOutputConfig, QSearch, SearchControl};
 use attic_storage::TranspositionTable;
 
 use crate::game::{Collector, DeepestPvs, Rng, play_game};
-use crate::options::Options;
+use crate::options::{Format, Options};
 
 /// Each worker writes its own file rather than sharing one behind a lock: a
 /// game is a single long line, and interleaving two writers mid-line corrupts
@@ -23,7 +23,11 @@ pub fn run(
     games_played: &Arc<AtomicU64>,
     positions_written: &Arc<AtomicU64>,
 ) {
-    let path = options.out.with_extension(format!("w{index:03}.jsonl"));
+    let suffix = match options.format {
+        Format::Jsonl => "jsonl",
+        Format::Psv => "bin",
+    };
+    let path = options.out.with_extension(format!("w{index:03}.{suffix}"));
     let mut file = match std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -77,8 +81,18 @@ pub fn run(
         }
 
         let game = play_game(&mut qs, &collected, options, &mut rng);
-        let line = game.to_json("Attic/NAGISA_V4", options.depth, options.multipv);
-        if let Err(err) = writeln!(file, "{line}") {
+        let wrote = match options.format {
+            Format::Jsonl => {
+                let line = game.to_json("attic", options.depth, options.multipv);
+                writeln!(file, "{line}")
+            }
+            Format::Psv => {
+                let mut buf = Vec::new();
+                game.to_psv(&mut buf);
+                file.write_all(&buf)
+            }
+        };
+        if let Err(err) = wrote {
             eprintln!("worker {index}: write failed: {err}");
             return;
         }
