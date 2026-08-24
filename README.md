@@ -63,16 +63,19 @@ seekable by index.
 `--positions` is checked before a game starts, so a run exceeds it by up to
 `workers × game length`.
 
-Worker counts above the machine's physical core count regress.
+`--threads` is a ceiling rather than a setting. Concurrency follows the
+machine's idle CPU while running, aiming to leave `--headroom` cores free, so a
+run started on an empty machine gives way when someone else arrives and takes
+the room back when they leave. `--governor-secs 0` fixes it instead, which is
+what a dedicated machine or a benchmark wants.
 
-`scripts/fleet.sh` runs one process per machine over SSH, sizing `--threads`
-from each machine's free physical cores and skipping any that are already busy.
-Arguments are passed through.
+`scripts/fleet.py` runs one process per machine over SSH; unrecognised
+arguments are passed through.
 
 ```bash
-NODES="node1 node2" scripts/fleet.sh launch --depth 9 --format pack
-scripts/fleet.sh status
-scripts/fleet.sh stop
+scripts/fleet.py launch --nodes node1,node2 --depth 9 --format pack
+scripts/fleet.py status
+scripts/fleet.py stop
 ```
 
 ## Building
