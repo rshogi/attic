@@ -3,6 +3,7 @@
 
     fleet.py launch [--nodes A,B] [gensfen args...]
     fleet.py status [--nodes A,B]
+    fleet.py watch  [--nodes A,B] [--interval 10]
     fleet.py stop   [--nodes A,B]
 
 Unrecognised arguments are passed to attic-gensfen, so `--depth 9
@@ -19,6 +20,7 @@ import argparse
 import shlex
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 # Binary and weights live on the shared home; node-local paths are visible from
@@ -175,7 +177,13 @@ def stop(node: str, opts: argparse.Namespace) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(add_help=True, description=__doc__)
-    parser.add_argument("command", choices=["launch", "status", "stop"])
+    parser.add_argument("command", choices=["launch", "status", "stop", "watch"])
+    parser.add_argument(
+        "--interval",
+        type=float,
+        default=10.0,
+        help="seconds between refreshes in watch mode",
+    )
     parser.add_argument("--nodes", default=DEFAULTS["nodes"], help="comma separated")
     parser.add_argument("--bin", default=DEFAULTS["bin"])
     parser.add_argument("--eval-dir", default=DEFAULTS["eval_dir"])
@@ -193,42 +201,84 @@ def main() -> int:
         elif opts.command == "stop":
             for line in pool.map(lambda n: stop(n, opts), nodes):
                 print(line)
+        elif opts.command == "status":
+            render(list(pool.map(lambda n: probe(n, opts), nodes)), None)
         else:
-            render(list(pool.map(lambda n: probe(n, opts), nodes)), opts)
+            watch(pool, nodes, opts)
     return 0
 
 
-def render(rows: list[Node], opts: argparse.Namespace) -> None:
+def watch(pool: ThreadPoolExecutor, nodes: list[str], opts: argparse.Namespace) -> None:
+    """Redraw until interrupted, showing the rate since the previous sample."""
+    previous: tuple[float, dict[str, int]] | None = None
+    try:
+        while True:
+            sampled = time.monotonic()
+            rows = list(pool.map(lambda n: probe(n, opts), nodes))
+
+            rate = None
+            if previous is not None:
+                before, counts = previous
+                elapsed = sampled - before
+                if elapsed > 0:
+                    rate = {
+                        r.name: max(0.0, (r.games - counts.get(r.name, r.games)) / elapsed)
+                        for r in rows
+                    }
+            previous = (sampled, {r.name: r.games for r in rows})
+
+            # Home the cursor and clear forward rather than clearing first: a
+            # full wipe makes the table blink on every refresh.
+            sys.stdout.write("\033[H\033[J" if sys.stdout.isatty() else "\n")
+            render(rows, rate)
+            sys.stdout.flush()
+            time.sleep(opts.interval)
+    except KeyboardInterrupt:
+        print()
+
+
+def render(rows: list[Node], rate: dict[str, float] | None) -> None:
+    """One frame of the table. `rate` is games/sec per node, when known."""
     tty = sys.stdout.isatty()
     # The bar is read against the busiest machine rather than an absolute
     # ceiling: what matters here is which nodes are lagging the fleet, and
     # concurrency ceilings differ between machines anyway.
     peak = max((r.games for r in rows), default=0) or 1
 
-    head = f"{'NODE':<6} {'PROC':>4} {'CONC':>5} {'GAMES':>9}  {'PROGRESS':<22} {'WRITTEN':>9}"
+    head = (
+        f"{'NODE':<6} {'PROC':>4} {'CONC':>5} {'GAMES':>9} {'GAMES/S':>8}  "
+        f"{'PROGRESS':<22} {'WRITTEN':>9}"
+    )
     print(paint(head, BOLD, tty))
 
     for r in rows:
         if not r.alive:
-            print(paint(f"{r.name:<6} {'—':>4} {'—':>5} {'—':>9}  {'not running':<22} {'—':>9}", GREY, tty))
+            print(
+                paint(
+                    f"{r.name:<6} {'—':>4} {'—':>5} {'—':>9} {'—':>8}  "
+                    f"{'not running':<22} {'—':>9}",
+                    GREY,
+                    tty,
+                )
+            )
             continue
+        speed = f"{rate[r.name]:.2f}" if rate and r.name in rate else "—"
         print(
             f"{paint(f'{r.name:<6}', CYAN, tty)} {r.procs:>4} {r.conc:>5} "
-            f"{r.games:>9,}  {bar(r.games / peak, 20, tty)}  {human(r.written):>9}"
+            f"{r.games:>9,} {speed:>8}  {bar(r.games / peak, 20, tty)}  "
+            f"{human(r.written):>9}"
         )
 
     live = [r for r in rows if r.alive]
     games = sum(r.games for r in rows)
     written = sum(r.written for r in rows)
+    summary = f"{len(live)}/{len(rows)} nodes   {games:,} games   {human(written)}"
+    if rate:
+        summary += f"   {sum(rate.values()):.2f} games/s"
     print()
-    print(
-        paint(
-            f"{len(live)}/{len(rows)} nodes   {games:,} games   {human(written)}",
-            BOLD,
-            tty,
-        )
-    )
-    del opts
+    print(paint(summary, BOLD, tty))
+    if tty:
+        print(paint(f"{time.strftime('%H:%M:%S')}  ctrl-c to exit", DIM, tty))
 
 
 if __name__ == "__main__":

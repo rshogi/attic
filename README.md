@@ -74,7 +74,8 @@ arguments are passed through.
 
 ```bash
 scripts/fleet.py launch --nodes node1,node2 --depth 9 --format pack
-scripts/fleet.py status
+scripts/fleet.py watch          # redraws, with games/sec per node
+scripts/fleet.py status         # one frame
 scripts/fleet.py stop
 ```
 
