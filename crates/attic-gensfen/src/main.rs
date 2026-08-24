@@ -17,6 +17,7 @@
 //! ```
 
 mod game;
+mod governor;
 mod options;
 mod worker;
 
@@ -74,6 +75,13 @@ fn main() {
         options.threads, options.depth, options.multipv, options.fv_scale
     );
 
+    // `--threads` is the ceiling; the governor decides how much of it to use.
+    let governor = governor::Governor::spawn(
+        options.threads,
+        options.headroom,
+        std::time::Duration::from_secs(options.governor_secs),
+    );
+
     let games_played = Arc::new(AtomicU64::new(0));
     let positions_written = Arc::new(AtomicU64::new(0));
     let numa = Arc::new(numa);
@@ -127,6 +135,7 @@ fn main() {
                                 local.network(),
                                 tt,
                                 options,
+                                governor,
                                 seed,
                                 index,
                                 &games_played,
