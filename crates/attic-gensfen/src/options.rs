@@ -62,6 +62,14 @@ pub struct Options {
     /// teach nothing that the resignation itself does not.
     pub resign_cp: i32,
     pub resign_count: u32,
+    /// Skip positions whose root score exceeds this, in centipawns. `0`
+    /// disables the filter.
+    ///
+    /// A won position teaches little that the result does not already say, and
+    /// a mate score is not on the same scale as an evaluation at all — the
+    /// engine reports `VALUE_MATE` (32000), not a centipawn value. Upstream's
+    /// generator calls the same knob `eval_limit`.
+    pub eval_limit: i32,
     pub fv_scale: i32,
     pub format: Format,
     pub seed: u64,
@@ -91,6 +99,7 @@ usage: attic-gensfen --eval-dir DIR --out FILE
         let mut max_ply = 320u16;
         let mut resign_cp = 3000;
         let mut resign_count = 4;
+        let mut eval_limit = 0i32;
         let mut fv_scale = 28;
         let mut format = Format::Jsonl;
         let mut seed = 1u64;
@@ -114,6 +123,7 @@ usage: attic-gensfen --eval-dir DIR --out FILE
                 "--max-ply" => max_ply = parse_field(&value()?, "--max-ply")?,
                 "--resign-cp" => resign_cp = parse_field(&value()?, "--resign-cp")?,
                 "--resign-count" => resign_count = parse_field(&value()?, "--resign-count")?,
+                "--eval-limit" => eval_limit = parse_field(&value()?, "--eval-limit")?,
                 "--fv-scale" => fv_scale = parse_field(&value()?, "--fv-scale")?,
                 "--format" => format = parse_field(&value()?, "--format")?,
                 "--seed" => seed = parse_field(&value()?, "--seed")?,
@@ -146,6 +156,7 @@ usage: attic-gensfen --eval-dir DIR --out FILE
             max_ply,
             resign_cp,
             resign_count,
+            eval_limit,
             fv_scale,
             format,
             seed,
