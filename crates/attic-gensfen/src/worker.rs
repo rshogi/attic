@@ -9,15 +9,18 @@ use attic_search::{PvOutputConfig, QSearch, SearchControl};
 use attic_storage::TranspositionTable;
 
 use crate::game::{Collector, DeepestPvs, Rng, play_game};
+use crate::governor::Governor;
 use crate::options::{Format, Options};
 
 /// Each worker writes its own file rather than sharing one behind a lock: a
 /// game is a single long line, and interleaving two writers mid-line corrupts
 /// both. The consumer reads the directory, not one file.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     net: &attic_eval::NnueNetwork,
     tt: &TranspositionTable,
     options: &Options,
+    governor: &'static Governor,
     seed: u64,
     index: usize,
     games_played: &Arc<AtomicU64>,
@@ -78,6 +81,17 @@ pub fn run(
         }
         if options.positions > 0 && positions_written.load(Ordering::Relaxed) >= options.positions {
             break;
+        }
+
+        // Checked between games so a shrink never discards one in flight. A
+        // parked worker keeps its engine and history tables — rebuilding those
+        // costs more than the idle thread does, and the machine filling up is
+        // usually temporary.
+        while !governor.admits(index) {
+            std::thread::sleep(Duration::from_secs(2));
+            if options.games > 0 && games_played.load(Ordering::Relaxed) >= options.games {
+                return;
+            }
         }
 
         let game = play_game(&mut qs, &collected, options, &mut rng);

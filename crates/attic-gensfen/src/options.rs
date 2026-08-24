@@ -62,6 +62,14 @@ pub struct Options {
     /// teach nothing that the resignation itself does not.
     pub resign_cp: i32,
     pub resign_count: u32,
+    /// Cores to leave idle for whoever else is on the machine.
+    ///
+    /// `--threads` is a ceiling; concurrency is adjusted toward this headroom
+    /// while running. See [`crate::governor`].
+    pub headroom: usize,
+    /// Seconds between concurrency adjustments. `0` fixes concurrency at
+    /// `--threads`, which is what a dedicated machine or a benchmark wants.
+    pub governor_secs: u64,
     /// Skip positions whose root score exceeds this, in centipawns. `0`
     /// disables the filter.
     ///
@@ -85,7 +93,9 @@ usage: attic-gensfen --eval-dir DIR --out FILE
                      [--depth 9] [--nodes N] [--multipv 5] [--threads N]
                      [--games N] [--positions N]
                      [--max-ply 320] [--resign-cp 3000] [--resign-count 4]
-                     [--fv-scale 28] [--format jsonl|psv|pack] [--seed 1] [--hash 16]";
+                     [--fv-scale 28] [--format jsonl|psv|pack]
+                     [--headroom 8] [--governor-secs 30] [--eval-limit N]
+                     [--seed 1] [--hash 16]";
 
     pub fn parse(args: impl Iterator<Item = String>) -> Result<Self, String> {
         let mut eval_dir = None;
@@ -99,6 +109,8 @@ usage: attic-gensfen --eval-dir DIR --out FILE
         let mut max_ply = 320u16;
         let mut resign_cp = 3000;
         let mut resign_count = 4;
+        let mut headroom = 8usize;
+        let mut governor_secs = 30u64;
         let mut eval_limit = 0i32;
         let mut fv_scale = 28;
         let mut format = Format::Jsonl;
@@ -120,6 +132,8 @@ usage: attic-gensfen --eval-dir DIR --out FILE
                 "--max-ply" => max_ply = parse_field(&value()?, "--max-ply")?,
                 "--resign-cp" => resign_cp = parse_field(&value()?, "--resign-cp")?,
                 "--resign-count" => resign_count = parse_field(&value()?, "--resign-count")?,
+                "--headroom" => headroom = parse_field(&value()?, "--headroom")?,
+                "--governor-secs" => governor_secs = parse_field(&value()?, "--governor-secs")?,
                 "--eval-limit" => eval_limit = parse_field(&value()?, "--eval-limit")?,
                 "--fv-scale" => fv_scale = parse_field(&value()?, "--fv-scale")?,
                 "--format" => format = parse_field(&value()?, "--format")?,
@@ -153,6 +167,8 @@ usage: attic-gensfen --eval-dir DIR --out FILE
             max_ply,
             resign_cp,
             resign_count,
+            headroom,
+            governor_secs,
             eval_limit,
             fv_scale,
             format,
