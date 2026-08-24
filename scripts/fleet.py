@@ -67,9 +67,14 @@ def bar(fraction: float, width: int, tty: bool) -> str:
 
 
 def human(n: int) -> str:
-    """Byte count in whichever unit keeps it to three or four digits."""
+    """Byte count, switching units before the figure reaches four digits.
+
+    The switch is at 1000 of a unit rather than 1024, so 1010 MB reads as
+    0.99 GB instead: a four-digit MB figure is harder to compare at a glance
+    than a fractional GB one, which is the whole point of scaling it.
+    """
     for unit, scale in (("TB", 1 << 40), ("GB", 1 << 30), ("MB", 1 << 20)):
-        if n >= scale:
+        if n >= scale * 1000 // 1024:
             return f"{n / scale:.1f} {unit}"
     return f"{n / 1024:.0f} KB"
 
