@@ -60,6 +60,14 @@ const E_RANK_TO_INDEX: [usize; 9] = [0, 0, 0, 1, 1, 1, 2, 2, 2];
 ///
 /// # Panics
 /// Panics if either king is missing.
+/// Layer-stack selection for the 2304 shape, which buckets by game progress
+/// rather than by the kings' ranks — see [`crate::progress`].
+#[cfg(feature = "halfka2304")]
+pub fn layer_stack_index(pos: &Position) -> usize {
+    crate::progress::bucket_index(pos)
+}
+
+#[cfg(feature = "sfnn1536")]
 pub fn layer_stack_index(pos: &Position) -> usize {
     let stm = pos.side_to_move();
     let f_king = king_square(pos, stm);
@@ -410,6 +418,12 @@ mod tests {
         (8, "9/9/8k/9/9/9/8K/9/9 b - 1"),
     ];
 
+    // The three below pin `layer_stack_index` to the kings' ranks. That is the
+    // 1536 shape's rule; the 2304 shape buckets by game progress instead and
+    // never looks at the kings, so these say nothing there. `oracle_bucket`
+    // itself stays valid as a statement about the reference's king rule — it is
+    // the *binding* to `layer_stack_index` that is shape-specific.
+    #[cfg(feature = "sfnn1536")]
     #[test]
     fn layer_stack_index_matches_oracle_on_each_bucket() {
         for (expected, sfen) in BUCKET_FIXTURES {
@@ -424,6 +438,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "sfnn1536")]
     #[test]
     fn layer_stack_index_white_to_move_mirrors_ranks() {
         let sfen = "8k/9/9/9/9/9/9/9/8K w - 1";
@@ -431,6 +446,7 @@ mod tests {
         assert_eq!(layer_stack_index(&parse_sfen(sfen).unwrap()), 8);
     }
 
+    #[cfg(feature = "sfnn1536")]
     #[test]
     fn layer_stack_index_startpos_is_eight() {
         let startpos = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1";

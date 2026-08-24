@@ -65,7 +65,7 @@ const F_ROOK: usize = E_HORSE + 81;
 const E_ROOK: usize = F_ROOK + 81;
 const F_DRAGON: usize = E_ROOK + 81;
 const E_DRAGON: usize = F_DRAGON + 81;
-const FE_END: usize = E_DRAGON + 81;
+pub(crate) const FE_END: usize = E_DRAGON + 81;
 
 const SQ_NB: usize = Square::COUNT;
 /// Size of one king-plane block. Both kings share the `[FE_END, E_KING)` span,
@@ -84,7 +84,7 @@ pub const FEATURE_DIMENSION: usize = SQ_K_COUNT * E_KING;
 pub const MAX_ACTIVE_FEATURES: usize = 40;
 
 /// The seven piece kinds that can sit in a hand, in `BonaPiece` plane order.
-const HAND_KINDS: [PieceKind; 7] = [
+pub(crate) const HAND_KINDS: [PieceKind; 7] = [
     PieceKind::Pawn,
     PieceKind::Lance,
     PieceKind::Knight,
@@ -97,7 +97,7 @@ const HAND_KINDS: [PieceKind; 7] = [
 /// Rotate a square 180° when viewing the board from `persp`'s side, so that the
 /// mirror maths downstream works in an own-side-forward frame.
 #[inline]
-fn from_persp(sq: Square, persp: Color) -> Square {
+pub(crate) fn from_persp(sq: Square, persp: Color) -> Square {
     match persp {
         Color::Black => sq,
         Color::White => Square::from_index((SQ_NB as u8 - 1) - sq.index())
@@ -160,7 +160,7 @@ const HAND_PLANE: [(usize, usize); PieceKind::COUNT] = {
 /// Friend/enemy board-plane base for a board piece. Kings have no board plane,
 /// so passing one is a caller bug.
 #[inline]
-fn board_plane(kind: PieceKind, promoted: bool, is_friend: bool) -> usize {
+pub(crate) fn board_plane(kind: PieceKind, promoted: bool, is_friend: bool) -> usize {
     debug_assert!(
         kind != PieceKind::King,
         "king has no board plane; caller handles it"
@@ -172,7 +172,7 @@ fn board_plane(kind: PieceKind, promoted: bool, is_friend: bool) -> usize {
 /// Friend/enemy hand-plane base for a held piece kind. Kings are never held in
 /// hand, so passing one is a caller bug.
 #[inline]
-fn hand_plane(kind: PieceKind, is_friend: bool) -> usize {
+pub(crate) fn hand_plane(kind: PieceKind, is_friend: bool) -> usize {
     debug_assert!(kind != PieceKind::King, "king is never held in hand");
     let (friend, enemy) = HAND_PLANE[kind.index()];
     if is_friend { friend } else { enemy }

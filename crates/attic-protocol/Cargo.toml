@@ -16,6 +16,8 @@ attic-storage = { path = "../attic-storage" }
 [features]
 default = ["quick-draw"]
 quick-draw = ["attic-search/quick-draw", "attic-state/quick-draw"]
+sfnn1536 = ["attic-search/sfnn1536"]
+halfka2304 = ["attic-search/halfka2304"]
 
 [dev-dependencies]
 serde = { version = "~1.0", features = ["derive"] }

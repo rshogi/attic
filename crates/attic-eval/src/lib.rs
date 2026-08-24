@@ -9,6 +9,7 @@ mod features;
 mod finny;
 mod loader;
 mod network;
+pub mod progress;
 mod simd;
 mod transformer;
 mod types;
@@ -19,7 +20,7 @@ pub use features::{
     active_features, active_features_both, requires_full_refresh,
 };
 pub use finny::FinnyCache;
-pub use loader::{load_network, load_network_with_warnings};
+pub use loader::{load_network, load_network_with_dims, load_network_with_warnings};
 pub use network::{
     FV_SCALE_DEFAULT, evaluate, evaluate_with, fv_scale, layer_stack_index, set_fv_scale,
 };

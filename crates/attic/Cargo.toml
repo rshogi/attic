@@ -24,6 +24,9 @@ mimalloc = "0.1"
 [features]
 default = ["quick-draw"]
 quick-draw = ["attic-protocol/quick-draw", "attic-state/quick-draw"]
+# Network selection; exactly one is required. See attic-eval's features.
+sfnn1536 = ["attic-protocol/sfnn1536"]
+halfka2304 = ["attic-protocol/halfka2304"]
 
 [dev-dependencies]
 serde = { version = "~1.0", features = ["derive"] }
