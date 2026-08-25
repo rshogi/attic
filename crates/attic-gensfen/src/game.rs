@@ -95,6 +95,37 @@ impl Rng {
     }
 }
 
+/// Which plies of the coming game get a uniformly-drawn legal move instead of
+/// the search's answer, indexed by ply from the start of the game.
+///
+/// Upstream's generator draws the plies up front rather than rolling a die at
+/// each one: a per-ply probability gives a game with none and a game with
+/// twelve, and the point is that *every* game leaves the main line a fixed
+/// number of times. `--random-move-minply` and `--random-move-maxply` are
+/// 1-based, the way a move number is written, so ply 1 is the first move.
+fn pick_random_plies(options: &Options, rng: &mut Rng) -> Vec<bool> {
+    let mut flags = vec![false; options.max_ply as usize];
+    if options.random_move_count == 0 {
+        return flags;
+    }
+    let lo = usize::from(options.random_move_minply.max(1)) - 1;
+    let hi = usize::from(options.random_move_maxply).min(flags.len());
+    if lo >= hi {
+        return flags;
+    }
+
+    // Partial Fisher-Yates over the window: pick without replacement, so the
+    // count is exact rather than an average.
+    let mut window: Vec<usize> = (lo..hi).collect();
+    let take = (options.random_move_count as usize).min(window.len());
+    for i in 0..take {
+        let j = i + rng.below(window.len() - i);
+        window.swap(i, j);
+        flags[window[i]] = true;
+    }
+    flags
+}
+
 /// Plays one game with an already-built searcher.
 ///
 /// `qs` is deliberately a caller-owned parameter rather than built here.
@@ -116,6 +147,8 @@ pub fn play_game(
     let mut ply_count = 0u16;
     let mut resign_streak = 0u32;
     let mut undos = Vec::new();
+    let random_plies = pick_random_plies(options, rng);
+    let mut legal: Vec<Move> = Vec::with_capacity(128);
 
     let (result, reason) = loop {
         if ply_count >= options.max_ply {
@@ -163,10 +196,23 @@ pub fn play_game(
         }
 
         // Spread the opening: always playing the best move from one start
-        // position yields one game however many workers run. Later plies stay
-        // greedy so the result still reflects best play.
-        let played = if ply_count < 30 && lines.len() > 1 {
-            lines[rng.below(lines.len())].pv[0]
+        // position yields one game however many workers run. Every other ply
+        // stays greedy so the result still reflects best play.
+        //
+        // The draw is over *all* legal moves, not the MultiPV candidates: a
+        // position reached through the candidates is one the search already
+        // liked, so the corpus stays inside the same handful of openings. The
+        // record is kept either way — the candidates and the root score describe
+        // the position, and they are true whatever gets played next — but
+        // `played` is then not the search's answer, so a consumer training on
+        // `played` alone wants the candidate list instead.
+        let played = if random_plies.get(usize::from(ply_count)).copied() == Some(true) {
+            legal.clear();
+            pos.generate_legal_all(&mut legal);
+            match legal.len() {
+                0 => outcome.best_move,
+                n => legal[rng.below(n)],
+            }
         } else {
             outcome.best_move
         };
@@ -208,6 +254,77 @@ pub fn play_game(
         records,
         result,
         reason,
+    }
+}
+
+#[cfg(test)]
+mod random_ply_tests {
+    use super::*;
+    use crate::options::Format;
+
+    fn options(count: u32, minply: u16, maxply: u16) -> Options {
+        Options {
+            eval_dir: std::path::PathBuf::new(),
+            out: std::path::PathBuf::new(),
+            depth: 9,
+            nodes: 0,
+            multipv: 5,
+            threads: 1,
+            games: 0,
+            positions: 0,
+            max_ply: 320,
+            resign_cp: 3000,
+            resign_count: 4,
+            headroom: 0,
+            governor_secs: 0,
+            eval_limit: 0,
+            fv_scale: 28,
+            format: Format::Pack,
+            random_move_count: count,
+            random_move_minply: minply,
+            random_move_maxply: maxply,
+            seed: 1,
+            hash_mb: 16,
+        }
+    }
+
+    #[test]
+    fn the_window_is_the_move_number_the_flags_say() {
+        // 1-based in, 0-based out: `--random-move-minply 16` means the 16th
+        // move of the game, which is `ply_count` 15.
+        let mut rng = Rng::new(3);
+        let flags = pick_random_plies(&options(999, 16, 32), &mut rng);
+        assert!(flags[15..32].iter().all(|&f| f), "the whole window is drawn");
+        assert!(!flags[14], "the ply before the window stays greedy");
+        assert!(!flags[32], "the ply after the window stays greedy");
+    }
+
+    #[test]
+    fn every_game_gets_exactly_the_count_asked_for() {
+        // Drawing without replacement is the point: a per-ply coin would give
+        // a game with none and a game with twelve.
+        for seed in 0..32 {
+            let mut rng = Rng::new(seed);
+            let flags = pick_random_plies(&options(5, 16, 32), &mut rng);
+            assert_eq!(flags.iter().filter(|&&f| f).count(), 5, "seed {seed}");
+        }
+    }
+
+    #[test]
+    fn zero_count_plays_the_search_throughout() {
+        let mut rng = Rng::new(1);
+        let flags = pick_random_plies(&options(0, 16, 32), &mut rng);
+        assert!(flags.iter().all(|&f| !f));
+    }
+
+    #[test]
+    fn a_window_past_max_ply_is_clamped_rather_than_panicking() {
+        let mut rng = Rng::new(1);
+        let mut opts = options(5, 16, 32);
+        opts.max_ply = 20;
+        let flags = pick_random_plies(&opts, &mut rng);
+        assert_eq!(flags.len(), 20);
+        assert_eq!(flags.iter().filter(|&&f| f).count(), 5);
     }
 }
 
