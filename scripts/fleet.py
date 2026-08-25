@@ -2,12 +2,20 @@
 """Run attic-gensfen across a set of machines.
 
     fleet.py launch [--nodes A,B] [gensfen args...]
-    fleet.py status [--nodes A,B]
-    fleet.py watch  [--nodes A,B] [--interval 10]
+    fleet.py status [--nodes A,B] [--no-scan]
+    fleet.py watch  [--nodes A,B] [--interval 10] [--no-scan]
     fleet.py stop   [--nodes A,B]
 
+`status` and `watch` report two counts of games, because there are two. `RUN` is
+what the running process has produced; `TOTAL` is what the shards on disk hold,
+which includes any run that wrote to them before. Only `TOTAL` divides into
+`POSITIONS`. Counting the second one means reading the shards, which `--no-scan`
+skips.
+
 Unrecognised arguments are passed to attic-gensfen, so `--depth 9
---format pack` works without this script knowing what those mean.
+--format pack` works without this script knowing what those mean. `--seed` is
+the one exception: it is a base the nodes count up from, since the same seed on
+two machines means the same random moves at the same plies.
 
 Run from wherever you have SSH to the nodes; they are not assumed to reach each
 other. The reference deployment has no agent forwarding, so a node cannot start
@@ -17,6 +25,7 @@ its neighbours even though the filesystem is shared.
 from __future__ import annotations
 
 import argparse
+import base64
 import shlex
 import subprocess
 import sys
@@ -38,6 +47,32 @@ DEFAULTS = {
 # binary name included, so a cmdline match counts that shell as a second process
 # — and `pkill -f` would kill the connection issuing it.
 PATTERN = "attic-gensfen"
+
+# Counts games in the shards themselves, run on the node that owns them.
+#
+# The process counter only knows about its own games, while the shards are
+# opened for append and may already hold a previous run's. Dividing one by the
+# other gives a plies-per-game figure that is wrong by however much came before.
+#
+# A game boundary is a ply that did not increase. Reading `ply == 1` would miss
+# any game whose first record is not ply 1, and each shard belongs to exactly
+# one worker, so the records in it are already in order.
+SCAN_PY = """import glob, sys
+import numpy as np
+
+prefix, record = sys.argv[1], int(sys.argv[2])
+games = positions = 0
+for path in sorted(glob.glob(prefix + ".w*.bin")):
+    raw = np.fromfile(path, dtype=np.uint8)
+    n = raw.size // record
+    if n == 0:
+        continue
+    ply = raw[: n * record].reshape(n, record)[:, 36:38].copy().view(np.uint16)
+    ply = ply.ravel()
+    games += 1 + int((ply[1:] <= ply[:-1]).sum())
+    positions += n
+print(games, positions)
+"""
 
 RESET, BOLD, DIM = "\033[0m", "\033[1m", "\033[2m"
 GREEN, YELLOW, RED, CYAN, GREY = (
@@ -104,7 +139,39 @@ def wrap_detached(command: str, log: str) -> str:
     return f"setsid sh -c {shlex.quote(command)} >{log} 2>&1 </dev/null & disown 2>/dev/null; exit 0"
 
 
-def launch(node: str, opts: argparse.Namespace, passthrough: list[str]) -> str:
+def take_seed(passthrough: list[str]) -> tuple[int, list[str]]:
+    """The base seed, taken out of the arguments so each node can get its own.
+
+    A worker's seed is `process seed * 1000003 + worker index`, so one seed
+    handed to the fleet is the same seed on every machine: eight nodes drawing
+    the same random moves at the same plies. Measured, they do not currently
+    write identical games — the workers on a node share a transposition table,
+    and which of them reaches an entry first is a race — but that is a side
+    effect of threading rather than anything the generator promises.
+
+    Each node is given `base + its position in --nodes`. A node holds a few
+    hundred workers at most, far short of the 1000003 stride, so no two nodes'
+    ranges can overlap.
+
+    Without `--seed` the base follows the clock. Output is opened for append,
+    so a fleet stopped and started on the same seed would write a second copy
+    of the games already on disk; moving the base means a restart continues the
+    corpus instead of repeating it. Pass `--seed` to reproduce a run — either
+    way, the value each node was given is printed.
+    """
+    if "--seed" not in passthrough:
+        return int(time.time()), list(passthrough)
+    at = passthrough.index("--seed")
+    if at + 1 == len(passthrough):
+        raise SystemExit("--seed needs a value")
+    try:
+        base = int(passthrough[at + 1])
+    except ValueError:
+        raise SystemExit(f"--seed: cannot parse {passthrough[at + 1]!r}") from None
+    return base, passthrough[:at] + passthrough[at + 2 :]
+
+
+def launch(node: str, seed: int, opts: argparse.Namespace, passthrough: list[str]) -> str:
     """Start one process on `node`, or explain why not."""
     # Refuse rather than stack a second process on the first: two runs on one
     # machine halve each other and interleave into the same files.
@@ -116,14 +183,14 @@ def launch(node: str, opts: argparse.Namespace, passthrough: list[str]) -> str:
     # the machine fills, so this only has to be a sane starting point.
     run = (
         f"nice -n {opts.nice} {opts.bin} --eval-dir {opts.eval_dir} "
-        f"--out {opts.out}/$(hostname -s) {args}"
+        f"--out {opts.out}/$(hostname -s) --seed {seed} {args}"
     )
     on(node, f"mkdir -p {opts.out} && " + wrap_detached(run, f"{opts.out}/$(hostname -s).log"))
 
     # Confirm by looking for the process. A detached launch reports success even
     # when the binary rejects its arguments and exits immediately.
     if on(node, f"sleep 2; pgrep -x '{PATTERN}' >/dev/null 2>&1")[0] == 0:
-        return f"{node}: running"
+        return f"{node}: running (seed {seed})"
     _, tail = on(node, f"tail -1 {opts.out}/$(hostname -s).log 2>/dev/null")
     return f"{node}: did not start — {tail or 'no output'}"
 
@@ -140,6 +207,8 @@ class Node:
         written: int,
         uptime: int,
         record_size: int | None,
+        corpus_games: int | None = None,
+        corpus_positions: int | None = None,
     ):
         self.name = name
         self.procs = procs
@@ -148,17 +217,33 @@ class Node:
         self.written = written
         self.uptime = uptime
         self.record_size = record_size
+        self.corpus_games = corpus_games
+        self.corpus_positions = corpus_positions
 
     @property
     def positions(self) -> int | None:
-        """Positions written, from the byte count and the record size.
+        """Positions on disk: counted where the shards were scanned.
 
-        Exact for the fixed-width formats and unknowable for JSONL, where a
-        record's length depends on the position in it.
+        The byte estimate is the fallback. It is exact for the fixed-width
+        formats and unknowable for JSONL, where a record's length depends on
+        the position in it.
         """
+        if self.corpus_positions is not None:
+            return self.corpus_positions
         if not self.record_size:
             return None
         return self.written // self.record_size
+
+    @property
+    def plies(self) -> float | None:
+        """Plies per game, from figures that cover the same games.
+
+        `games` counts this process's output and the shards may hold earlier
+        runs too, so the two must not be divided into each other.
+        """
+        if not self.corpus_games or self.corpus_positions is None:
+            return None
+        return self.corpus_positions / self.corpus_games
 
     @property
     def lifetime_rate(self) -> float | None:
@@ -204,11 +289,16 @@ def probe(node: str, opts: argparse.Namespace) -> Node:
         f"a=$(pgrep -a -x '{PATTERN}' 2>/dev/null | head -1); "
         f"fmt=$(echo \"$a\" | grep -o -- '--format [a-z]*' | cut -d' ' -f2); "
         f"mpv=$(echo \"$a\" | grep -o -- '--multipv [0-9]*' | cut -d' ' -f2); "
-        f'printf "%s %s %s %s %s %s %s" "${{p:-0}}" "${{c:-0}}" "${{g:-0}}" '
-        f'"${{b:-0}}" "${{u:-0}}" "${{fmt:-jsonl}}" "${{mpv:-5}}"',
+        + scan_command(opts)
+        + 'printf "%s %s %s %s %s %s %s %s" "${p:-0}" "${c:-0}" "${g:-0}" '
+        '"${b:-0}" "${u:-0}" "${fmt:-jsonl}" "${mpv:-5}" "${s:-0/0}"',
     )
-    f = (out.split() + ["0"] * 7)[:7]
+    f = (out.split() + ["0"] * 8)[:8]
     num = lambda s: int(s) if s.isdigit() else 0
+    # A scan that did not happen reports zeroes, and a zero here has to stay
+    # distinct from a counted zero: it is what makes `positions` fall back to
+    # the byte estimate rather than claiming the shards are empty.
+    scanned = (f[7].split("/") + ["0"])[:2]
     return Node(
         node,
         num(f[0]),
@@ -217,6 +307,29 @@ def probe(node: str, opts: argparse.Namespace) -> Node:
         num(f[3]),
         num(f[4]),
         record_bytes(f[5], num(f[6])),
+        num(scanned[0]) or None,
+        num(scanned[1]) or None,
+    )
+
+
+def scan_command(opts: argparse.Namespace) -> str:
+    """Shell that counts games in this node's shards, or nothing if disabled.
+
+    The script travels base64-encoded. It is Python inside a shell command
+    inside an SSH argument, and every layer between here and there has its own
+    opinion about quotes.
+    """
+    if not opts.scan:
+        return ""
+    payload = base64.b64encode(SCAN_PY.encode()).decode()
+    return (
+        # `psv` has no candidate list appended; `jsonl` is not fixed width, so
+        # there is nothing to stride through and it is left to the byte estimate.
+        f'rec=$(( 40 + 4 * ${{mpv:-5}} )); [ "${{fmt:-jsonl}}" = psv ] && rec=40; '
+        f's=""; case "${{fmt:-jsonl}}" in pack|psv) '
+        f's=$(echo {payload} | base64 -d '
+        f'| nice -n {opts.nice} python3 - "{opts.out}/$(hostname -s)" "$rec" 2>/dev/null '
+        f'| tr " " "/");; esac; '
     )
 
 
@@ -258,6 +371,12 @@ def main() -> int:
     parser.add_argument("--eval-dir", default=DEFAULTS["eval_dir"])
     parser.add_argument("--out", default=DEFAULTS["out"])
     parser.add_argument("--nice", type=int, default=19)
+    parser.add_argument(
+        "--no-scan",
+        dest="scan",
+        action="store_false",
+        help="do not read the shards; report positions from the byte count",
+    )
     opts, passthrough = parser.parse_known_args()
 
     nodes = [n for n in opts.nodes.split(",") if n]
@@ -265,7 +384,11 @@ def main() -> int:
     # an unreachable one burns the full connect timeout.
     with ThreadPoolExecutor(max_workers=len(nodes) or 1) as pool:
         if opts.command == "launch":
-            for line in pool.map(lambda n: launch(n, opts, passthrough), nodes):
+            base, passthrough = take_seed(passthrough)
+            for line in pool.map(
+                lambda pair: launch(*pair, opts, passthrough),
+                zip(nodes, range(base, base + len(nodes)), strict=True),
+            ):
                 print(line)
         elif opts.command == "stop":
             for line in pool.map(lambda n: stop(n, opts), nodes):
@@ -312,11 +435,14 @@ def render(rows: list[Node], rate: dict[str, float] | None) -> None:
     # The bar is read against the busiest machine rather than an absolute
     # ceiling: what matters here is which nodes are lagging the fleet, and
     # concurrency ceilings differ between machines anyway.
-    peak = max((r.games for r in rows), default=0) or 1
+    peak = max((r.corpus_games or r.games for r in rows), default=0) or 1
 
+    # `RUN` is what the live process has produced; `TOTAL` is what the shards
+    # hold, earlier runs included. Naming both of them "games" is how a
+    # plies-per-game figure of 196 once got reported.
     head = (
-        f"{'NODE':<6} {'PROC':>4} {'CONC':>5} {'GAMES':>9} {'GAMES/H':>9} "
-        f"{'POSITIONS':>12}  {'PROGRESS':<22} {'WRITTEN':>9}"
+        f"{'NODE':<6} {'PROC':>4} {'CONC':>5} {'RUN':>9} {'GAMES/H':>9} "
+        f"{'TOTAL':>9} {'POSITIONS':>12} {'PLY/G':>6}  {'PROGRESS':<22} {'WRITTEN':>9}"
     )
     print(paint(head, BOLD, tty))
 
@@ -324,8 +450,8 @@ def render(rows: list[Node], rate: dict[str, float] | None) -> None:
         if not r.alive:
             print(
                 paint(
-                    f"{r.name:<6} {'—':>4} {'—':>5} {'—':>9} {'—':>9} {'—':>12}  "
-                    f"{'not running':<22} {'—':>9}",
+                    f"{r.name:<6} {'—':>4} {'—':>5} {'—':>9} {'—':>9} {'—':>9} "
+                    f"{'—':>12} {'—':>6}  {'not running':<22} {'—':>9}",
                     GREY,
                     tty,
                 )
@@ -334,17 +460,22 @@ def render(rows: list[Node], rate: dict[str, float] | None) -> None:
         per_second = (rate or {}).get(r.name) or r.lifetime_rate
         speed = f"{per_second * 3600:,.0f}" if per_second else "—"
         positions = f"{r.positions:,}" if r.positions is not None else "—"
+        total = f"{r.corpus_games:,}" if r.corpus_games is not None else "—"
+        plies = f"{r.plies:.1f}" if r.plies is not None else "—"
         print(
             f"{paint(f'{r.name:<6}', CYAN, tty)} {r.procs:>4} {r.conc:>5} "
-            f"{r.games:>9,} {speed:>9} {positions:>12}  "
-            f"{bar(r.games / peak, 20, tty)}  {human(r.written):>9}"
+            f"{r.games:>9,} {speed:>9} {total:>9} {positions:>12} {plies:>6}  "
+            f"{bar((r.corpus_games or r.games) / peak, 20, tty)}  {human(r.written):>9}"
         )
 
     live = [r for r in rows if r.alive]
     games = sum(r.games for r in rows)
     written = sum(r.written for r in rows)
     counted = [r.positions for r in rows if r.positions is not None]
-    summary = f"{len(live)}/{len(rows)} nodes   {games:,} games"
+    scanned = [r.corpus_games for r in rows if r.corpus_games is not None]
+    summary = f"{len(live)}/{len(rows)} nodes   {games:,} games this run"
+    if scanned:
+        summary += f"   {sum(scanned):,} on disk"
     if counted:
         summary += f"   {sum(counted):,} positions"
     summary += f"   {human(written)}"
