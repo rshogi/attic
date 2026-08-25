@@ -80,6 +80,22 @@ pub struct Options {
     pub eval_limit: i32,
     pub fv_scale: i32,
     pub format: Format,
+    /// Plies per game replaced by a uniformly-drawn legal move. `0` plays the
+    /// search's best move throughout.
+    ///
+    /// Without it a fixed start position yields one game however many workers
+    /// run, and the corpus is one line of play seen from many angles. Drawing
+    /// from *all* legal moves rather than from the MultiPV candidates is
+    /// deliberate: the candidates are what the search already likes, so a
+    /// position reached through them is one the engine would have considered
+    /// anyway. Upstream calls this `random_move_count`.
+    pub random_move_count: u32,
+    /// First ply eligible to be randomised, counted from the start of the game.
+    pub random_move_minply: u16,
+    /// Last ply eligible to be randomised. Randomising late costs more than it
+    /// buys — the position is already decided — so the window closes while the
+    /// opening is still open.
+    pub random_move_maxply: u16,
     pub seed: u64,
     /// Hash size per worker, in MB. Small on purpose: hundreds of workers each
     /// hold one, and a fixed-depth search does not benefit from a large table
@@ -95,6 +111,8 @@ usage: attic-gensfen --eval-dir DIR --out FILE
                      [--max-ply 320] [--resign-cp 3000] [--resign-count 4]
                      [--fv-scale 28] [--format jsonl|psv|pack]
                      [--headroom 8] [--governor-secs 30] [--eval-limit N]
+                     [--random-move-count 5] [--random-move-minply 16]
+                     [--random-move-maxply 32]
                      [--seed 1] [--hash 16]";
 
     pub fn parse(args: impl Iterator<Item = String>) -> Result<Self, String> {
@@ -114,6 +132,9 @@ usage: attic-gensfen --eval-dir DIR --out FILE
         let mut eval_limit = 0i32;
         let mut fv_scale = 28;
         let mut format = Format::Jsonl;
+        let mut random_move_count = 5u32;
+        let mut random_move_minply = 16u16;
+        let mut random_move_maxply = 32u16;
         let mut seed = 1u64;
         let mut hash_mb = 16usize;
 
@@ -140,6 +161,15 @@ usage: attic-gensfen --eval-dir DIR --out FILE
                 "--eval-limit" => eval_limit = parse_field(&value()?, "--eval-limit")?,
                 "--fv-scale" => fv_scale = parse_field(&value()?, "--fv-scale")?,
                 "--format" => format = parse_field(&value()?, "--format")?,
+                "--random-move-count" => {
+                    random_move_count = parse_field(&value()?, "--random-move-count")?;
+                }
+                "--random-move-minply" => {
+                    random_move_minply = parse_field(&value()?, "--random-move-minply")?;
+                }
+                "--random-move-maxply" => {
+                    random_move_maxply = parse_field(&value()?, "--random-move-maxply")?;
+                }
                 "--seed" => seed = parse_field(&value()?, "--seed")?,
                 "--hash" => hash_mb = parse_field(&value()?, "--hash")?,
                 other => return Err(format!("unknown flag {other}")),
@@ -156,6 +186,12 @@ usage: attic-gensfen --eval-dir DIR --out FILE
         }
         if depth <= 0 && nodes == 0 {
             return Err("--depth or --nodes must bound the search".to_string());
+        }
+        if random_move_count > 0 && random_move_minply > random_move_maxply {
+            return Err(format!(
+                "--random-move-minply {random_move_minply} is past \
+                 --random-move-maxply {random_move_maxply}"
+            ));
         }
 
         Ok(Options {
@@ -175,6 +211,9 @@ usage: attic-gensfen --eval-dir DIR --out FILE
             eval_limit,
             fv_scale,
             format,
+            random_move_count,
+            random_move_minply,
+            random_move_maxply,
             seed,
             hash_mb,
         })
