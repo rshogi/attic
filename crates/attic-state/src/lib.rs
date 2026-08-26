@@ -21,7 +21,7 @@ pub use board::Board;
 pub use color::Color;
 pub use hand::Hand;
 pub use move_::{Move, UsiMoveParseError, flip_move16, format_usi_move, parse_usi_move};
-pub use packed_sfen::{PACKED_SFEN_LEN, PackedSfen, sfen_pack};
+pub use packed_sfen::{PACKED_SFEN_LEN, PackedSfen, sfen_pack, sfen_unpack};
 pub use piece::{Piece, PieceKind};
 pub use position::{Position, RepetitionState, Undo};
 pub use search_movegen::{CheckSquares, ExtMove};

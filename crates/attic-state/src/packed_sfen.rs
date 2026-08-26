@@ -29,6 +29,7 @@
 use crate::color::Color;
 use crate::piece::{Piece, PieceKind};
 use crate::position::Position;
+use crate::sfen::SfenError;
 use crate::square::Square;
 
 /// Length in bytes of a [`PackedSfen`].
@@ -91,6 +92,41 @@ impl BitWriter {
         for i in 0..n {
             self.write_one_bit((d & (1 << i)) != 0);
         }
+    }
+}
+
+/// LSB-first bit reader over the fixed 32-byte buffer, the mirror of
+/// [`BitWriter`].
+struct BitReader<'a> {
+    data: &'a PackedSfen,
+    cursor: usize,
+}
+
+impl<'a> BitReader<'a> {
+    fn new(data: &'a PackedSfen) -> Self {
+        Self { data, cursor: 0 }
+    }
+
+    #[inline]
+    fn read_one_bit(&mut self) -> Result<bool, SfenError> {
+        let byte = self.cursor / 8;
+        if byte >= PACKED_SFEN_LEN {
+            return Err(SfenError::PackedTruncated);
+        }
+        let bit = (self.data[byte] >> (self.cursor & 7)) & 1;
+        self.cursor += 1;
+        Ok(bit != 0)
+    }
+
+    #[inline]
+    fn read_n_bit(&mut self, n: u32) -> Result<u32, SfenError> {
+        let mut value = 0;
+        for i in 0..n {
+            if self.read_one_bit()? {
+                value |= 1 << i;
+            }
+        }
+        Ok(value)
     }
 }
 
@@ -193,11 +229,11 @@ pub fn sfen_pack(pos: &Position) -> PackedSfen {
     for index in 0..Square::COUNT as u8 {
         let sq = Square::from_index(index).expect("index < COUNT");
         match pos.board().get(sq) {
-            Some(p) if p.kind == PieceKind::King => {}
+            Some(p) if p.kind == PieceKind::King => {},
             Some(p) => {
                 write_board_piece(&mut w, p);
                 box_count[p.kind.index()] -= 1;
-            }
+            },
             None => w.write_one_bit(false),
         }
     }
@@ -228,10 +264,212 @@ pub fn sfen_pack(pos: &Position) -> PackedSfen {
     w.data
 }
 
+/// Read one board square's Huffman code, `None` for an empty square.
+///
+/// The board codes form a prefix-free set that this walks one bit at a time
+/// rather than matching against [`huffman_board`]: `0` empty, `10` Pawn,
+/// `1100` Lance, `1101` Knight, `1110` Silver, `11110` Gold, `111110` Bishop,
+/// `111111` Rook.
+fn read_board_kind(r: &mut BitReader<'_>) -> Result<Option<PieceKind>, SfenError> {
+    if !r.read_one_bit()? {
+        return Ok(None);
+    }
+    let kind = if !r.read_one_bit()? {
+        PieceKind::Pawn
+    } else if !r.read_one_bit()? {
+        if r.read_one_bit()? {
+            PieceKind::Knight
+        } else {
+            PieceKind::Lance
+        }
+    } else if !r.read_one_bit()? {
+        PieceKind::Silver
+    } else if !r.read_one_bit()? {
+        PieceKind::Gold
+    } else if !r.read_one_bit()? {
+        PieceKind::Bishop
+    } else {
+        PieceKind::Rook
+    };
+    Ok(Some(kind))
+}
+
+/// A board piece: the Huffman code, a promote bit (except Gold), a color bit.
+fn read_board_piece(r: &mut BitReader<'_>) -> Result<Option<Piece>, SfenError> {
+    let Some(kind) = read_board_kind(r)? else {
+        return Ok(None);
+    };
+    let promoted = if kind == PieceKind::Gold {
+        false
+    } else {
+        r.read_one_bit()?
+    };
+    let color = if r.read_one_bit()? {
+        Color::White
+    } else {
+        Color::Black
+    };
+    let piece = if promoted {
+        // Only promotable kinds carry a set promote bit, and `huffman_board`
+        // never yields King, so this is unreachable for a stream our own writer
+        // produced.
+        Piece::promoted(kind, color).ok_or(SfenError::PackedPieceOverflow)?
+    } else {
+        Piece::new(kind, color)
+    };
+    Ok(Some(piece))
+}
+
+/// Where an off-board piece was found: a hand, or the piece box.
+enum OffBoard {
+    Hand(PieceKind, Color),
+    Box(PieceKind),
+}
+
+/// Read one hand-or-piece-box entry.
+///
+/// The two passes share a bit stream with no length prefix between them, and
+/// the reference's two tables are chosen so the union stays prefix-free once
+/// the trailing promote/color bits are counted. Reading them together is what
+/// makes the boundary unnecessary — see the table in `sfen_packer.cpp`.
+fn read_off_board(r: &mut BitReader<'_>) -> Result<OffBoard, SfenError> {
+    let color = |bit: bool| if bit { Color::White } else { Color::Black };
+
+    if !r.read_one_bit()? {
+        // 0 0 c — hand Pawn; 0 1 0 — boxed Pawn.
+        return if r.read_one_bit()? {
+            r.read_one_bit()?;
+            Ok(OffBoard::Box(PieceKind::Pawn))
+        } else {
+            Ok(OffBoard::Hand(PieceKind::Pawn, color(r.read_one_bit()?)))
+        };
+    }
+    if !r.read_one_bit()? {
+        // 1 0 x — Lance or Knight, then a hand/box discriminator.
+        let kind = if r.read_one_bit()? {
+            PieceKind::Knight
+        } else {
+            PieceKind::Lance
+        };
+        return if r.read_one_bit()? {
+            r.read_one_bit()?;
+            Ok(OffBoard::Box(kind))
+        } else {
+            Ok(OffBoard::Hand(kind, color(r.read_one_bit()?)))
+        };
+    }
+    if !r.read_one_bit()? {
+        // 1 1 0 0 c — hand Silver; 1 1 0 1 0 — boxed Silver; 1 1 0 1 1 — boxed
+        // Gold, which encodes no color bit of its own.
+        return if !r.read_one_bit()? {
+            Ok(OffBoard::Hand(PieceKind::Silver, color(r.read_one_bit()?)))
+        } else if r.read_one_bit()? {
+            Ok(OffBoard::Box(PieceKind::Gold))
+        } else {
+            Ok(OffBoard::Box(PieceKind::Silver))
+        };
+    }
+    if !r.read_one_bit()? {
+        // 1 1 1 0 c — hand Gold.
+        return Ok(OffBoard::Hand(PieceKind::Gold, color(r.read_one_bit()?)));
+    }
+    // 1 1 1 1 x — Bishop or Rook, then a hand/box discriminator.
+    let kind = if r.read_one_bit()? {
+        PieceKind::Rook
+    } else {
+        PieceKind::Bishop
+    };
+    if r.read_one_bit()? {
+        r.read_one_bit()?;
+        Ok(OffBoard::Box(kind))
+    } else {
+        Ok(OffBoard::Hand(kind, color(r.read_one_bit()?)))
+    }
+}
+
+/// Unpack a 32-byte [`PackedSfen`] into a [`Position`], the inverse of
+/// [`sfen_pack`].
+///
+/// **The ply is not restored, because the encoding does not carry one.** The
+/// returned position has the ply [`Position::empty`] starts with; a caller that
+/// knows the move number sets it with
+/// [`set_ply`](Position::set_ply).
+///
+/// The hand and piece-box passes have no length between them, so they are read
+/// as one run that ends when every piece of the standard set is accounted for.
+/// A stream claiming more pieces of a kind than exist yields
+/// [`SfenError::PackedPieceOverflow`] rather than reading forever.
+pub fn sfen_unpack(packed: &PackedSfen) -> Result<Position, SfenError> {
+    let mut r = BitReader::new(packed);
+    let mut pos = Position::empty();
+
+    // 1. side to move
+    let side = if r.read_one_bit()? {
+        Color::White
+    } else {
+        Color::Black
+    };
+
+    // 2. king squares, Black then White. `Square::COUNT` means absent.
+    let mut kings = [None; 2];
+    for color in [Color::Black, Color::White] {
+        let raw = r.read_n_bit(7)?;
+        if raw == Square::COUNT as u32 {
+            continue;
+        }
+        let index = u8::try_from(raw).map_err(|_| SfenError::PackedInvalidKingSquare(raw))?;
+        let sq = Square::from_index(index).ok_or(SfenError::PackedInvalidKingSquare(raw))?;
+        kings[color.index()] = Some(sq);
+        pos.board_mut()
+            .set(sq, Some(Piece::new(PieceKind::King, color)));
+    }
+
+    // 3. board pieces, kings skipped because step 2 already placed them
+    let mut box_count = PIECE_BOX_START;
+    for index in 0..Square::COUNT as u8 {
+        let sq = Square::from_index(index).expect("index < COUNT");
+        if kings.iter().any(|k| *k == Some(sq)) {
+            continue;
+        }
+        if let Some(piece) = read_board_piece(&mut r)? {
+            let slot = &mut box_count[piece.kind.index()];
+            if *slot == 0 {
+                return Err(SfenError::PackedPieceOverflow);
+            }
+            *slot -= 1;
+            pos.board_mut().set(sq, Some(piece));
+        }
+    }
+
+    // 4+5. hands and the piece box, as one run: whatever the board did not
+    // claim is still out there, and the stream ends when it is all placed.
+    while box_count.iter().sum::<i32>() > 0 {
+        let entry = read_off_board(&mut r)?;
+        let kind = match entry {
+            OffBoard::Hand(kind, color) => {
+                pos.hand_mut(color).increment(kind);
+                kind
+            },
+            OffBoard::Box(kind) => kind,
+        };
+        let slot = &mut box_count[kind.index()];
+        if *slot == 0 {
+            return Err(SfenError::PackedPieceOverflow);
+        }
+        *slot -= 1;
+    }
+
+    pos.set_side_to_move(side);
+    // The setters above bypass incremental key maintenance, exactly as
+    // `parse_sfen` does; seed the keys once here.
+    pos.refresh_keys();
+    Ok(pos)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sfen::parse_sfen;
+    use crate::sfen::{format_sfen, parse_sfen};
 
     /// Parse an SFEN that may omit the trailing ply field (the reference's own
     /// PackedSfen test vectors are 3-field). Ply does not affect packing.
@@ -307,6 +545,77 @@ mod tests {
             parse_sfen("lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL w - 1").unwrap();
         assert_eq!(sfen_pack(&black)[0] & 1, 0);
         assert_eq!(sfen_pack(&white)[0] & 1, 1);
+    }
+
+    /// Every sfen these tests use, in one place: the cshogi vectors plus the
+    /// parity fixtures (promoted board pieces, both-color hands, sparse boards,
+    /// a board missing its back rank).
+    const ROUND_TRIP_SFENS: [&str; 10] = [
+        "lnsgkgsnl/9/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL w - 1",
+        "lns1kgsnl/9/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL w - 1",
+        "lnsgkgsnl/9/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGK4 w - 1",
+        "lnsgk4/9/ppppppppp/9/9/9/PPPPPPPPP/9/LNSGK4 w GBRgbr 1",
+        "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+        "4k4/9/4r4/9/9/9/4K3B/9/9 b RG2gs2n3p 1",
+        "k8/1P7/G8/1N2P4/9/9/9/9/8K b 2PG2pg 1",
+        "l7l/1r1sg2k1/2nppgsp1/p1p3p1p/1p2N4/2P1P1P2/PPSP1PB1P/3GG1SR1/LN2K3L b BNPp 1",
+        "4k4/3P3+PL/2N2PR2/1L2BNS2/4N4/9/9/9/4K4 b - 1",
+        "9/4k4/9/9/9/9/9/4K4/9 b 9P9p 1",
+    ];
+
+    #[test]
+    fn unpacking_a_packed_position_returns_it() {
+        for sfen in ROUND_TRIP_SFENS {
+            let pos = parse_sfen(sfen).expect("valid sfen");
+            // Compare against what `format_sfen` makes of the input, not the
+            // input itself: hands are written in a fixed order, so a vector
+            // spelling them differently ("GBRgbr" for "RBGrbg") would fail here
+            // over the spelling rather than over the round trip.
+            let canonical = format_sfen(&pos);
+            let restored = sfen_unpack(&sfen_pack(&pos)).expect("unpacks");
+            assert_eq!(
+                format_sfen(&restored),
+                canonical,
+                "round trip changed {sfen}"
+            );
+        }
+    }
+
+    #[test]
+    fn unpacking_repacks_to_the_same_bytes() {
+        // The stronger statement: whatever the decoder built packs back to the
+        // bytes it was handed, so no information was dropped on the way in.
+        for sfen in ROUND_TRIP_SFENS {
+            let packed = sfen_pack(&parse_sfen(sfen).expect("valid sfen"));
+            let restored = sfen_unpack(&packed).expect("unpacks");
+            assert_eq!(sfen_pack(&restored), packed, "repack differs for {sfen}");
+        }
+    }
+
+    #[test]
+    fn the_ply_is_not_restored_because_it_was_never_stored() {
+        let pos = parse_sfen("lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 99")
+            .expect("valid sfen");
+        let restored = sfen_unpack(&sfen_pack(&pos)).expect("unpacks");
+        assert_eq!(
+            restored.ply(),
+            Position::empty().ply(),
+            "unpack must not invent a ply"
+        );
+    }
+
+    #[test]
+    fn an_all_ones_stream_is_rejected_rather_than_looping() {
+        // Every bit set decodes as Rook forever, which overruns the piece box
+        // before the buffer ends.
+        let err = sfen_unpack(&[0xff; PACKED_SFEN_LEN]).expect_err("must not succeed");
+        assert!(
+            matches!(
+                err,
+                SfenError::PackedPieceOverflow | SfenError::PackedInvalidKingSquare(_)
+            ),
+            "unexpected error {err:?}"
+        );
     }
 
     #[test]
