@@ -3,7 +3,9 @@
 use std::sync::{Arc, Mutex};
 
 use attic_search::{PvInfo, PvOutputConfig, PvSink, QSearch};
-use attic_state::{Move, PackedSfen, Position, format_sfen, format_usi_move, sfen_pack};
+use attic_state::{
+    Move, PackedSfen, Position, format_sfen, format_usi_move, parse_sfen, sfen_pack,
+};
 use attic_storage::TranspositionTable;
 
 use crate::options::Options;
@@ -139,7 +141,17 @@ pub fn play_game(
     options: &Options,
     rng: &mut Rng,
 ) -> Game {
-    let mut pos = Position::startpos();
+    // Drawn here rather than in the worker because `Rng::below` is private to
+    // this module, and the worker's `rng` is already threaded through.
+    let mut pos = match options.start_sfens.len() {
+        0 => Position::startpos(),
+        count => {
+            let sfen = &options.start_sfens[rng.below(count)];
+            // Every line was parsed when the file was read, so a failure here
+            // would mean the list was corrupted after startup.
+            parse_sfen(sfen).expect("start positions are validated at startup")
+        },
+    };
     let mut records = Vec::new();
     // Plies played in this game, which is not `records.len()` — the eval-limit
     // filter drops records without shortening the game — and not `pos.ply()`
@@ -283,6 +295,7 @@ mod random_ply_tests {
             random_move_count: count,
             random_move_minply: minply,
             random_move_maxply: maxply,
+            start_sfens: Vec::new(),
             seed: 1,
             hash_mb: 16,
         }
@@ -294,7 +307,10 @@ mod random_ply_tests {
         // move of the game, which is `ply_count` 15.
         let mut rng = Rng::new(3);
         let flags = pick_random_plies(&options(999, 16, 32), &mut rng);
-        assert!(flags[15..32].iter().all(|&f| f), "the whole window is drawn");
+        assert!(
+            flags[15..32].iter().all(|&f| f),
+            "the whole window is drawn"
+        );
         assert!(!flags[14], "the ply before the window stays greedy");
         assert!(!flags[32], "the ply after the window stays greedy");
     }

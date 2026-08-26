@@ -44,17 +44,78 @@ YaneuraOu を 1 とした比です。YaneuraOu 側も同じ評価関数で動か
 | `nnue_halfkp_128x2_32_32` | 1.029                   | 0.999                   |
 | `nnue_halfkp_768x2_16_64` | 1.050                   | 1.042                   |
 
-`cargo xtask build-pgo` は 3 つとも YaneuraOu 以上です。`cargo build --release` は `nnue_kp_256x2_32_32` と `nnue_halfkp_128x2_32_32` で 1.000 を下回ります。AVX-512 のカーネルと、表にない評価関数の速度は測っていません。
+```bash
+attic-gensfen --eval-dir DIR --out FILE \
+              [--depth 9] [--nodes N] [--multipv 5] [--threads N] \
+              [--games N] [--positions N] [--fv-scale 28] \
+              [--format jsonl|psv|pack] [--start-sfens FILE]
+```
 
 ## 対応している評価関数
 
-| type | feature                            |
-| ---- | ---------------------------------- |
-| SFNN | `halfkahm2_1536_15_32_k3k3`        |
-| SFNN | `halfkahm2_2304_15_64_progress8ek` |
-| NNUE | `kp_256x2_32_32`                   |
-| NNUE | `halfkp_256x2_32_32`               |
-| NNUE | `halfkp_128x2_32_32`               |
-| NNUE | `halfkp_768x2_16_64`               |
-| SYM  | `kp_128x2_512`                     |
-| SYM  | `halfkp_128x2_512`                 |
+`pack`'s first 40 bytes are byte-identical to `psv`, so a reader that wants only
+the position and its score can ignore the rest. N comes from `--multipv` and is
+not stored per record; shorter candidate lists are zero-padded so records stay
+seekable by index.
+
+`--depth` and `--nodes` combine; whichever is reached first ends the search.
+`--positions` is checked before a game starts, so a run exceeds it by up to
+`workers × game length`.
+
+`--start-sfens` draws each game's opening from a file, one SFEN per line, and
+without it every game starts from the initial position. A leading `sfen ` and
+CRLF endings are accepted, so the published opening sets load unchanged. Lines
+are all parsed at startup: a bad one stops the run before any worker starts.
+
+It exists because `--random-move-count` only reaches plies inside its window.
+With a fixed start, every game replays the same opening up to
+`--random-move-minply`, and each of those boards is written once per game — over
+one 6.5e8-position corpus that was 18% of the rows, nearly all below ply 16.
+
+**The random-move window is measured from the start of the game, not from the
+opening's move number.** Starting from ply-15 positions with the default window
+randomises what are really plies 31–47. `--max-ply` is a game length too, so the
+cap is unchanged by where the game began.
+
+`--threads` is a ceiling rather than a setting. Concurrency follows the
+machine's idle CPU while running, aiming to leave `--headroom` cores free, so a
+run started on an empty machine gives way when someone else arrives and takes
+the room back when they leave. `--governor-secs 0` fixes it instead, which is
+what a dedicated machine or a benchmark wants.
+
+`scripts/fleet.py` runs one process per machine over SSH; unrecognised
+arguments are passed through.
+
+```bash
+scripts/fleet.py launch --nodes node1,node2 --depth 9 --format pack
+scripts/fleet.py watch          # redraws, with games/sec per node
+scripts/fleet.py status         # one frame
+scripts/fleet.py stop
+```
+
+## Building
+
+Requires `rustup` and `build-essential`. `.cargo/config.toml` applies
+`-C target-cpu=native`, so build on the machine that runs it.
+
+```bash
+cargo build --release -p attic --features sfnn1536
+cargo build --release -p attic --features halfka2304
+cargo build --release -p attic-gensfen --features halfka2304
+```
+
+Linux x86_64 only. The SIMD backend is fixed at build time with no runtime probe:
+AVX-512 (F+BW) if enabled, otherwise AVX2, otherwise scalar. All three are
+bit-identical.
+
+> ⚠ `halfka2304` excludes the AVX-512 path: its tail is fixed at `[u8; 32]` and
+> cannot take L2's 64 outputs (upstream's `kUsePackedTail` is not ported).
+
+## License
+
+GPL-3.0, inherited from upstream YaneuraOu and from attic-shogi. Copyright for
+the ported code belongs to yaneurao, the YaneuraOu contributors, and the author
+of attic-shogi.
+
+- YaneuraOu: <https://github.com/yaneurao/YaneuraOu>
+- attic-shogi: <https://github.com/ishidakei/attic-shogi>
