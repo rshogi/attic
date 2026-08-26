@@ -11,48 +11,157 @@ use std::fmt;
 
 use attic_storage::{ArenaLayout, ArenaSlice, LargePageArena, Section};
 
-#[cfg(not(any(feature = "sfnn1536", feature = "halfka2304")))]
-compile_error!("select a network: --features sfnn1536 or --features halfka2304");
+// Exactly one shape is selected at build time. `cfg` cannot count, so the
+// exclusion is spelled as a chain: each guard names one shape against every
+// shape declared after it, which is three guards rather than all six pairs.
+#[cfg(not(any(
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+    feature = "sfnn_halfkahm2_2304_15_64_progress8ek",
+    feature = "nnue_kp_256x2_32_32",
+    feature = "nnue_halfkp_256x2_32_32",
+    feature = "sym_kp_128x2_512",
+    feature = "sym_halfkp_128x2_512"
+)))]
+compile_error!(
+    "select a network: --features sfnn_halfkahm2_1536_15_32_k3k3, sfnn_halfkahm2_2304_15_64_progress8ek, nnue_kp_256x2_32_32, \
+     nnue_halfkp_256x2_32_32, sym_kp_128x2_512 or sym_halfkp_128x2_512"
+);
 
-#[cfg(all(feature = "sfnn1536", feature = "halfka2304"))]
-compile_error!("sfnn1536 and halfka2304 are different networks; select one");
+#[cfg(all(
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+    any(
+        feature = "sfnn_halfkahm2_2304_15_64_progress8ek",
+        feature = "nnue_kp_256x2_32_32",
+        feature = "nnue_halfkp_256x2_32_32",
+        feature = "sym_kp_128x2_512",
+        feature = "sym_halfkp_128x2_512"
+    )
+))]
+compile_error!("sfnn_halfkahm2_1536_15_32_k3k3 is a different network from the rest; select one");
 
-/// The transformed width.
+#[cfg(all(
+    feature = "sfnn_halfkahm2_2304_15_64_progress8ek",
+    any(
+        feature = "nnue_kp_256x2_32_32",
+        feature = "nnue_halfkp_256x2_32_32",
+        feature = "sym_kp_128x2_512",
+        feature = "sym_halfkp_128x2_512"
+    )
+))]
+compile_error!("sfnn_halfkahm2_2304_15_64_progress8ek is a different network from the rest; select one");
+
+#[cfg(all(
+    feature = "nnue_kp_256x2_32_32",
+    any(
+        feature = "nnue_halfkp_256x2_32_32",
+        feature = "sym_kp_128x2_512",
+        feature = "sym_halfkp_128x2_512"
+    )
+))]
+compile_error!("nnue_kp_256x2_32_32 is a different network from the rest; select one");
+
+#[cfg(all(
+    feature = "nnue_halfkp_256x2_32_32",
+    any(
+        feature = "sym_kp_128x2_512",
+        feature = "sym_halfkp_128x2_512"
+    )
+))]
+compile_error!("nnue_halfkp_256x2_32_32 is a different network from the rest; select one");
+
+#[cfg(all(
+    feature = "sym_kp_128x2_512",
+    feature = "sym_halfkp_128x2_512"
+))]
+compile_error!("the two Manaka shapes differ in their feature space; select one");
+
+// Manaka's own shapes carry `MNW1` files — f32 weights, power sums to the
+// third order, an RMS norm where NNUE clips — so none of the quantised
+// dimensions below apply to them. They are gated off individually rather than
+// by a guard here, and `crate::manaka` holds what they use instead.
+
+/// One perspective's transformed width, before the two halves are joined.
 ///
 /// A build-time switch rather than a runtime one because the kernels in
 /// [`crate::simd`] use these as array lengths and chunk counts. Every width is a
 /// multiple of 32, so the SIMD chunking stays exact.
-#[cfg(feature = "sfnn1536")]
+#[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
 pub const HIDDEN_SIZE: usize = 1_536;
-#[cfg(feature = "halfka2304")]
+#[cfg(feature = "sfnn_halfkahm2_2304_15_64_progress8ek")]
 pub const HIDDEN_SIZE: usize = 2_304;
+#[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
+pub const HIDDEN_SIZE: usize = 256;
 
-/// Unchanged between the two shapes: both are
-/// `FeatureSet<HalfKA_hm2<Side::kFriend>>`, so `features.rs` needs no variant.
+/// Rows of the feature transformer.
+///
+/// The two SFNN shapes share `FeatureSet<HalfKA_hm2<Side::kFriend>>`; the two
+/// standard ones are YaneuraOu's own `FeatureSet<K, P>` and
+/// `HalfKP<Side::kFriend>`. HalfKP is 125,388 here and not the 125,389 Manaka
+/// trains against: Manaka appends a padding row and points both kings at it so
+/// that every position keeps forty tokens, and YaneuraOu never numbered one.
+#[cfg(any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
 pub const NUM_FEATURES: usize = 73_305;
+#[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "sym_kp_128x2_512"))]
+pub const NUM_FEATURES: usize = 1_710;
+#[cfg(feature = "nnue_halfkp_256x2_32_32")]
+pub const NUM_FEATURES: usize = 125_388;
+/// Manaka's HalfKP carries the padding row YaneuraOu's does not.
+#[cfg(feature = "sym_halfkp_128x2_512")]
+pub const NUM_FEATURES: usize = 125_389;
+
+/// Dense stacks in the file. The SFNN shapes bucket — by king rank at 1536, by
+/// game progress at 2304 — and the standard ones have one stack and no bucket.
+#[cfg(any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
 pub const LAYER_STACKS: usize = 9;
+#[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
+pub const LAYER_STACKS: usize = 1;
 
 // fc_0 has 16 outputs: the 16th feeds only the post-fc_2 shortcut, while the
 // first 15 feed both activations.
+#[cfg(any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
 pub const HIDDEN1_DIMS: usize = 15;
+// The standard shapes have no shortcut, so all thirty-two of fc_0's outputs go
+// on to the next layer and there is no split for this to be one side of.
+#[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
+pub const HIDDEN1_DIMS: usize = 32;
 
-#[cfg(feature = "sfnn1536")]
+#[cfg(any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
 pub const HIDDEN2_DIMS: usize = 32;
-#[cfg(feature = "halfka2304")]
+#[cfg(feature = "sfnn_halfkahm2_2304_15_64_progress8ek")]
 pub const HIDDEN2_DIMS: usize = 64;
 
+#[cfg(any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
 pub const FC_0_OUTPUT_DIMS: usize = HIDDEN1_DIMS + 1;
-pub const FC_0_INPUT_DIMS: usize = HIDDEN_SIZE;
-pub const FC_0_PADDED_INPUT_DIMS: usize = HIDDEN_SIZE;
+#[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
+pub const FC_0_OUTPUT_DIMS: usize = HIDDEN1_DIMS;
 
+/// What fc_0 reads.
+///
+/// The SFNN shapes multiply the two perspectives element-wise and hand on a
+/// single width; the standard ones lay them side by side, so fc_0 sees both.
+#[cfg(any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
+pub const FC_0_INPUT_DIMS: usize = HIDDEN_SIZE;
+#[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
+pub const FC_0_INPUT_DIMS: usize = 2 * HIDDEN_SIZE;
+#[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
+pub const FC_0_PADDED_INPUT_DIMS: usize = FC_0_INPUT_DIMS;
+
+#[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
 pub const FC_1_OUTPUT_DIMS: usize = HIDDEN2_DIMS;
+#[cfg(any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
 pub const FC_1_INPUT_DIMS: usize = HIDDEN1_DIMS * 2;
+#[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
+pub const FC_1_INPUT_DIMS: usize = HIDDEN1_DIMS;
+#[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
 pub const FC_1_PADDED_INPUT_DIMS: usize = 32;
 
+#[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
 pub const FC_2_OUTPUT_DIMS: usize = 1;
+#[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
 pub const FC_2_INPUT_DIMS: usize = HIDDEN2_DIMS;
-// fc_2's input is fc_1's output, which is already a multiple of 32 in both
-// shapes, so there is nothing to pad out to.
+// fc_2's input is fc_1's output, which is already a multiple of 32 in every
+// shape, so there is nothing to pad out to.
+#[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
 pub const FC_2_PADDED_INPUT_DIMS: usize = HIDDEN2_DIMS;
 
 #[derive(Clone, Debug)]
@@ -77,8 +186,10 @@ pub struct NetDims {
     pub fc_2_padded_input: usize,
 }
 
+#[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
 impl NetDims {
     /// The shipped SFNN-1536 dimensions.
+    #[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
     pub const STANDARD: NetDims = NetDims {
         hidden_size: HIDDEN_SIZE,
         num_features: NUM_FEATURES,
@@ -111,8 +222,50 @@ impl NetDims {
         fc_2_output: FC_2_OUTPUT_DIMS,
         fc_2_padded_input: 64,
     };
+
+    /// `NNUE_kp_256x2_32_32` — YaneuraOu's `FeatureSet<K, P>` at 256.
+    ///
+    /// Spelled out rather than built from the constants above, the same way
+    /// [`HALFKA2304`](NetDims::HALFKA2304) is, so that the value is the same
+    /// whichever shape the crate was compiled for.
+    ///
+    /// Two things differ from every SFNN shape and both are visible here: one
+    /// dense stack instead of nine, and `fc_0_padded_input` at twice
+    /// `hidden_size` because the perspectives are concatenated rather than
+    /// multiplied together. The layout these produce consumes a real
+    /// `nn.bin` — 893,917 bytes — to the byte.
+    pub const KP256: NetDims = NetDims {
+        hidden_size: 256,
+        num_features: 1_710,
+        layer_stacks: 1,
+        fc_0_output: 32,
+        fc_0_padded_input: 512,
+        fc_1_output: 32,
+        fc_1_padded_input: 32,
+        fc_2_output: 1,
+        fc_2_padded_input: 32,
+    };
+
+    /// `NNUE_halfkp_256x2_32_32` — `HalfKP<Side::kFriend>` at 256.
+    ///
+    /// [`KP256`](NetDims::KP256) with a wider transformer and nothing else
+    /// changed. 125,388 rows, which is one short of what Manaka trains: see
+    /// [`NUM_FEATURES`]. Checked against `halfkp256/hao/nn.bin` at 64,217,066
+    /// bytes.
+    pub const HALFKP256: NetDims = NetDims {
+        hidden_size: 256,
+        num_features: 125_388,
+        layer_stacks: 1,
+        fc_0_output: 32,
+        fc_0_padded_input: 512,
+        fc_1_output: 32,
+        fc_1_padded_input: 32,
+        fc_2_output: 1,
+        fc_2_padded_input: 32,
+    };
 }
 
+#[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
 /// The arena [`Section`]s of one layer stack's six FC arrays.
 #[derive(Clone, Copy, Debug)]
 struct StackSections {
@@ -124,6 +277,7 @@ struct StackSections {
     fc_2_weights: Section<i8>,
 }
 
+#[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
 /// The full arena layout of one network. Recorded once, so that a NUMA replica
 /// can be rebuilt from the same sections without re-deriving anything.
 #[derive(Clone, Debug)]
@@ -134,6 +288,7 @@ struct NetLayout {
     total_bytes: usize,
 }
 
+#[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
 impl NetLayout {
     /// Pack every parameter array into one 64-byte-aligned layout, in file order
     /// (ft_biases, ft_weights, then each stack's fc arrays).
@@ -161,6 +316,7 @@ impl NetLayout {
     }
 }
 
+#[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
 /// One layer stack's parameter arrays, each a 64-byte-aligned view into the
 /// network's single arena.
 #[derive(Debug)]
@@ -173,6 +329,7 @@ pub struct NetworkStack {
     pub fc_2_weights: ArenaSlice<i8>,
 }
 
+#[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
 impl NetworkStack {
     /// Build the six views for stack `sections` against `arena`.
     fn from_sections(arena: &LargePageArena, sections: &StackSections) -> Self {
@@ -187,6 +344,7 @@ impl NetworkStack {
     }
 }
 
+#[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
 /// A loaded SFNN network.
 ///
 /// Every parameter array — `ft_biases`, the ~215 MiB `ft_weights`, and all nine
@@ -207,6 +365,7 @@ pub struct NnueNetwork {
     pub sha256: [u8; 32],
 }
 
+#[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
 impl NnueNetwork {
     /// Assemble a network from a filled `arena` and its `layout`, copying no
     /// data.
@@ -254,6 +413,7 @@ impl NnueNetwork {
     }
 }
 
+#[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
 /// In-place builder for a [`NnueNetwork`]: allocate the arena up front, fill
 /// each parameter array through a mutable view, then [`build`](Self::build).
 /// Filling in place avoids a large temporary for the ~215 MiB `ft_weights`.
@@ -264,6 +424,7 @@ pub struct NnueNetworkBuilder {
     layout: NetLayout,
 }
 
+#[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
 impl NnueNetworkBuilder {
     /// A zeroed builder for the shipped SFNN-1536 dimensions.
     pub fn new(header: NetHeader, sha256: [u8; 32]) -> Self {
@@ -376,7 +537,7 @@ impl std::error::Error for NnueError {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512"))))]
 mod tests {
     use super::*;
     use std::mem::size_of;
@@ -519,9 +680,9 @@ mod tests {
     /// cannot silently select the wrong one.
     #[test]
     fn hidden_size_matches_shape() {
-        #[cfg(not(feature = "halfka2304"))]
+        #[cfg(not(feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
         assert_eq!(HIDDEN_SIZE, 1536);
-        #[cfg(feature = "halfka2304")]
+        #[cfg(feature = "sfnn_halfkahm2_2304_15_64_progress8ek")]
         assert_eq!(HIDDEN_SIZE, 2304);
     }
 
@@ -551,9 +712,9 @@ mod tests {
         assert_eq!(FC_1_INPUT_DIMS, 30);
         assert_eq!(FC_1_PADDED_INPUT_DIMS, 32);
 
-        #[cfg(not(feature = "halfka2304"))]
+        #[cfg(not(feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
         assert_eq!(HIDDEN2_DIMS, 32);
-        #[cfg(feature = "halfka2304")]
+        #[cfg(feature = "sfnn_halfkahm2_2304_15_64_progress8ek")]
         assert_eq!(HIDDEN2_DIMS, 64);
     }
 

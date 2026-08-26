@@ -18,6 +18,22 @@ use attic_state::{Color, Move, Piece, PieceKind, Position, Square};
 
 use crate::types::NUM_FEATURES;
 
+// The tables above (`BOARD_PLANE`, `HAND_PLANE`, `FE_END`) are BonaPiece's own
+// numbering and are shared by all four shapes — the promoted minors fold into
+// gold in every one of them. What differs is only how a piece code is crossed
+// with the king, which is `king_code` / `king_plane` / `encode_feature` below.
+//
+// A compile-time check that the two agree, because the equality used to live
+// in a test: under `kp256` the table is 1,710 rows and an index that still
+// reached past 73,000 would be read, not rejected. `features.rs`'s own bound
+// check is a `debug_assert!` and disappears from the builds that matter.
+#[cfg(any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
+const _: () = assert!(FEATURE_DIMENSION == NUM_FEATURES);
+#[cfg(feature = "nnue_kp_256x2_32_32")]
+const _: () = assert!(NUM_FEATURES == FE_END + 2 * SQ_NB);
+#[cfg(feature = "nnue_halfkp_256x2_32_32")]
+const _: () = assert!(NUM_FEATURES == SQ_NB * FE_END);
+
 /// A single active input-feature index into the `HalfKA_hm2` feature space.
 pub type FeatureIndex = u32;
 
@@ -81,7 +97,24 @@ pub const FEATURE_DIMENSION: usize = SQ_K_COUNT * E_KING;
 
 /// Maximum number of simultaneously active features (`PIECE_NUMBER_NB`). Every
 /// legal shogi position has exactly 40 pieces across board and hands.
+#[cfg(any(
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+    feature = "sfnn_halfkahm2_2304_15_64_progress8ek",
+    feature = "nnue_kp_256x2_32_32",
+    feature = "sym_kp_128x2_512",
+    feature = "sym_halfkp_128x2_512"
+))]
 pub const MAX_ACTIVE_FEATURES: usize = 40;
+
+/// HalfKP stops at `PIECE_NUMBER_KING`.
+///
+/// The kings are the two slots this feature set does not have: crossing a
+/// piece on the perspective's own king says nothing when the piece *is* that
+/// king, so the reference walks thirty-eight and leaves them out. Manaka
+/// numbers forty and points both kings at a padding row, which is the row its
+/// table has and this one does not — see [`crate::types::NUM_FEATURES`].
+#[cfg(feature = "nnue_halfkp_256x2_32_32")]
+pub const MAX_ACTIVE_FEATURES: usize = 38;
 
 /// The seven piece kinds that can sit in a hand, in `BonaPiece` plane order.
 pub(crate) const HAND_KINDS: [PieceKind; 7] = [
@@ -179,6 +212,7 @@ pub(crate) fn hand_plane(kind: PieceKind, is_friend: bool) -> usize {
 }
 
 /// Combine the mirrored king code with a plane-adjusted piece code.
+#[cfg(any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
 #[inline]
 fn encode_feature(sq_k_code: usize, p_adj: usize) -> FeatureIndex {
     debug_assert!(sq_k_code < SQ_K_COUNT);
@@ -189,6 +223,59 @@ fn encode_feature(sq_k_code: usize, p_adj: usize) -> FeatureIndex {
 }
 
 /// Locate `color`'s king.
+#[cfg(any(feature = "nnue_halfkp_256x2_32_32", feature = "sym_halfkp_128x2_512"))]
+#[inline]
+fn encode_feature(sq_k_code: usize, p_adj: usize) -> FeatureIndex {
+    debug_assert!(sq_k_code < SQ_NB);
+    debug_assert!(p_adj < FE_END);
+    let idx = FE_END * sq_k_code + p_adj;
+    debug_assert!(idx < NUM_FEATURES);
+    idx as FeatureIndex
+}
+#[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "sym_kp_128x2_512"))]
+#[inline]
+fn encode_feature(_sq_k_code: usize, p_adj: usize) -> FeatureIndex {
+    debug_assert!(p_adj < NUM_FEATURES);
+    p_adj as FeatureIndex
+}
+#[cfg(any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
+fn king_code(pos: &Position, perspective: Color) -> (usize, bool) {
+    let own = from_persp(king_square(pos, perspective), perspective);
+    let mirror = needs_mirror(own);
+    (mirror_if_needed(own, mirror).index() as usize, mirror)
+}
+#[cfg(any(feature = "nnue_halfkp_256x2_32_32", feature = "sym_halfkp_128x2_512"))]
+fn king_code(pos: &Position, perspective: Color) -> (usize, bool) {
+    (
+        from_persp(king_square(pos, perspective), perspective).index() as usize,
+        false,
+    )
+}
+#[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "sym_kp_128x2_512"))]
+fn king_code(_pos: &Position, _perspective: Color) -> (usize, bool) {
+    (0, false)
+}
+#[cfg(any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
+#[inline]
+fn king_feature(_is_friend: bool, sq_code: usize, sq_k_code: usize) -> Option<FeatureIndex> {
+    Some(encode_feature(sq_k_code, FE_END + sq_code))
+}
+#[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "sym_kp_128x2_512"))]
+#[inline]
+fn king_feature(is_friend: bool, sq_code: usize, sq_k_code: usize) -> Option<FeatureIndex> {
+    let side = if is_friend { 0 } else { SQ_NB };
+    Some(encode_feature(sq_k_code, FE_END + side + sq_code))
+}
+#[cfg(feature = "nnue_halfkp_256x2_32_32")]
+#[inline]
+fn king_feature(_is_friend: bool, _sq_code: usize, _sq_k_code: usize) -> Option<FeatureIndex> {
+    None
+}
+#[cfg(feature = "sym_halfkp_128x2_512")]
+#[inline]
+fn king_feature(_is_friend: bool, _sq_code: usize, _sq_k_code: usize) -> Option<FeatureIndex> {
+    Some((NUM_FEATURES - 1) as FeatureIndex)
+}
 ///
 /// # Panics
 /// Panics if `color` has no king: every position fed to the evaluator must have
@@ -245,9 +332,7 @@ pub(crate) fn active_features_into(
     list.clear();
     list.reserve(MAX_ACTIVE_FEATURES);
 
-    let own_king_persp = from_persp(king_square(pos, perspective), perspective);
-    let mirror = needs_mirror(own_king_persp);
-    let sq_k_code = mirror_if_needed(own_king_persp, mirror).index() as usize;
+    let (sq_k_code, mirror) = king_code(pos, perspective);
 
     for index in 0..Square::COUNT as u8 {
         let sq = Square::from_index(index).expect("index < Square::COUNT is valid");
@@ -258,11 +343,14 @@ pub(crate) fn active_features_into(
         let sq_persp = mirror_if_needed(from_persp(sq, perspective), mirror);
         let sq_code = sq_persp.index() as usize;
 
-        let p_adj = if piece.kind == PieceKind::King {
-            FE_END + sq_code
-        } else {
-            board_plane(piece.kind, piece.promoted, is_friend) + sq_code
-        };
+        if piece.kind == PieceKind::King {
+            // `None` is YaneuraOu's HalfKP, which numbers no king at all.
+            if let Some(feature) = king_feature(is_friend, sq_code, sq_k_code) {
+                list.push(feature);
+            }
+            continue;
+        }
+        let p_adj = board_plane(piece.kind, piece.promoted, is_friend) + sq_code;
         list.push(encode_feature(sq_k_code, p_adj));
     }
 
@@ -410,20 +498,21 @@ impl Dirty {
     /// Encode this slot into the feature index for `persp`, whose own-king code
     /// is `(sq_k_code, mirror)`.
     #[inline]
-    fn encode(self, persp: Color, sq_k_code: usize, mirror: bool) -> FeatureIndex {
+    fn encode(self, persp: Color, sq_k_code: usize, mirror: bool) -> Option<FeatureIndex> {
         match self {
             Dirty::Board { sq, piece } => {
                 let sq_code = mirror_if_needed(from_persp(sq, persp), mirror).index() as usize;
-                let p_adj = if piece.kind == PieceKind::King {
-                    FE_END + sq_code
-                } else {
-                    board_plane(piece.kind, piece.promoted, piece.color == persp) + sq_code
-                };
-                encode_feature(sq_k_code, p_adj)
-            }
-            Dirty::Hand { color, kind, count } => {
-                encode_feature(sq_k_code, hand_plane(kind, color == persp) + count)
-            }
+                if piece.kind == PieceKind::King {
+                    return king_feature(piece.color == persp, sq_code, sq_k_code);
+                }
+                let p_adj =
+                    board_plane(piece.kind, piece.promoted, piece.color == persp) + sq_code;
+                Some(encode_feature(sq_k_code, p_adj))
+            },
+            Dirty::Hand { color, kind, count } => Some(encode_feature(
+                sq_k_code,
+                hand_plane(kind, color == persp) + count,
+            )),
         }
     }
 }
@@ -548,13 +637,20 @@ impl MoveDelta {
             let sq_k_code = mirror_if_needed(king_persp, mirror).index() as usize;
 
             let mut pd = PerspectiveDelta::default();
+            // A slot that encodes to nothing is dropped rather than counted.
+            // Only HalfKP produces one, and only for a king — whose move that
+            // space answers with a full refresh anyway.
             for d in removed.iter().flatten() {
-                pd.removed[pd.n_removed] = d.encode(persp, sq_k_code, mirror);
-                pd.n_removed += 1;
+                if let Some(index) = d.encode(persp, sq_k_code, mirror) {
+                    pd.removed[pd.n_removed] = index;
+                    pd.n_removed += 1;
+                }
             }
             for d in added.iter().flatten() {
-                pd.added[pd.n_added] = d.encode(persp, sq_k_code, mirror);
-                pd.n_added += 1;
+                if let Some(index) = d.encode(persp, sq_k_code, mirror) {
+                    pd.added[pd.n_added] = index;
+                    pd.n_added += 1;
+                }
             }
             Some(pd)
         };
@@ -565,7 +661,7 @@ impl MoveDelta {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512"))))]
 mod tests {
     use super::*;
     use attic_state::{parse_sfen, parse_usi_move};

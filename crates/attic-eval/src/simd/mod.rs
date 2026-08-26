@@ -39,7 +39,7 @@ pub mod avx2;
 #[cfg(target_arch = "x86_64")]
 pub mod avx2_post_ft;
 
-// Excluded under `halfka2304`: the post-FT chain there ends in `affine_padded32`
+// Excluded under `sfnn_halfkahm2_2304_15_64_progress8ek`: the post-FT chain there ends in `affine_padded32`
 // helpers that take a fixed `[u8; 32]`, and fc_1's output is 64 in that shape.
 // Upstream C++ takes a separate `kUsePackedTail` path for exactly this case
 // (`AVX512 && kHidden2Dims == 64`), which has no port here yet. The target for
@@ -47,10 +47,10 @@ pub mod avx2_post_ft;
 // not compiling it — write the packed-tail kernels before running 2304 on an
 // AVX-512 host.
 #[allow(dead_code)]
-#[cfg(all(target_arch = "x86_64", feature = "sfnn1536"))]
+#[cfg(all(target_arch = "x86_64", feature = "sfnn_halfkahm2_1536_15_32_k3k3"))]
 pub mod avx512;
 #[allow(dead_code)]
-#[cfg(all(target_arch = "x86_64", feature = "sfnn1536"))]
+#[cfg(all(target_arch = "x86_64", feature = "sfnn_halfkahm2_1536_15_32_k3k3"))]
 pub mod avx512_post_ft;
 
 /// Which kernel backend this build compiled into the forward pass.

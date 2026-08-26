@@ -7,6 +7,11 @@
 //! The network file is staged locally and never committed, so when it is absent
 //! the test prints a notice and passes.
 
+#![cfg(any(
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+))]
+
 use std::path::PathBuf;
 
 use attic_eval::{FV_SCALE_DEFAULT, NnueNetwork, evaluate, fv_scale, load_network, set_fv_scale};

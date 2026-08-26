@@ -8,6 +8,11 @@
 //! the test prints a notice and passes and the default `cargo test` run stays
 //! green everywhere.
 
+#![cfg(any(
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+))]
+
 use std::path::PathBuf;
 
 use attic_eval::{Accumulator, NnueNetwork, evaluate, evaluate_with, load_network};

@@ -19,11 +19,44 @@ use std::path::Path;
 
 use crate::types::{NetDims, NetHeader, NnueError, NnueNetwork, NnueNetworkBuilder};
 
+// One version word for every NNUE architecture, so it identifies the format
+// and never the shape — which is why the hashes below have to.
 const NNUE_VERSION: u32 = 0x7AF3_2F16;
+
+#[cfg(any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
 const NNUE_HASH_VALUE: u32 = 0x3C20_3B32;
+#[cfg(any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
 const FT_HASH: u32 = 0x5F13_4AB8;
+#[cfg(any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
 const NET_HASH: u32 = 0x6333_718A;
+#[cfg(any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
 const ARCH_STRING: &str = "ModelType=SFNNWithoutPsqt;Features=HalfKA_hm(Friend)[73305->1536x2],Network=AffineTransform[1<-32](ClippedReLU[32](AffineTransform[32<-15](ClippedReLU[15](AffineTransform[15<-3072](InputSlice[3072(0:3072)]))))){LayerStack=9}";
+
+// The standard shapes' hashes were read out of files YaneuraOu itself wrote —
+// `external/kp256.zip` and `assets/eval/halfkp256/hao/nn.bin` — rather than
+// derived from the C++ template parameters a second time. A mismatch here is
+// only a warning, so a wrong constant would not fail: it would quietly print
+// that every correct file is suspect.
+//
+// Note `AffineTransform[32<-512]` in the strings: a build with SSSE3 writes
+// `AffineTransformSparseInput` there, and the hash is the same either way.
+#[cfg(feature = "nnue_kp_256x2_32_32")]
+const NNUE_HASH_VALUE: u32 = 0x5C64_64A9;
+#[cfg(feature = "nnue_kp_256x2_32_32")]
+const FT_HASH: u32 = 0x3F57_15FF;
+#[cfg(feature = "nnue_kp_256x2_32_32")]
+const NET_HASH: u32 = 0x6333_7156;
+#[cfg(feature = "nnue_kp_256x2_32_32")]
+const ARCH_STRING: &str = "Features=K+P[1710->256x2],Network=AffineTransform[1<-32](ClippedReLU[32](AffineTransform[32<-32](ClippedReLU[32](AffineTransform[32<-512](InputSlice[512(0:512)])))))";
+
+#[cfg(feature = "nnue_halfkp_256x2_32_32")]
+const NNUE_HASH_VALUE: u32 = 0x3E5A_A6EE;
+#[cfg(feature = "nnue_halfkp_256x2_32_32")]
+const FT_HASH: u32 = 0x5D69_D7B8;
+#[cfg(feature = "nnue_halfkp_256x2_32_32")]
+const NET_HASH: u32 = 0x6333_7156;
+#[cfg(feature = "nnue_halfkp_256x2_32_32")]
+const ARCH_STRING: &str = "Features=HalfKP(Friend)[125388->256x2],Network=AffineTransform[1<-32](ClippedReLU[32](AffineTransform[32<-32](ClippedReLU[32](AffineTransform[32<-512](InputSlice[512(0:512)])))))";
 const LEB128_MAGIC: &[u8; 17] = b"COMPRESSED_LEB128";
 
 /// Warning body for a feature-transformer or layer-stack hash mismatch,
@@ -75,9 +108,9 @@ fn parse_from_bytes(
     if ft_hash != FT_HASH {
         warnings.push(SECTION_HASH_WARNING.to_string());
     }
-    read_leb128_i16_into(&mut reader, builder.ft_biases_mut())?;
+    read_i16_block_into(&mut reader, builder.ft_biases_mut())?;
     scale_ft_i16_x2_in_place(builder.ft_biases_mut())?;
-    read_leb128_i16_into(&mut reader, builder.ft_weights_mut())?;
+    read_i16_block_into(&mut reader, builder.ft_weights_mut())?;
     scale_ft_i16_x2_in_place(builder.ft_weights_mut())?;
     for i in 0..dims.layer_stacks {
         read_network_block(&mut reader, &mut builder, i, &mut warnings)?;
@@ -123,6 +156,16 @@ fn read_header(
 
 /// Decode one signed-LEB128 block straight into `out`, whose length is the
 /// value count.
+fn read_i16_block_into(reader: &mut ByteReader, out: &mut [i16]) -> Result<(), NnueError> {
+    if reader.peek_slice(LEB128_MAGIC.len()) == Some(&LEB128_MAGIC[..]) {
+        return read_leb128_i16_into(reader, out);
+    }
+    let raw = reader.read_slice(out.len() * 2)?;
+    for (slot, bytes) in out.iter_mut().zip(raw.chunks_exact(2)) {
+        *slot = i16::from_le_bytes([bytes[0], bytes[1]]);
+    }
+    Ok(())
+}
 fn read_leb128_i16_into(reader: &mut ByteReader, out: &mut [i16]) -> Result<(), NnueError> {
     let count = out.len();
     let magic = reader.read_slice(LEB128_MAGIC.len())?;
@@ -275,6 +318,14 @@ impl<'a> ByteReader<'a> {
         let s = &self.bytes[self.pos..end];
         self.pos = end;
         Ok(s)
+    }
+
+    /// Look at the next `n` bytes without consuming them.
+    ///
+    /// `None` when fewer than `n` remain, which is an ordinary answer here and
+    /// not an error: the only caller is asking whether a magic is present.
+    fn peek_slice(&self, n: usize) -> Option<&'a [u8]> {
+        self.bytes.get(self.pos..self.pos.checked_add(n)?)
     }
 
     fn read_u32_le(&mut self) -> Result<u32, NnueError> {
@@ -848,7 +899,7 @@ mod tests {
     /// Skipped unless `ATTIC_HALFKA2304_NN` names a file — the network is
     /// 180MB and lives outside this repository.
     #[test]
-    fn loads_halfka2304_network() {
+    fn loads_sfnn_halfkahm2_2304_15_64_progress8ek_network() {
         let Ok(path) = std::env::var("ATTIC_HALFKA2304_NN") else {
             return;
         };
