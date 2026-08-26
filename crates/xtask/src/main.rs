@@ -6,7 +6,9 @@ use std::process::{Child, Command as ProcessCommand, ExitCode, Stdio};
 use clap::{Parser, Subcommand, ValueEnum};
 
 use attic_state::packed_sfen::sfen_pack;
-use attic_state::{Position, parse_sfen, parse_usi_move};
+use attic_state::{
+    PACKED_SFEN_LEN, PackedSfen, Position, format_sfen, parse_sfen, parse_usi_move, sfen_unpack,
+};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -36,6 +38,32 @@ enum Command {
     /// Convert a hand-authored `.db` text book into a `.ybb` binary book plus an
     /// expected-results JSON, using the workspace PackedSfen encoder.
     CaptureBook(CaptureBookArgs),
+    /// Turn a file of 32-byte PackedSfen records into an SFEN opening list for
+    /// `attic-gensfen --start-sfens`.
+    UnpackStarts(UnpackStartsArgs),
+}
+
+#[derive(clap::Args, Debug)]
+struct UnpackStartsArgs {
+    /// Input: 32-byte PackedSfen records back to back, no header.
+    ///
+    /// This is what falls out of slicing a `--format pack` corpus: each record
+    /// there begins with the packed position, so a filter that keeps the first
+    /// 32 of every 60 bytes produces this directly.
+    #[arg(long)]
+    input: PathBuf,
+    /// Output: one `sfen ...` line per position, CRLF-terminated to match the
+    /// opening sets already in use.
+    #[arg(long)]
+    output: PathBuf,
+    /// Move number written into every line.
+    ///
+    /// PackedSfen stores board, side and hands but not the ply, so the number
+    /// cannot be recovered from the input and has to be asserted. It is only
+    /// cosmetic for generation — the random-move window counts from the start of
+    /// the game — but it is what tells a later reader where these came from.
+    #[arg(long, default_value_t = 15)]
+    ply: u16,
 }
 
 #[derive(clap::Args, Debug)]
@@ -194,57 +222,67 @@ fn main() -> ExitCode {
         Command::Hello => {
             println!("hello from xtask");
             ExitCode::SUCCESS
-        }
+        },
         Command::BuildReference(args) => match build_reference(&args) {
             Ok(path) => {
                 println!("reference binary: {}", path.display());
                 ExitCode::SUCCESS
-            }
+            },
             Err(e) => {
                 eprintln!("xtask build-reference: {e}");
                 ExitCode::FAILURE
-            }
+            },
         },
         Command::CapturePerft(args) => match capture_perft(&args) {
             Ok(path) => {
                 println!("perft fixture: {}", path.display());
                 ExitCode::SUCCESS
-            }
+            },
             Err(e) => {
                 eprintln!("xtask capture-perft: {e}");
                 ExitCode::FAILURE
-            }
+            },
         },
         Command::CaptureEval(args) => match capture_eval(&args) {
             Ok(path) => {
                 println!("eval fixture: {}", path.display());
                 ExitCode::SUCCESS
-            }
+            },
             Err(e) => {
                 eprintln!("xtask capture-eval: {e}");
                 ExitCode::FAILURE
-            }
+            },
         },
         Command::CaptureSearch(args) => match capture_search(&args) {
             Ok(path) => {
                 println!("search fixture: {}", path.display());
                 ExitCode::SUCCESS
-            }
+            },
             Err(e) => {
                 eprintln!("xtask capture-search: {e}");
                 ExitCode::FAILURE
-            }
+            },
+        },
+        Command::UnpackStarts(args) => match unpack_starts(&args) {
+            Ok(count) => {
+                println!("{count} positions written to {}", args.output.display());
+                ExitCode::SUCCESS
+            },
+            Err(e) => {
+                eprintln!("xtask unpack-starts: {e}");
+                ExitCode::FAILURE
+            },
         },
         Command::CaptureBook(args) => match capture_book(&args) {
             Ok((ybb, expected)) => {
                 println!("ybb book: {}", ybb.display());
                 println!("expected results: {}", expected.display());
                 ExitCode::SUCCESS
-            }
+            },
             Err(e) => {
                 eprintln!("xtask capture-book: {e}");
                 ExitCode::FAILURE
-            }
+            },
         },
     }
 }
@@ -279,6 +317,56 @@ fn build_reference(args: &BuildReferenceArgs) -> Result<PathBuf, String> {
         ));
     }
     Ok(binary)
+}
+
+/// Decode 32-byte PackedSfen records into an SFEN opening list.
+///
+/// Streamed rather than collected: the input this was written for is millions of
+/// positions, and the text is several times the size of the binary.
+fn unpack_starts(args: &UnpackStartsArgs) -> Result<usize, String> {
+    let bytes =
+        fs::read(&args.input).map_err(|e| format!("cannot read {}: {e}", args.input.display()))?;
+    if bytes.is_empty() {
+        return Err(format!("{} is empty", args.input.display()));
+    }
+    if !bytes.len().is_multiple_of(PACKED_SFEN_LEN) {
+        return Err(format!(
+            "{} is {} bytes, not a whole number of {PACKED_SFEN_LEN}-byte records",
+            args.input.display(),
+            bytes.len()
+        ));
+    }
+
+    let file = fs::File::create(&args.output)
+        .map_err(|e| format!("cannot write {}: {e}", args.output.display()))?;
+    let mut out = std::io::BufWriter::new(file);
+    let mut count = 0usize;
+
+    for (index, chunk) in bytes.chunks_exact(PACKED_SFEN_LEN).enumerate() {
+        let packed: PackedSfen = chunk.try_into().expect("chunks_exact yields exact widths");
+        let mut pos = sfen_unpack(&packed).map_err(|e| format!("record {index}: {e}"))?;
+        // Re-pack and compare. The input comes from elsewhere — a corpus sliced
+        // by an external tool — so a file that is misaligned or truncated can
+        // still decode into a position that is merely wrong, and this is what
+        // separates that from a position that is right. `sfen_pack` ignores the
+        // ply, so the check holds before or after `set_ply`.
+        if sfen_pack(&pos) != packed {
+            return Err(format!(
+                "record {index}: decoded position does not re-pack to its input; \
+                 the file is probably misaligned"
+            ));
+        }
+        pos.set_ply(args.ply);
+        // CRLF because the opening sets already in use are written that way, and
+        // a reader that hashes the raw line would see a different key otherwise.
+        write!(out, "sfen {}\r\n", format_sfen(&pos))
+            .map_err(|e| format!("cannot write {}: {e}", args.output.display()))?;
+        count += 1;
+    }
+
+    out.flush()
+        .map_err(|e| format!("cannot write {}: {e}", args.output.display()))?;
+    Ok(count)
 }
 
 fn run_make(source_dir: &Path, args: &BuildReferenceArgs, extra: &[&str]) -> Result<(), String> {
@@ -387,7 +475,7 @@ fn drive_perft(binary: &Path, sfen: &str, moves: &str, depths: &[u32]) -> Result
             let stderr = read_stderr(&mut child);
             wait_child(&mut child);
             return Err(combine_engine_error(&parse_err, &stderr));
-        }
+        },
     };
 
     let status = child
@@ -551,7 +639,7 @@ fn drive_eval(binary: &Path, sfen: &str, moves: &str) -> Result<i32, String> {
             let stderr = read_stderr(&mut child);
             wait_child(&mut child);
             return Err(combine_engine_error(&parse_err, &stderr));
-        }
+        },
     };
 
     let status = child
@@ -734,7 +822,7 @@ fn drive_search(
             drop(stdin);
             wait_child(&mut child);
             return Err(combine_engine_error(&parse_err, &stderr));
-        }
+        },
     };
 
     // Drop stdin now that bestmove has been read. This sends EOF to the engine,
@@ -798,7 +886,7 @@ fn parse_info_line(line: &str) -> Option<ParsedInfo> {
         match tok {
             "depth" => {
                 depth = tokens.next().and_then(|s| s.parse().ok());
-            }
+            },
             "score" => {
                 let kind = tokens.next()?;
                 let val: i32 = tokens.next()?.parse().ok()?;
@@ -807,18 +895,18 @@ fn parse_info_line(line: &str) -> Option<ParsedInfo> {
                     "mate" => SearchScore::Mate(val),
                     _ => return None,
                 });
-            }
+            },
             "nodes" => {
                 nodes = tokens.next().and_then(|s| s.parse().ok());
-            }
+            },
             "pv" => {
                 pv = tokens.map(|s| s.to_string()).collect();
                 break;
-            }
+            },
             "lowerbound" | "upperbound" => {
                 is_bound = true;
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
 
@@ -936,10 +1024,10 @@ fn render_search_fixture(
     match result.score {
         SearchScore::Cp(v) => {
             out.push_str(&format!("  \"score\": {{ \"cp\": {v} }},\n"));
-        }
+        },
         SearchScore::Mate(v) => {
             out.push_str(&format!("  \"score\": {{ \"mate\": {v} }},\n"));
-        }
+        },
     }
     out.push_str(&format!("  \"nodes\": {},\n", result.nodes));
     out.push_str("  \"pv\": [");
