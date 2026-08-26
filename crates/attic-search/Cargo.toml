@@ -25,8 +25,12 @@ quick-draw = ["attic-state/quick-draw", "attic-eval/quick-draw"]
 # Network selection, passed through to attic-eval. Shapes that keep their
 # layer-stack coefficients outside `nn.bin` also make the loader pick up the
 # `progress.bin` beside it.
-sfnn1536 = ["attic-eval/sfnn1536"]
-halfka2304 = ["attic-eval/halfka2304"]
+sfnn_halfkahm2_1536_15_32_k3k3 = ["attic-eval/sfnn_halfkahm2_1536_15_32_k3k3"]
+sfnn_halfkahm2_2304_15_64_progress8ek = ["attic-eval/sfnn_halfkahm2_2304_15_64_progress8ek"]
+nnue_kp_256x2_32_32 = ["attic-eval/nnue_kp_256x2_32_32"]
+nnue_halfkp_256x2_32_32 = ["attic-eval/nnue_halfkp_256x2_32_32"]
+sym_kp_128x2_512 = ["attic-eval/sym_kp_128x2_512"]
+sym_halfkp_128x2_512 = ["attic-eval/sym_halfkp_128x2_512"]
 
 [dev-dependencies]
 serde = { version = "~1.0", features = ["derive"] }

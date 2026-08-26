@@ -21,8 +21,12 @@ attic-state = { path = "../attic-state", default-features = false }
 default = ["quick-draw"]
 quick-draw = ["attic-protocol/quick-draw", "attic-state/quick-draw"]
 # Network selection; exactly one is required. See attic-eval's features.
-sfnn1536 = ["attic-protocol/sfnn1536"]
-halfka2304 = ["attic-protocol/halfka2304"]
+sfnn_halfkahm2_1536_15_32_k3k3 = ["attic-protocol/sfnn_halfkahm2_1536_15_32_k3k3"]
+sfnn_halfkahm2_2304_15_64_progress8ek = ["attic-protocol/sfnn_halfkahm2_2304_15_64_progress8ek"]
+nnue_kp_256x2_32_32 = ["attic-protocol/nnue_kp_256x2_32_32"]
+nnue_halfkp_256x2_32_32 = ["attic-protocol/nnue_halfkp_256x2_32_32"]
+sym_kp_128x2_512 = ["attic-protocol/sym_kp_128x2_512"]
+sym_halfkp_128x2_512 = ["attic-protocol/sym_halfkp_128x2_512"]
 
 [dev-dependencies]
 serde = { version = "~1.0", features = ["derive"] }

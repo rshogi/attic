@@ -279,12 +279,33 @@ impl Accumulator {
     /// Layout is `[stm-half | ~stm-half]`; each half is the pairwise
     /// element-wise multiply described in the module docs. Byte-for-byte
     /// equivalent to the reference scalar `transformer_ewm`.
+    #[cfg(any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
     pub fn output_transform(&self, stm: Color, out: &mut [u8; FT_OUTPUT_DIMS]) {
         const HALF: usize = HIDDEN_SIZE / 2;
         let stm_half = &self.perspectives[stm.index()];
         let other_half = &self.perspectives[stm.flip().index()];
         post_ft_kernel::ewm_one_perspective(stm_half, &mut out[..HALF]);
         post_ft_kernel::ewm_one_perspective(other_half, &mut out[HALF..]);
+    }
+
+    /// The standard shapes' output transform: clip each accumulator to a byte
+    /// and lay the two perspectives side by side.
+    ///
+    /// No element-wise multiply and so no halving — `nnue_feature_transformer.h`
+    /// clamps to `[0, 127]` with no shift, and fc_0 reads both halves, which is
+    /// why [`FT_OUTPUT_DIMS`] is twice [`HIDDEN_SIZE`] here and equal to it for
+    /// the SFNN shapes above.
+    #[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
+    pub fn output_transform(&self, stm: Color, out: &mut [u8; FT_OUTPUT_DIMS]) {
+        let halves = [
+            &self.perspectives[stm.index()],
+            &self.perspectives[stm.flip().index()],
+        ];
+        for (half, chunk) in halves.iter().zip(out.chunks_exact_mut(HIDDEN_SIZE)) {
+            for (slot, &sum) in chunk.iter_mut().zip(half.iter()) {
+                *slot = sum.clamp(0, 127) as u8;
+            }
+        }
     }
 }
 
