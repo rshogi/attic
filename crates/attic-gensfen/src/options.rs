@@ -96,6 +96,20 @@ pub struct Options {
     /// buys — the position is already decided — so the window closes while the
     /// opening is still open.
     pub random_move_maxply: u16,
+    /// Positions to start games from, one drawn per game. Empty plays from the
+    /// initial position, which is the historical behaviour.
+    ///
+    /// `--random-move-count` only reaches plies inside its window, so with a
+    /// fixed start every game replays the same opening up to
+    /// `--random-move-minply` and those boards are recorded once per game. Over
+    /// 6.5e8 positions that was 18% of the corpus, nearly all of it below ply
+    /// 16. Starting past the window spends the search on positions that are
+    /// distinct to begin with.
+    ///
+    /// Stored as the sfen body — no `sfen ` prefix — and parsed per game rather
+    /// than kept as `Position`, so each game gets a position with no history
+    /// behind it. One parse against a depth-9 search is nothing.
+    pub start_sfens: Vec<String>,
     pub seed: u64,
     /// Hash size per worker, in MB. Small on purpose: hundreds of workers each
     /// hold one, and a fixed-depth search does not benefit from a large table
@@ -112,7 +126,7 @@ usage: attic-gensfen --eval-dir DIR --out FILE
                      [--fv-scale 28] [--format jsonl|psv|pack]
                      [--headroom 8] [--governor-secs 30] [--eval-limit N]
                      [--random-move-count 5] [--random-move-minply 16]
-                     [--random-move-maxply 32]
+                     [--random-move-maxply 32] [--start-sfens FILE]
                      [--seed 1] [--hash 16]";
 
     pub fn parse(args: impl Iterator<Item = String>) -> Result<Self, String> {
@@ -135,15 +149,13 @@ usage: attic-gensfen --eval-dir DIR --out FILE
         let mut random_move_count = 5u32;
         let mut random_move_minply = 16u16;
         let mut random_move_maxply = 32u16;
+        let mut start_sfens: Option<PathBuf> = None;
         let mut seed = 1u64;
         let mut hash_mb = 16usize;
 
         let mut args = args.peekable();
         while let Some(flag) = args.next() {
-            let mut value = || {
-                args.next()
-                    .ok_or_else(|| format!("{flag} needs a value"))
-            };
+            let mut value = || args.next().ok_or_else(|| format!("{flag} needs a value"));
             match flag.as_str() {
                 "--eval-dir" => eval_dir = Some(PathBuf::from(value()?)),
                 "--out" => out = Some(PathBuf::from(value()?)),
@@ -163,13 +175,14 @@ usage: attic-gensfen --eval-dir DIR --out FILE
                 "--format" => format = parse_field(&value()?, "--format")?,
                 "--random-move-count" => {
                     random_move_count = parse_field(&value()?, "--random-move-count")?;
-                }
+                },
                 "--random-move-minply" => {
                     random_move_minply = parse_field(&value()?, "--random-move-minply")?;
-                }
+                },
                 "--random-move-maxply" => {
                     random_move_maxply = parse_field(&value()?, "--random-move-maxply")?;
-                }
+                },
+                "--start-sfens" => start_sfens = Some(PathBuf::from(value()?)),
                 "--seed" => seed = parse_field(&value()?, "--seed")?,
                 "--hash" => hash_mb = parse_field(&value()?, "--hash")?,
                 other => return Err(format!("unknown flag {other}")),
@@ -193,6 +206,10 @@ usage: attic-gensfen --eval-dir DIR --out FILE
                  --random-move-maxply {random_move_maxply}"
             ));
         }
+        let start_sfens = match start_sfens {
+            Some(path) => load_start_sfens(&path)?,
+            None => Vec::new(),
+        };
 
         Ok(Options {
             eval_dir: eval_dir.ok_or("--eval-dir is required")?,
@@ -214,6 +231,7 @@ usage: attic-gensfen --eval-dir DIR --out FILE
             random_move_count,
             random_move_minply,
             random_move_maxply,
+            start_sfens,
             seed,
             hash_mb,
         })
@@ -223,4 +241,133 @@ usage: attic-gensfen --eval-dir DIR --out FILE
 fn parse_field<T: std::str::FromStr>(raw: &str, flag: &str) -> Result<T, String> {
     raw.parse()
         .map_err(|_| format!("{flag}: cannot parse {raw:?}"))
+}
+
+#[cfg(test)]
+mod start_sfen_tests {
+    use super::*;
+
+    /// A file that deletes itself, so a failing assert does not leave the temp
+    /// directory holding fixtures.
+    struct TempFile(PathBuf);
+
+    impl TempFile {
+        fn new(tag: &str, body: &str) -> Self {
+            let path = std::env::temp_dir()
+                .join(format!("attic-gensfen-{}-{tag}.sfen", std::process::id()));
+            std::fs::write(&path, body).expect("write fixture");
+            Self(path)
+        }
+    }
+
+    impl Drop for TempFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    fn parse_with(extra: &[&str]) -> Result<Options, String> {
+        let mut args = vec!["--eval-dir", "eval", "--out", "out"];
+        args.extend_from_slice(extra);
+        Options::parse(args.into_iter().map(String::from))
+    }
+
+    #[test]
+    fn without_the_flag_there_are_no_start_positions() {
+        let options = parse_with(&[]).expect("parses");
+        assert!(
+            options.start_sfens.is_empty(),
+            "the default must stay the initial position"
+        );
+    }
+
+    #[test]
+    fn the_sfen_prefix_and_crlf_are_stripped() {
+        // Both are how the published opening sets are written, so a file copied
+        // from there has to load unchanged.
+        let file = TempFile::new(
+            "prefixed",
+            "sfen lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1\r\n\
+             sfen 4k4/9/4r4/9/9/9/4K3B/9/9 b RG2gs2n3p 1\r\n",
+        );
+        let options = parse_with(&["--start-sfens", file.0.to_str().unwrap()]).expect("parses");
+        assert_eq!(options.start_sfens.len(), 2);
+        assert!(
+            options.start_sfens.iter().all(|s| !s.starts_with("sfen ")),
+            "stored lines must be sfen bodies"
+        );
+        assert!(
+            options.start_sfens.iter().all(|s| !s.contains('\r')),
+            "a stray CR would reach the parser"
+        );
+    }
+
+    #[test]
+    fn blank_lines_are_skipped_rather_than_failing() {
+        let file = TempFile::new(
+            "blanks",
+            "\nlnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1\n\n",
+        );
+        let options = parse_with(&["--start-sfens", file.0.to_str().unwrap()]).expect("parses");
+        assert_eq!(options.start_sfens.len(), 1);
+    }
+
+    #[test]
+    fn a_file_with_no_positions_is_rejected() {
+        let file = TempFile::new("empty", "\n\n");
+        let err = parse_with(&["--start-sfens", file.0.to_str().unwrap()])
+            .err()
+            .expect("an empty list would silently play from the initial position");
+        assert!(err.contains("no positions"), "unexpected error {err:?}");
+    }
+
+    #[test]
+    fn a_bad_line_names_its_line_number() {
+        let file = TempFile::new(
+            "bad",
+            "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1\nnonsense\n",
+        );
+        let err = parse_with(&["--start-sfens", file.0.to_str().unwrap()])
+            .err()
+            .expect("must not parse");
+        assert!(err.contains("line 2"), "unexpected error {err:?}");
+    }
+
+    #[test]
+    fn a_missing_file_is_reported_rather_than_ignored() {
+        let err = parse_with(&["--start-sfens", "/nonexistent/attic/openings.sfen"])
+            .err()
+            .expect("must not parse");
+        assert!(err.contains("cannot read"), "unexpected error {err:?}");
+    }
+}
+
+/// Read a starting-position file: one sfen per line, blank lines skipped.
+///
+/// The published opening sets carry a `sfen ` prefix and CRLF line endings, so
+/// both are accepted and stripped here — the stored strings are sfen bodies,
+/// which is what `parse_sfen` wants. Every line is parsed now rather than at
+/// first use: a typo in a file of millions should stop the run before a
+/// hundred workers have been started, not one game into whichever shard drew it.
+fn load_start_sfens(path: &std::path::Path) -> Result<Vec<String>, String> {
+    let display = path.display();
+    let text = std::fs::read_to_string(path)
+        .map_err(|err| format!("--start-sfens: cannot read {display}: {err}"))?;
+
+    let mut out = Vec::new();
+    for (index, raw) in text.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let body = line.strip_prefix("sfen ").unwrap_or(line);
+        attic_state::parse_sfen(body)
+            .map_err(|err| format!("--start-sfens: {display} line {}: {err}", index + 1))?;
+        out.push(body.to_string());
+    }
+
+    if out.is_empty() {
+        return Err(format!("--start-sfens: no positions in {display}"));
+    }
+    Ok(out)
 }

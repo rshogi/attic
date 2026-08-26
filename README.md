@@ -45,7 +45,7 @@ root score, and the move played.
 attic-gensfen --eval-dir DIR --out FILE \
               [--depth 9] [--nodes N] [--multipv 5] [--threads N] \
               [--games N] [--positions N] [--fv-scale 28] \
-              [--format jsonl|psv|pack]
+              [--format jsonl|psv|pack] [--start-sfens FILE]
 ```
 
 | Format | Record | Contents |
@@ -62,6 +62,21 @@ seekable by index.
 `--depth` and `--nodes` combine; whichever is reached first ends the search.
 `--positions` is checked before a game starts, so a run exceeds it by up to
 `workers × game length`.
+
+`--start-sfens` draws each game's opening from a file, one SFEN per line, and
+without it every game starts from the initial position. A leading `sfen ` and
+CRLF endings are accepted, so the published opening sets load unchanged. Lines
+are all parsed at startup: a bad one stops the run before any worker starts.
+
+It exists because `--random-move-count` only reaches plies inside its window.
+With a fixed start, every game replays the same opening up to
+`--random-move-minply`, and each of those boards is written once per game — over
+one 6.5e8-position corpus that was 18% of the rows, nearly all below ply 16.
+
+**The random-move window is measured from the start of the game, not from the
+opening's move number.** Starting from ply-15 positions with the default window
+randomises what are really plies 31–47. `--max-ply` is a game length too, so the
+cap is unchanged by where the game began.
 
 `--threads` is a ceiling rather than a setting. Concurrency follows the
 machine's idle CPU while running, aiming to leave `--headroom` cores free, so a
