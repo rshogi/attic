@@ -36,11 +36,10 @@
 //! and is added to L3's single output as the shortcut term. The final network
 //! output is divided by the live [`fv_scale`] to produce the score.
 
-use std::sync::atomic::{AtomicI32, Ordering};
-
 use attic_state::{Color, Position, Square};
 
 use crate::features::king_square;
+use crate::scale::fv_scale;
 use crate::simd::{self, post_ft_kernel};
 use crate::transformer::{Accumulator, FT_OUTPUT_DIMS};
 use crate::types::{
@@ -49,33 +48,6 @@ use crate::types::{
     HIDDEN1_DIMS, LAYER_STACKS, NetworkStack, NnueNetwork,
 };
 
-/// The reference default fixed-point scale (`Options.add("FV_SCALE", 16, ...)`
-/// in `evaluate_nnue.cpp` / `int FV_SCALE = 16`). Also the USI option's default
-/// and the condition the eval fixtures were captured under.
-/// The SFNN shape NAGISA ships was trained at 28 (`kDefaultFvScale` under
-/// `SFNNwoPSQT` in the edition that produced it), so a caller loading that
-/// network must pass `FV_SCALE 28` rather than rely on this default.
-pub const FV_SCALE_DEFAULT: i32 = 16;
-
-/// The live fixed-point scale applied to the network output to produce the final
-/// score, mirroring the reference's mutable global `NNUE::FV_SCALE`
-/// (`evaluate_nnue.cpp`). It is read at the single consumption site in
-/// [`evaluate_with`] and written by [`set_fv_scale`] (which the USI layer drives
-/// from the `FV_SCALE` option). Defaults to [`FV_SCALE_DEFAULT`], so with no
-/// override the whole eval path is byte-identical to the previous constant.
-static FV_SCALE: AtomicI32 = AtomicI32::new(FV_SCALE_DEFAULT);
-
-/// The current fixed-point scale (the reference live global `NNUE::FV_SCALE`).
-pub fn fv_scale() -> i32 {
-    FV_SCALE.load(Ordering::Relaxed)
-}
-
-/// Set the live fixed-point scale, mirroring the reference `FV_SCALE` option
-/// callback (`evaluate_nnue.cpp`). The next [`evaluate`] / [`evaluate_with`]
-/// divides by this value; the USI layer writes it no later than the next `go`.
-pub fn set_fv_scale(scale: i32) {
-    FV_SCALE.store(scale, Ordering::Relaxed);
-}
 
 /// `k*ToIndex` tables from `stack_index_for_nnue`: the own-king rank contributes
 /// the coarse third `{0,3,6}`, the enemy-king rank the fine third `{0,1,2}`.
@@ -93,12 +65,23 @@ const E_RANK_TO_INDEX: [usize; 9] = [0, 0, 0, 1, 1, 1, 2, 2, 2];
 /// Panics if either king is missing.
 /// Layer-stack selection for the 2304 shape, which buckets by game progress
 /// rather than by the kings' ranks — see [`crate::progress`].
-#[cfg(feature = "halfka2304")]
+#[cfg(feature = "sfnn_halfkahm2_2304_15_64_progress8ek")]
 pub fn layer_stack_index(pos: &Position) -> usize {
     crate::progress::bucket_index(pos)
 }
 
-#[cfg(feature = "sfnn1536")]
+/// The standard shapes carry one stack and choose nothing.
+///
+/// `kLayerStacks` is 1 for `NNUE_kp_256x2_32_32` and its HalfKP twin, so the
+/// file has a single set of dense weights and there is no bucket to pick. The
+/// position is still taken, so that callers need not know which shape they
+/// were built for.
+#[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
+pub fn layer_stack_index(_pos: &Position) -> usize {
+    0
+}
+
+#[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
 pub fn layer_stack_index(pos: &Position) -> usize {
     let stm = pos.side_to_move();
     let f_king = king_square(pos, stm);
@@ -172,6 +155,7 @@ pub fn evaluate_with(net: &NnueNetwork, acc: &Accumulator, pos: &Position) -> i3
 /// to `sfnn-1536.h::Propagate` and the reference `per_layer_flow`. Returns the
 /// raw network output (pre-`fv_scale`).
 #[cfg(all(
+    any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"),
     target_arch = "x86_64",
     target_feature = "avx512f",
     target_feature = "avx512bw",
@@ -198,14 +182,71 @@ fn per_layer_flow(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> 
 
 /// Layer-stack forward pass — non-VNNI arm (the VNNI arm above carries the
 /// documentation).
-#[cfg(not(all(
-    target_arch = "x86_64",
-    target_feature = "avx512f",
-    target_feature = "avx512bw",
-    target_feature = "avx512vnni"
-)))]
+#[cfg(all(
+    any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"),
+    not(all(
+        target_arch = "x86_64",
+        target_feature = "avx512f",
+        target_feature = "avx512bw",
+        target_feature = "avx512vnni"
+    ))
+))]
 fn per_layer_flow(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> i32 {
     per_layer_flow_unfused(transformed, stack)
+}
+
+/// The standard shapes' forward pass: `512 -> 32 -> 32 -> 1`, with a
+/// `ClippedReLU` between each pair and nothing routed around them.
+///
+/// The fused AVX-512 chain is not reachable from here. It was written for the
+/// SFNN stack — a sixteenth fc_0 output that bypasses both activations, and
+/// `affine_padded32` helpers taking a fixed `[u8; 32]` — so the shape it
+/// encodes is the one thing that must not be shared.
+#[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
+fn per_layer_flow(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> i32 {
+    let mut fc_0_out = [0i32; FC_0_OUTPUT_DIMS];
+    post_ft_kernel::affine(
+        &mut fc_0_out,
+        &stack.fc_0_biases,
+        &stack.fc_0_weights,
+        transformed,
+        FC_0_INPUT_DIMS,
+        FC_0_PADDED_INPUT_DIMS,
+    );
+    let mut act_0 = [0u8; FC_1_INPUT_DIMS];
+    clipped_relu(&fc_0_out, &mut act_0);
+
+    let mut fc_1_out = [0i32; FC_1_OUTPUT_DIMS];
+    post_ft_kernel::affine(
+        &mut fc_1_out,
+        &stack.fc_1_biases,
+        &stack.fc_1_weights,
+        &act_0,
+        FC_1_INPUT_DIMS,
+        FC_1_PADDED_INPUT_DIMS,
+    );
+    let mut act_1 = [0u8; FC_2_INPUT_DIMS];
+    clipped_relu(&fc_1_out, &mut act_1);
+
+    let mut fc_2_out = [0i32; FC_2_OUTPUT_DIMS];
+    post_ft_kernel::affine(
+        &mut fc_2_out,
+        &stack.fc_2_biases,
+        &stack.fc_2_weights,
+        &act_1,
+        FC_2_INPUT_DIMS,
+        FC_2_PADDED_INPUT_DIMS,
+    );
+    fc_2_out[0]
+}
+
+/// `clamp(0, 127, x >> 6)` — `kWeightScaleBits` is 6, so a dense weight
+/// carries six bits of fraction and this is where they come back off.
+#[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
+fn clipped_relu(src: &[i32], dst: &mut [u8]) {
+    for (slot, &sum) in dst.iter_mut().zip(src) {
+        *slot = (sum >> 6).clamp(0, 127) as u8;
+    }
 }
 
 /// The per-layer (unfused) layer-stack forward pass — what [`per_layer_flow`]
@@ -214,6 +255,7 @@ fn per_layer_flow(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> 
 /// Kept compiled unconditionally, like the kernels in [`crate::simd`], so the
 /// equivalence tests can hold it against the fused chain; on a VNNI build it has
 /// no caller outside `cfg(test)`, hence the `allow(dead_code)`.
+#[cfg(any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
 #[allow(dead_code)]
 fn per_layer_flow_unfused(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> i32 {
     let mut fc_0_out = [0i32; FC_0_OUTPUT_DIMS];
@@ -375,9 +417,13 @@ mod tests {
 
         assert_eq!(per_layer_flow(&transformed, stack), 1_256);
         // Whole-pipeline division by the default FV_SCALE: 1_256 / 16 = 78.
-        assert_eq!(per_layer_flow(&transformed, stack) / FV_SCALE_DEFAULT, 78);
+        assert_eq!(
+            per_layer_flow(&transformed, stack) / crate::scale::FV_SCALE_DEFAULT,
+            78
+        );
     }
 
+    #[cfg(any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
     #[test]
     fn selected_forward_path_matches_the_unfused_reference() {
         // Whichever layer-stack path this build compiled, it must agree
@@ -487,7 +533,7 @@ mod tests {
     // never looks at the kings, so these say nothing there. `oracle_bucket`
     // itself stays valid as a statement about the reference's king rule — it is
     // the *binding* to `layer_stack_index` that is shape-specific.
-    #[cfg(feature = "sfnn1536")]
+    #[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
     #[test]
     fn layer_stack_index_matches_oracle_on_each_bucket() {
         for (expected, sfen) in BUCKET_FIXTURES {
@@ -502,7 +548,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "sfnn1536")]
+    #[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
     #[test]
     fn layer_stack_index_white_to_move_mirrors_ranks() {
         let sfen = "8k/9/9/9/9/9/9/9/8K w - 1";
@@ -510,7 +556,7 @@ mod tests {
         assert_eq!(layer_stack_index(&parse_sfen(sfen).unwrap()), 8);
     }
 
-    #[cfg(feature = "sfnn1536")]
+    #[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
     #[test]
     fn layer_stack_index_startpos_is_eight() {
         let startpos = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1";

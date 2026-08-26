@@ -145,7 +145,16 @@ impl Search {
     /// non-fatal warning bodies (hash mismatches) so the driver can emit them as
     /// `info string` lines before `readyok`. An empty vector means a clean load.
     pub fn from_network_file_with_warnings(path: &Path) -> Result<(Self, Vec<String>), NnueError> {
-        #[cfg(feature = "sfnn1536")]
+        // One call for every shape whose file is self-contained: the four
+        // below keep their whole network in `nn.bin`, and the loader picks the
+        // dimensions from the feature the crate was built with.
+        #[cfg(any(
+            feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+            feature = "nnue_kp_256x2_32_32",
+            feature = "nnue_halfkp_256x2_32_32",
+            feature = "sym_kp_128x2_512",
+            feature = "sym_halfkp_128x2_512"
+        ))]
         let (net, warnings) = load_network_with_warnings(path)?;
 
         // The 2304 shape reads its layer-stack coefficients from a
@@ -153,7 +162,7 @@ impl Search {
         // load is two files. A missing or malformed one is reported as a
         // warning and leaves every position in bucket 0 — wrong, but wrong
         // consistently and visibly, rather than failing after `readyok`.
-        #[cfg(feature = "halfka2304")]
+        #[cfg(feature = "sfnn_halfkahm2_2304_15_64_progress8ek")]
         let (net, warnings) = {
             let (net, mut warnings) =
                 attic_eval::load_network_with_dims(path, &attic_eval::NetDims::HALFKA2304)?;

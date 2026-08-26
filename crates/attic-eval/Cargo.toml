@@ -22,8 +22,21 @@ default = ["quick-draw"]
 quick-draw = ["attic-state/quick-draw"]
 # Exactly one network shape must be selected; there is no default. The kernels
 # use the dimensions as array lengths, so the choice is a build-time one.
-sfnn1536 = []
-halfka2304 = []
+sfnn_halfkahm2_1536_15_32_k3k3 = []
+sfnn_halfkahm2_2304_15_64_progress8ek = []
+# YaneuraOu's two standard shapes. One dense stack, no bucketing, and the
+# perspectives concatenated rather than multiplied — see `NetDims::KP256`.
+nnue_kp_256x2_32_32 = []
+nnue_halfkp_256x2_32_32 = []
+# Manaka's own shapes, spelled the way YaneuraOu spells its architectures:
+# feature space, transformer width by two perspectives, then the dense width.
+# `SYM` is the prefix Manaka's `network_type` already uses. Both are order
+# three — the power sums the name has no room for — and both carry `MNW1`
+# files rather than `nn.bin`: f32 weights, and an RMS norm where NNUE clips.
+# They share this crate's feature extraction and nothing else, see
+# `src/manaka.rs`.
+sym_kp_128x2_512 = []
+sym_halfkp_128x2_512 = []
 
 [dev-dependencies]
 serde_json = "~1.0"
