@@ -20,6 +20,14 @@ pub enum SfenError {
     InvalidHandPiece(char),
     InvalidPly,
     UnexpectedTrailing,
+    /// A [`PackedSfen`](crate::PackedSfen) ran out of bits before the position
+    /// was complete.
+    PackedTruncated,
+    /// A packed king square was outside `0..=81` (81 meaning "absent").
+    PackedInvalidKingSquare(u32),
+    /// A packed stream held more pieces of a kind than the standard set has, so
+    /// the hand and piece-box passes could not be terminated.
+    PackedPieceOverflow,
 }
 
 impl fmt::Display for SfenError {
@@ -30,22 +38,29 @@ impl fmt::Display for SfenError {
             SfenError::UnexpectedPromoteMarker => f.write_str("sfen: unexpected '+' marker"),
             SfenError::NonPromotablePromoted(c) => {
                 write!(f, "sfen: piece {c:?} cannot be promoted")
-            }
+            },
             SfenError::BoardCursorOverflow => {
                 f.write_str("sfen: board cursor advanced past file 1")
-            }
+            },
             SfenError::BoardCursorIncomplete => {
                 f.write_str("sfen: board section ended with cursor not at end")
-            }
+            },
             SfenError::InvalidSideToMove(c) => {
                 write!(f, "sfen: invalid side-to-move {c:?}")
-            }
+            },
             SfenError::MissingHandPieceAfterCount => {
                 f.write_str("sfen: hand count without following piece")
-            }
+            },
             SfenError::InvalidHandPiece(c) => write!(f, "sfen: invalid hand piece {c:?}"),
             SfenError::InvalidPly => f.write_str("sfen: invalid ply"),
             SfenError::UnexpectedTrailing => f.write_str("sfen: unexpected trailing input"),
+            SfenError::PackedTruncated => f.write_str("packed sfen: ran out of bits"),
+            SfenError::PackedInvalidKingSquare(sq) => {
+                write!(f, "packed sfen: king square {sq} is out of range")
+            },
+            SfenError::PackedPieceOverflow => {
+                f.write_str("packed sfen: more pieces than the standard set holds")
+            },
         }
     }
 }
@@ -92,13 +107,13 @@ fn parse_board(field: &str, pos: &mut Position) -> Result<(), SfenError> {
                 }
                 file = (Square::FILES as i8) - 1;
                 rank += 1;
-            }
+            },
             '+' => {
                 if promote {
                     return Err(SfenError::UnexpectedPromoteMarker);
                 }
                 promote = true;
-            }
+            },
             '1'..='9' => {
                 if promote {
                     return Err(SfenError::UnexpectedPromoteMarker);
@@ -108,7 +123,7 @@ fn parse_board(field: &str, pos: &mut Position) -> Result<(), SfenError> {
                     return Err(SfenError::BoardCursorOverflow);
                 }
                 file -= skip;
-            }
+            },
             _ => {
                 let (kind, color) = parse_piece_char(ch)?;
                 if file < 0 || rank < 0 || rank >= Square::RANKS as i8 {
@@ -124,7 +139,7 @@ fn parse_board(field: &str, pos: &mut Position) -> Result<(), SfenError> {
                 pos.board_mut().set(sq, Some(piece));
                 file -= 1;
                 promote = false;
-            }
+            },
         }
     }
 
@@ -265,7 +280,7 @@ fn format_board(pos: &Position, out: &mut String) {
                         out.push('+');
                     }
                     out.push(piece_char(piece.kind, piece.color));
-                }
+                },
             }
         }
         if empty > 0 {
@@ -405,7 +420,7 @@ mod tests {
     fn rejects_promoted_gold() {
         let sfen = "9/9/9/9/4+G4/9/9/9/9 b - 1";
         match parse_sfen(sfen) {
-            Err(SfenError::NonPromotablePromoted('G')) => {}
+            Err(SfenError::NonPromotablePromoted('G')) => {},
             other => panic!("expected NonPromotablePromoted('G'), got {other:?}"),
         }
     }
@@ -414,7 +429,7 @@ mod tests {
     fn rejects_promote_marker_before_digit() {
         let sfen = "9/9/9/9/+1P6/9/9/9/9 b - 1";
         match parse_sfen(sfen) {
-            Err(SfenError::UnexpectedPromoteMarker) => {}
+            Err(SfenError::UnexpectedPromoteMarker) => {},
             other => panic!("expected UnexpectedPromoteMarker, got {other:?}"),
         }
     }
@@ -423,7 +438,7 @@ mod tests {
     fn rejects_invalid_side_to_move() {
         let sfen = "9/9/9/9/9/9/9/9/9 x - 1";
         match parse_sfen(sfen) {
-            Err(SfenError::InvalidSideToMove('x')) => {}
+            Err(SfenError::InvalidSideToMove('x')) => {},
             other => panic!("expected InvalidSideToMove('x'), got {other:?}"),
         }
     }
@@ -432,7 +447,7 @@ mod tests {
     fn rejects_king_in_hand() {
         let sfen = "9/9/9/9/9/9/9/9/9 b K 1";
         match parse_sfen(sfen) {
-            Err(SfenError::InvalidHandPiece('K')) => {}
+            Err(SfenError::InvalidHandPiece('K')) => {},
             other => panic!("expected InvalidHandPiece('K'), got {other:?}"),
         }
     }
@@ -441,7 +456,7 @@ mod tests {
     fn rejects_count_without_piece() {
         let sfen = "9/9/9/9/9/9/9/9/9 b 5 1";
         match parse_sfen(sfen) {
-            Err(SfenError::MissingHandPieceAfterCount) => {}
+            Err(SfenError::MissingHandPieceAfterCount) => {},
             other => panic!("expected MissingHandPieceAfterCount, got {other:?}"),
         }
     }
@@ -450,7 +465,7 @@ mod tests {
     fn rejects_overflowing_empty_run() {
         let sfen = "9/9/9/9/8P1/9/9/9/9 b - 1";
         match parse_sfen(sfen) {
-            Err(SfenError::BoardCursorOverflow) => {}
+            Err(SfenError::BoardCursorOverflow) => {},
             other => panic!("expected BoardCursorOverflow, got {other:?}"),
         }
     }
@@ -459,7 +474,7 @@ mod tests {
     fn rejects_short_rank() {
         let sfen = "8/9/9/9/9/9/9/9/9 b - 1";
         match parse_sfen(sfen) {
-            Err(SfenError::BoardCursorIncomplete) => {}
+            Err(SfenError::BoardCursorIncomplete) => {},
             other => panic!("expected BoardCursorIncomplete, got {other:?}"),
         }
     }
@@ -468,7 +483,7 @@ mod tests {
     fn rejects_trailing_field() {
         let sfen = "9/9/9/9/9/9/9/9/9 b - 1 extra";
         match parse_sfen(sfen) {
-            Err(SfenError::UnexpectedTrailing) => {}
+            Err(SfenError::UnexpectedTrailing) => {},
             other => panic!("expected UnexpectedTrailing, got {other:?}"),
         }
     }
