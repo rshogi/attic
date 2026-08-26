@@ -40,7 +40,7 @@ pub fn run(
         Err(err) => {
             eprintln!("worker {index}: cannot open {}: {err}", path.display());
             return;
-        }
+        },
     };
 
     // Built once, not per move or per game: `QSearch::new` zero-fills a 51MB
@@ -99,17 +99,17 @@ pub fn run(
             Format::Jsonl => {
                 let line = game.to_json("attic", options.depth, options.multipv);
                 writeln!(file, "{line}")
-            }
+            },
             Format::Psv => {
                 let mut buf = Vec::new();
                 game.to_psv(&mut buf);
                 file.write_all(&buf)
-            }
+            },
             Format::Pack => {
                 let mut buf = Vec::new();
                 game.to_pack(&mut buf, options.multipv);
                 file.write_all(&buf)
-            }
+            },
         };
         if let Err(err) = wrote {
             eprintln!("worker {index}: write failed: {err}");

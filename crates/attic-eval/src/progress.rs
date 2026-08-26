@@ -265,7 +265,10 @@ mod tests {
         let pos = Position::startpos();
         let value = params.value_0_to_255(&pos);
         let bucket = params.bucket_index(&pos);
-        eprintln!("startpos: progress={value} bucket={bucket} entering_king={}", is_mutual_entering_king(&pos));
+        eprintln!(
+            "startpos: progress={value} bucket={bucket} entering_king={}",
+            is_mutual_entering_king(&pos)
+        );
         assert!(value <= 255);
         assert!(bucket < PROGRESS_BUCKETS);
     }

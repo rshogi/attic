@@ -36,7 +36,7 @@ pub(crate) const fn pattern_of(piece: Piece) -> usize {
         (PieceKind::Gold, _)
         | (PieceKind::Pawn | PieceKind::Lance | PieceKind::Knight | PieceKind::Silver, true) => {
             pat::GOLD
-        }
+        },
         (PieceKind::Bishop, false) => pat::BISHOP,
         (PieceKind::Rook, false) => pat::ROOK,
         (PieceKind::Bishop, true) => pat::HORSE,

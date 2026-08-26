@@ -47,7 +47,7 @@ impl<'w, W: Write + ?Sized> Formatter<'w, W> {
                     body.push_str(choice);
                 }
                 self.line(format_args!("{body}"))
-            }
+            },
         }
     }
 

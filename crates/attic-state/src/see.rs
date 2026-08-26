@@ -412,7 +412,7 @@ impl Position {
                         res
                     };
                     return final_res != 0;
-                }
+                },
             };
 
             swap = bucket_value(bucket) - swap;

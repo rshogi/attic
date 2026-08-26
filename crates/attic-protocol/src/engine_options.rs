@@ -69,14 +69,14 @@ pub fn parse_override_line(line: &str) -> OverrideLine {
             "name" => name = tokens.next().unwrap_or("").to_string(),
             "type" => {
                 let _ = tokens.next();
-            }
+            },
             "default" => value = tokens.next().unwrap_or("").to_string(),
             "min" | "max" => {
                 let _ = tokens.next();
-            }
+            },
             "var" => {
                 let _ = tokens.next();
-            }
+            },
             other => invalid_tokens.push(other.to_string()),
         }
     }

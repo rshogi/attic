@@ -998,12 +998,12 @@ impl<'a> QSearch<'a> {
                 for s in slots.iter() {
                     *tot += s.swap(0, Ordering::Relaxed) as f64;
                 }
-            }
-            Some(_) => {}
+            },
+            Some(_) => {},
             None => {
                 *tot += self.best_move_changes;
                 self.best_move_changes = 0.0;
-            }
+            },
         }
     }
 
@@ -1275,7 +1275,7 @@ impl<'a> QSearch<'a> {
                 } else {
                     -self.draw_contempt
                 }
-            }
+            },
             // VALUE_SUPERIOR == VALUE_MAX_EVAL (`types.h`).
             RepetitionState::Superior => VALUE_MAX_EVAL,
             RepetitionState::Inferior => -VALUE_MAX_EVAL,
@@ -2260,7 +2260,7 @@ impl QSearch<'_> {
                     }
                 }
                 total
-            }
+            },
             None => self.nodes,
         }
     }
@@ -2436,7 +2436,7 @@ impl QSearch<'_> {
                             && pos.is_legal(mm) =>
                     {
                         mm
-                    }
+                    },
                     _ => break,
                 }
             };
@@ -2658,7 +2658,7 @@ impl QSearch<'_> {
                         pc,
                         to,
                     )
-                }
+                },
                 None => 8,
             }
         } else {
@@ -3640,7 +3640,7 @@ impl QSearch<'_> {
                         match &self.best_move_tally {
                             Some((slots, idx)) => {
                                 slots[*idx].fetch_add(1, Ordering::Relaxed);
-                            }
+                            },
                             None => self.best_move_changes += 1.0,
                         }
                     }
@@ -3904,8 +3904,7 @@ mod tests {
     /// Path to the real (never-committed) SFNN-1536 network, mirroring the
     /// `real_network.rs` integration test.
     fn real_nn_bin() -> std::path::PathBuf {
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../eval/nn.bin")
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../eval/nn.bin")
     }
 
     /// Accumulator gate 2 (in-search equivalence): a test-mode search over a set

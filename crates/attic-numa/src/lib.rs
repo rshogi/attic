@@ -104,7 +104,7 @@ impl fmt::Display for NumaError {
         match self {
             NumaError::DuplicateCpu(c) => {
                 write!(f, "CPU {c} is assigned to more than one NUMA node")
-            }
+            },
         }
     }
 }
@@ -656,17 +656,17 @@ fn indices_from_shortened_string(s: &str) -> Vec<CpuIndex> {
                 if let Some(c) = parse_size_t(single) {
                     indices.push(c);
                 }
-            }
+            },
             [first, last] => {
                 if let (Some(cfirst), Some(clast)) = (parse_size_t(first), parse_size_t(last)) {
                     for c in cfirst..=clast {
                         indices.push(c);
                     }
                 }
-            }
+            },
             // Entries with 0 or 3+ dash-separated parts are ignored, matching
             // the reference (which only handles the 1- and 2-part cases).
-            _ => {}
+            _ => {},
         }
     }
 
@@ -698,7 +698,7 @@ fn from_system_numa(opts: &SysfsOptions, respect_affinity: bool) -> NumaConfig {
                     None => {
                         use_fallback = true;
                         break;
-                    }
+                    },
                     Some(cpu_ids) => {
                         let cpu_ids = remove_whitespace(&cpu_ids);
                         for c in indices_from_shortened_string(&cpu_ids) {
@@ -706,13 +706,13 @@ fn from_system_numa(opts: &SysfsOptions, respect_affinity: bool) -> NumaConfig {
                                 cfg.add_cpu_to_node(n, c);
                             }
                         }
-                    }
+                    },
                 }
             }
-        }
+        },
         _ => {
             use_fallback = true;
-        }
+        },
     }
 
     if use_fallback {

@@ -429,7 +429,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
                 Command::Quit => {
                     self.finish_search_join();
                     return Ok(());
-                }
+                },
                 Command::Unknown(line) => self.handle_unknown(&line)?,
                 Command::TooLong => self.handle_too_long()?,
             }
@@ -772,12 +772,12 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
                     let count = book.record_count();
                     books.push(book);
                     self.info_string(&format!("book loaded : {count} positions"))?;
-                }
+                },
                 Err(e) => {
                     // Mirrors the pin's open/validate failure → this name is left
                     // out of the priority list.
                     self.info_string(&format!("book load failed : {e}"))?;
-                }
+                },
             }
         }
 
@@ -917,7 +917,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
                 // `readyok`. A previously-loaded network (if any) is left
                 // untouched so a bad reload does not drop a working net.
                 self.info_string(&format!("eval load failed: {reason}"))
-            }
+            },
         }
     }
 
@@ -970,7 +970,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
                 // built on the search path.
                 self.rebuild_networks();
                 Ok(IsreadyOutcome::Ready)
-            }
+            },
             Err(e) => Ok(IsreadyOutcome::LoadFailed(e.to_string())),
         }
     }
@@ -1010,7 +1010,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
                     self.resize_tt_to_hash_option();
                 }
                 Ok(())
-            }
+            },
             Err(e) => self.info_string(&format!("option {name} rejected: {e}")),
         }
     }
@@ -1039,7 +1039,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
                 self.info_string(&format!("NumaPolicy error: {msg}"))?;
                 let _ = self.lock_writer().flush();
                 std::process::exit(1);
-            }
+            },
         }
 
         // Rebuild the pool with the new binding, then emit both info lines
@@ -1060,7 +1060,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
                 Ok(p) => p,
                 Err(e) => {
                     return self.info_string(&format!("position parse error: {e}"));
-                }
+                },
             },
         };
         let mut legal_buf: Vec<Move> = Vec::new();
@@ -1069,7 +1069,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
                 Ok(m) => m,
                 Err(_) => {
                     return self.info_string(&format!("illegal move: {s}"));
-                }
+                },
             };
             legal_buf.clear();
             scratch.generate_legal_all(&mut legal_buf);
@@ -1607,7 +1607,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
                     // fatal — the rest of the bench still runs.
                     self.info_string(&format!("bench: skipping bad position `{fen}`: {e}"))?;
                     continue;
-                }
+                },
             }
             positions += 1;
             total_nodes += self.bench_run_one(config.limits.clone())?;
@@ -1717,7 +1717,7 @@ fn write_pv_info<W: Write + ?Sized>(w: &mut W, info: &PvInfo) -> io::Result<()> 
     match info.bound {
         PvBound::Lower => body.push_str(" lowerbound"),
         PvBound::Upper => body.push_str(" upperbound"),
-        PvBound::Exact => {}
+        PvBound::Exact => {},
     }
     body.push_str(&format!(" nodes {}", info.nodes));
     if !info.pv.is_empty() {
@@ -2398,7 +2398,7 @@ fn numa_config_from_policy(policy: &str, opts: &SysfsOptions) -> Result<NumaConf
                 return Err(format!("NumaPolicy `{other}` yields zero NUMA nodes"));
             }
             cfg
-        }
+        },
     };
     Ok(cfg)
 }

@@ -122,7 +122,7 @@ fn parse_position<'a>(line: &str, parts: impl Iterator<Item = &'a str>) -> Comma
             }
             let sfen_str = rest[..4].join(" ");
             (PositionSfen::Sfen(sfen_str), &rest[4..])
-        }
+        },
         _ => return Command::Unknown(line.to_string()),
     };
     let moves = match after_sfen {
@@ -143,11 +143,11 @@ fn parse_go<'a>(line: &str, parts: impl Iterator<Item = &'a str>) -> Command {
             "infinite" => {
                 limits.infinite = true;
                 i += 1;
-            }
+            },
             "ponder" => {
                 limits.ponder = true;
                 i += 1;
-            }
+            },
             // `go mate [ms|infinite]` (`usi.cpp`): the token after `mate`
             // is a millisecond time budget; `infinite`, or nothing following,
             // means unlimited. Anything else that is not a valid `u64` is an
@@ -156,18 +156,18 @@ fn parse_go<'a>(line: &str, parts: impl Iterator<Item = &'a str>) -> Command {
                 None => {
                     limits.mate = Some(MATE_UNLIMITED_MS);
                     i += 1;
-                }
+                },
                 Some(&"infinite") => {
                     limits.mate = Some(MATE_UNLIMITED_MS);
                     i += 2;
-                }
+                },
                 Some(value) => {
                     let Ok(v) = value.parse::<u64>() else {
                         return Command::Unknown(line.to_string());
                     };
                     limits.mate = Some(v);
                     i += 2;
-                }
+                },
             },
             "depth" | "nodes" | "movetime" | "wtime" | "btime" | "winc" | "binc" | "byoyomi"
             | "rtime" => {
@@ -196,7 +196,7 @@ fn parse_go<'a>(line: &str, parts: impl Iterator<Item = &'a str>) -> Command {
                     }
                 }
                 i += 2;
-            }
+            },
             _ => return Command::Unknown(line.to_string()),
         }
     }

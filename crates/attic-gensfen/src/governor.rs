@@ -115,7 +115,7 @@ fn physical_cores() -> Option<usize> {
         match key {
             "physical id" => package = value.and_then(|v| v.parse::<u32>().ok()),
             "core id" => core = value.and_then(|v| v.parse::<u32>().ok()),
-            _ => {}
+            _ => {},
         }
         if let (Some(p), Some(c)) = (package, core) {
             seen.insert((p, c));

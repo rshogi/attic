@@ -79,7 +79,7 @@ fn score_key(line: &str) -> i64 {
             } else {
                 -1_000_000 - m
             }
-        }
+        },
         _ => 0,
     }
 }

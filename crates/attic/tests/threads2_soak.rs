@@ -97,7 +97,7 @@ impl Session {
                         if tx.send(trimmed).is_err() {
                             break;
                         }
-                    }
+                    },
                 }
             }
         });
@@ -118,15 +118,15 @@ impl Session {
                     if pred(&l) {
                         return l;
                     }
-                }
+                },
                 Err(RecvTimeoutError::Timeout) => {
                     panic!(
                         "watchdog: engine produced no matching line within {MOVE_WATCHDOG:?} (hang)"
                     )
-                }
+                },
                 Err(RecvTimeoutError::Disconnected) => {
                     panic!("engine stdout closed unexpectedly (crash / early exit)")
-                }
+                },
             }
         }
     }

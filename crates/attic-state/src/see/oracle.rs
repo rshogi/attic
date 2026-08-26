@@ -78,7 +78,7 @@ fn bucket_of(p: Piece) -> Bucket {
         (PieceKind::Gold, _)
         | (PieceKind::Pawn | PieceKind::Lance | PieceKind::Knight | PieceKind::Silver, true) => {
             Bucket::Golds
-        }
+        },
         (PieceKind::Bishop, false) => Bucket::Bishop,
         (PieceKind::Bishop, true) => Bucket::Horse,
         (PieceKind::Rook, false) => Bucket::Rook,
@@ -419,7 +419,7 @@ impl Position {
                         .any(|&sq| board.get(sq).is_some_and(|p| p.color != stm));
                     let final_res = if opp_attacks { res ^ 1 } else { res };
                     return final_res != 0;
-                }
+                },
             };
 
             swap = bucket_value(bucket) - swap;
@@ -515,7 +515,7 @@ impl Position {
                 None => {
                     let final_res = if opp_attackers != 0 { res ^ 1 } else { res };
                     return final_res != 0;
-                }
+                },
             };
 
             swap = bucket_value(bucket) - swap;

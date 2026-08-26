@@ -37,7 +37,7 @@ fn main() {
             eprintln!("{message}");
             eprintln!("{}", Options::USAGE);
             std::process::exit(2);
-        }
+        },
     };
 
     let network_path = options.eval_dir.join("nn.bin");
@@ -46,7 +46,7 @@ fn main() {
         Err(err) => {
             eprintln!("failed to load {}: {err}", network_path.display());
             std::process::exit(1);
-        }
+        },
     };
     for warning in &warnings {
         eprintln!("warning: {warning}");

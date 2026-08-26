@@ -267,11 +267,11 @@ impl Read for BlockingReader {
                 Ok(Some(chunk)) => {
                     self.buf = chunk;
                     self.pos = 0;
-                }
+                },
                 Ok(None) | Err(_) => {
                     self.done = true;
                     return Ok(0);
-                }
+                },
             }
         }
     }

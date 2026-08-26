@@ -455,7 +455,7 @@ fn thp_uptake_diagnostic_over_64mib() {
         Err(e) => {
             eprintln!("THP diagnostic: /proc/self/smaps unreadable ({e}); skipping");
             return;
-        }
+        },
     };
 
     // smaps is a sequence of blocks, each headed by `start-end perms ...`. Find

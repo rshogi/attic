@@ -431,15 +431,15 @@ pub(crate) fn changed_indices_into(
             std::cmp::Ordering::Equal => {
                 i += 1;
                 j += 1;
-            }
+            },
             std::cmp::Ordering::Less => {
                 removed.push(sorted_before[i]);
                 i += 1;
-            }
+            },
             std::cmp::Ordering::Greater => {
                 added.push(sorted_after[j]);
                 j += 1;
-            }
+            },
         }
     }
     removed.extend_from_slice(&sorted_before[i..]);
@@ -498,10 +498,10 @@ impl Dirty {
                     board_plane(piece.kind, piece.promoted, piece.color == persp) + sq_code
                 };
                 encode_feature(sq_k_code, p_adj)
-            }
+            },
             Dirty::Hand { color, kind, count } => {
                 encode_feature(sq_k_code, hand_plane(kind, color == persp) + count)
-            }
+            },
         }
     }
 }

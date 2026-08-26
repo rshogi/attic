@@ -93,7 +93,7 @@ pub(crate) fn movement(piece: Piece) -> (StepTable, StepTable) {
         (PieceKind::Gold, _)
         | (PieceKind::Pawn | PieceKind::Lance | PieceKind::Knight | PieceKind::Silver, true) => {
             (GOLD_STEPS, NO_DIRS)
-        }
+        },
         (PieceKind::Bishop, false) => (NO_DIRS, BISHOP_DIRS),
         (PieceKind::Bishop, true) => (KING_ORTH_STEPS, BISHOP_DIRS),
         (PieceKind::Rook, false) => (NO_DIRS, ROOK_DIRS),
@@ -205,7 +205,7 @@ fn scan_slider(
                     return false;
                 }
                 return true;
-            }
+            },
         }
     }
 }

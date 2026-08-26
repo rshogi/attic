@@ -679,7 +679,7 @@ impl MovePicker {
                     if let Some(m) = self.tt {
                         return Some(m);
                     }
-                }
+                },
 
                 // CAPTURE_INIT (`movepick.cpp`): generate the captures
                 // (deferred here from construction), score them, full
@@ -696,7 +696,7 @@ impl MovePicker {
                     self.end_bad_captures = 0;
                     self.end_cur = self.end_captures;
                     self.stage = Stage::GoodCapture;
-                }
+                },
 
                 // GOOD_CAPTURE (`movepick.cpp`): yield captures passing
                 // `see_ge(m, -value / 18)`; compact SEE-losers to `[0,
@@ -716,7 +716,7 @@ impl MovePicker {
                         return Some(m);
                     }
                     self.stage = Stage::QuietInit;
-                }
+                },
 
                 // QUIET_INIT (`movepick.cpp`): generate the raw quiets,
                 // score them, and partial-sort with the depth-scaled limit — all
@@ -777,7 +777,7 @@ impl MovePicker {
                     self.cur = self.end_captures;
                     self.end_cur = self.end_generated;
                     self.stage = Stage::GoodQuiet;
-                }
+                },
 
                 // GOOD_QUIET (`movepick.cpp`): yield quiets scoring above
                 // the threshold, skipping the TT move and — the port's yield-time
@@ -795,7 +795,7 @@ impl MovePicker {
                     self.cur = 0;
                     self.end_cur = self.end_bad_captures;
                     self.stage = Stage::BadCapture;
-                }
+                },
 
                 // BAD_CAPTURE (`movepick.cpp`): replay the compacted
                 // SEE-losing captures (already TT-deduped at generation), then
@@ -807,7 +807,7 @@ impl MovePicker {
                     self.cur = self.end_captures;
                     self.end_cur = self.end_generated;
                     self.stage = Stage::BadQuiet;
-                }
+                },
 
                 // BAD_QUIET (`movepick.cpp`): yield quiets at or below the
                 // threshold (legal, non-TT). With `skip_quiets` set the reference
@@ -821,7 +821,7 @@ impl MovePicker {
                         let e = s.scratch.buf[s.cur];
                         e.value <= GOOD_QUIET_THRESHOLD && p.is_legal(e.mv)
                     });
-                }
+                },
 
                 // QCAPTURE_INIT / EVASION_INIT / PROBCUT_INIT
                 // (`movepick.cpp`): generate the single list
@@ -834,7 +834,7 @@ impl MovePicker {
                     self.cur = 0;
                     self.end_cur = self.end_captures;
                     self.stage = Stage::Qcapture;
-                }
+                },
                 Stage::EvasionInit => {
                     self.generate_capture_list(pos);
                     self.score_captures_in_place(pos, hist);
@@ -842,7 +842,7 @@ impl MovePicker {
                     self.cur = 0;
                     self.end_cur = self.end_captures;
                     self.stage = Stage::Evasion;
-                }
+                },
                 Stage::ProbcutInit => {
                     self.generate_capture_list(pos);
                     self.score_captures_in_place(pos, hist);
@@ -850,13 +850,13 @@ impl MovePicker {
                     self.cur = 0;
                     self.end_cur = self.end_captures;
                     self.stage = Stage::Probcut;
-                }
+                },
 
                 // QCAPTURE / EVASION (`movepick.cpp`): best-first, no
                 // filter (both lists are pre-filtered legal and TT-deduped).
                 Stage::Qcapture | Stage::Evasion => {
                     return self.select(pos, |_, _| true);
-                }
+                },
 
                 // PROBCUT (`movepick.cpp`): yield captures with
                 // `see_ge(m, threshold)`, SEE evaluated lazily per move.
@@ -865,7 +865,7 @@ impl MovePicker {
                         let e = s.scratch.buf[s.cur];
                         p.see_ge(e.mv, s.threshold)
                     });
-                }
+                },
 
                 Stage::Done => return None,
             }
@@ -1099,7 +1099,7 @@ mod twin {
                             self.scratch.bad_captures.push(e.mv);
                         }
                     }
-                }
+                },
                 Kind::ProbCut => {
                     for i in 0..self.scratch.scored.len() {
                         let e = self.scratch.scored[i];
@@ -1107,13 +1107,13 @@ mod twin {
                             self.scratch.good_captures.push(e.mv);
                         }
                     }
-                }
+                },
                 Kind::QSearch | Kind::Evasion => {
                     for i in 0..self.scratch.scored.len() {
                         let mv = self.scratch.scored[i].mv;
                         self.scratch.good_captures.push(mv);
                     }
-                }
+                },
             }
         }
 
@@ -1144,12 +1144,12 @@ mod twin {
                         if let Some(m) = self.tt {
                             return Some(m);
                         }
-                    }
+                    },
                     Stage::CaptureInit => {
                         self.init_captures(pos, hist);
                         self.stage = Stage::GoodCapture;
                         self.idx = 0;
-                    }
+                    },
                     Stage::GoodCapture => {
                         if let Some(&m) = self.scratch.good_captures.get(self.idx) {
                             self.idx += 1;
@@ -1157,14 +1157,14 @@ mod twin {
                         }
                         self.stage = Stage::QuietInit;
                         self.idx = 0;
-                    }
+                    },
                     Stage::QuietInit => {
                         if self.kind == Kind::Main && !self.skip_quiets {
                             self.init_quiets(pos, hist);
                         }
                         self.stage = Stage::GoodQuiet;
                         self.idx = 0;
-                    }
+                    },
                     Stage::GoodQuiet => {
                         if self.skip_quiets {
                             self.stage = Stage::BadCapture;
@@ -1179,7 +1179,7 @@ mod twin {
                         }
                         self.stage = Stage::BadCapture;
                         self.idx = 0;
-                    }
+                    },
                     Stage::BadCapture => {
                         if let Some(&m) = self.scratch.bad_captures.get(self.idx) {
                             self.idx += 1;
@@ -1187,7 +1187,7 @@ mod twin {
                         }
                         self.stage = Stage::BadQuiet;
                         self.idx = 0;
-                    }
+                    },
                     Stage::BadQuiet => {
                         if self.skip_quiets {
                             self.stage = Stage::Done;
@@ -1200,7 +1200,7 @@ mod twin {
                             }
                         }
                         self.stage = Stage::Done;
-                    }
+                    },
                     Stage::Done => return None,
                 }
             }
@@ -1496,7 +1496,7 @@ mod tests {
                     .filter(|&&m| is_cap(m))
                     .all(|&m| !p.see_ge(m, -cap_score(m) / 18));
                 good_ok && bad_ok
-            }
+            },
         }
     }
 
@@ -1953,7 +1953,7 @@ mod tests {
                     prod_seq.push(m);
                     twin_seq.push(m);
                     n += 1;
-                }
+                },
                 None => break,
             }
         }

@@ -59,7 +59,7 @@ impl std::fmt::Display for OptionError {
             OptionError::NotAnInteger(s) => write!(f, "value `{s}` is not an integer"),
             OptionError::OutOfRange { value, min, max } => {
                 write!(f, "value {value} out of range [{min}, {max}]")
-            }
+            },
             OptionError::NotABool(s) => write!(f, "value `{s}` is not a boolean"),
             OptionError::InvalidComboChoice(s) => write!(f, "value `{s}` is not a valid choice"),
         }
@@ -605,22 +605,22 @@ impl OptionStore {
                     });
                 }
                 self.values.insert(decl.name(), OptionValue::Spin(parsed));
-            }
+            },
             OptionDecl::String { .. } => {
                 self.values
                     .insert(decl.name(), OptionValue::String(value.to_string()));
-            }
+            },
             OptionDecl::Check { .. } => {
                 let parsed = parse_check(value)?;
                 self.values.insert(decl.name(), OptionValue::Check(parsed));
-            }
+            },
             OptionDecl::Combo { choices, .. } => {
                 if !choices.contains(&value) {
                     return Err(OptionError::InvalidComboChoice(value.to_string()));
                 }
                 self.values
                     .insert(decl.name(), OptionValue::Combo(value.to_string()));
-            }
+            },
         }
         Ok(())
     }

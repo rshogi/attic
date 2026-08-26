@@ -22,7 +22,7 @@ fn main() -> ExitCode {
             eprintln!("error: {msg}");
             eprint!("{USAGE}");
             ExitCode::from(2)
-        }
+        },
     }
 }
 
@@ -50,7 +50,7 @@ fn perft_cmd(args: &[&str]) -> Result<(), String> {
         ["sfen", sfen, depth] => {
             let pos = parse_sfen(sfen).map_err(|e| format!("invalid sfen: {e:?}"))?;
             (pos, parse_depth(depth)?)
-        }
+        },
         ["sfen", sfen, "moves", rest @ ..] => {
             let (depth_str, moves) = rest
                 .split_last()
@@ -63,10 +63,10 @@ fn perft_cmd(args: &[&str]) -> Result<(), String> {
                 pos.do_move(parsed);
             }
             (pos, depth)
-        }
+        },
         _ => {
             return Err("perft expects `startpos <depth>`, `sfen <SFEN> <depth>`, or `sfen <SFEN> moves <m1> ... <depth>`".into());
-        }
+        },
     };
     let nodes = perft::perft(&mut pos, depth);
     println!("{nodes}");

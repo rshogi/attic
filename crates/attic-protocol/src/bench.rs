@@ -119,14 +119,14 @@ pub fn parse_bench(tokens: &[String], current_sfen: &str) -> Result<BenchConfig,
             let d = u32::try_from(limit)
                 .map_err(|_| BenchParseError(format!("depth limit out of range `{limit}`")))?;
             limits.depth = Some(d);
-        }
+        },
         "nodes" => limits.nodes = Some(limit),
         "movetime" => limits.movetime = Some(limit),
         other => {
             return Err(BenchParseError(format!(
                 "unsupported limit type `{other}` (supported: depth, nodes, movetime)"
             )));
-        }
+        },
     }
 
     let fens = match fen_source.as_str() {
@@ -148,7 +148,7 @@ pub fn parse_bench(tokens: &[String], current_sfen: &str) -> Result<BenchConfig,
                 return Err(BenchParseError(format!("no positions in file `{path}`")));
             }
             fens
-        }
+        },
     };
 
     Ok(BenchConfig {

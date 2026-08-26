@@ -971,7 +971,7 @@ fn mate_pawn_no_promote(ctx: &Ctx, cand: Bb) -> Option<Move> {
     let from = step_signed(to, push.0, push.1)?;
     // Candidate-table guard: the pushing pawn must actually stand on `from`.
     match board.get(from) {
-        Some(p) if p.color == us && is_pawn_unpromoted(p) => {}
+        Some(p) if p.color == us && is_pawn_unpromoted(p) => {},
         _ => return None,
     }
     // A push into the promotion zone is handled by the promoting-pawn block.

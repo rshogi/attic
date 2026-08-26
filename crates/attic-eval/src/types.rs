@@ -372,14 +372,14 @@ impl fmt::Display for NnueError {
         match self {
             NnueError::Io { path, source } => {
                 write!(f, "failed to open NNUE file {path}: {source}")
-            }
+            },
             NnueError::SizeMismatch { expected, got } => write!(
                 f,
                 "NNUE file has unexpected size: expected {expected} bytes, got {got}"
             ),
             NnueError::InvalidFormat { reason } => {
                 write!(f, "NNUE file is malformed: {reason}")
-            }
+            },
             NnueError::NotLoaded => write!(
                 f,
                 "no NNUE network loaded; point the EvalDir USI option at a directory containing nn.bin"

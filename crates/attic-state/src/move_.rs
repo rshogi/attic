@@ -449,11 +449,11 @@ impl fmt::Display for UsiMoveParseError {
             Self::InvalidDropPiece(c) => write!(f, "usi-move: invalid drop piece {c:?}"),
             Self::InvalidPromotionMarker(c) => {
                 write!(f, "usi-move: invalid promotion marker {c:?}")
-            }
+            },
             Self::EmptyFromSquare => f.write_str("usi-move: from-square is empty on the board"),
             Self::PromoteAlreadyPromoted => {
                 f.write_str("usi-move: cannot promote an already-promoted piece")
-            }
+            },
         }
     }
 }
@@ -557,14 +557,14 @@ mod tests {
         match (fx.from, fx.is_promote, fx.is_drop) {
             (Some((ff, fr)), false, false) => {
                 Move::make(Square::new(ff, fr).unwrap(), to, fx.piece_after)
-            }
+            },
             (Some((ff, fr)), true, false) => {
                 let unpromoted = Piece {
                     promoted: false,
                     ..fx.piece_after
                 };
                 Move::make_promote(Square::new(ff, fr).unwrap(), to, unpromoted)
-            }
+            },
             (None, false, true) => Move::make_drop(fx.dropped.unwrap(), fx.piece_after.color, to),
             other => panic!("unsupported fixture shape: {other:?}"),
         }

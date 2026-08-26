@@ -206,12 +206,12 @@ fn reachable_scan(board: &Board, from: Square, piece: Piece, target: Target) -> 
                     if target != Target::Captures {
                         out.push(to);
                     }
-                }
+                },
                 Some(p) => {
                     if p.color != piece.color && target != Target::Quiets {
                         out.push(to);
                     }
-                }
+                },
             }
         }
     }
@@ -227,13 +227,13 @@ fn reachable_scan(board: &Board, from: Square, piece: Piece, target: Target) -> 
                     if target != Target::Captures {
                         out.push(cur);
                     }
-                }
+                },
                 Some(p) => {
                     if p.color != piece.color && target != Target::Quiets {
                         out.push(cur);
                     }
                     break;
-                }
+                },
             }
         }
     }
@@ -447,14 +447,14 @@ impl Group {
             Group::Silver => piece.kind == PieceKind::Silver && !piece.promoted,
             Group::BishopRook => {
                 matches!(piece.kind, PieceKind::Bishop | PieceKind::Rook) && !piece.promoted
-            }
+            },
             Group::GoldHdk { king } => {
                 if piece.kind == PieceKind::King {
                     king
                 } else {
                     piece.promoted || piece.kind == PieceKind::Gold
                 }
-            }
+            },
         }
     }
 
@@ -733,7 +733,7 @@ fn attacks_bb(from: Square, piece: Piece, occ: Bitboard) -> Bitboard {
         (PieceKind::Gold, _)
         | (PieceKind::Pawn | PieceKind::Lance | PieceKind::Knight | PieceKind::Silver, true) => {
             gold_attacks(c, from)
-        }
+        },
         (PieceKind::Bishop, false) => bishop_attacks(from, occ),
         (PieceKind::Bishop, true) => horse_attacks(from, occ),
         (PieceKind::Rook, false) => rook_attacks(from, occ),
@@ -1052,7 +1052,7 @@ impl Position {
                     );
                 }
                 v
-            }
+            },
             None => own_king.is_some_and(|k| is_attacked_by(board, k, enemy)),
         };
 
@@ -1072,7 +1072,7 @@ impl Position {
                 } else {
                     Bitboard::EMPTY
                 }
-            }
+            },
         };
 
         CheckInfo {
@@ -1546,7 +1546,7 @@ impl Position {
                         if banned {
                             return false;
                         }
-                    }
+                    },
                     // Bishop / rook: no un-promoted move touching the enemy field
                     // (from or to).
                     (PieceKind::Bishop, false) | (PieceKind::Rook, false)
@@ -1554,8 +1554,8 @@ impl Position {
                             || is_in_promotion_zone(to, us) =>
                     {
                         return false;
-                    }
-                    _ => {}
+                    },
+                    _ => {},
                 }
             }
         }
@@ -3294,7 +3294,7 @@ mod gate_267 {
                         Some((m, u)) => {
                             p.undo_move(m, u);
                             continue;
-                        }
+                        },
                         None => break,
                     }
                 }
@@ -3492,7 +3492,7 @@ mod gate_280 {
                         Some((m, u)) => {
                             p.undo_move(m, u);
                             continue;
-                        }
+                        },
                         None => break,
                     }
                 }

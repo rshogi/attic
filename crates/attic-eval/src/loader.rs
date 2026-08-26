@@ -695,7 +695,7 @@ mod tests {
         match err {
             NnueError::SizeMismatch { expected, got } => {
                 assert_eq!(got, expected + 3);
-            }
+            },
             other => panic!("expected SizeMismatch, got {:?}", other),
         }
     }
@@ -712,7 +712,7 @@ mod tests {
                         && reason.contains("got"),
                     "expected the reference version-mismatch message shape, got: {reason}"
                 );
-            }
+            },
             other => panic!("expected InvalidFormat, got {:?}", other),
         }
     }
@@ -826,7 +826,7 @@ mod tests {
                     "expected message to mention overflow / out-of-range, got: {}",
                     reason
                 );
-            }
+            },
             other => panic!("expected InvalidFormat, got {:?}", other),
         }
     }

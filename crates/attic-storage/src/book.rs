@@ -88,13 +88,13 @@ impl std::fmt::Display for BookError {
             BookError::BadMagic => f.write_str("ybb: bad magic (not a YANE-BINBOOK-V1 file)"),
             BookError::UnknownFlags(flags) => {
                 write!(f, "ybb: header flags {flags:#x} carry unknown bits")
-            }
+            },
             BookError::RecordCountOverflow => {
                 f.write_str("ybb: record count overflows the index region size")
-            }
+            },
             BookError::TruncatedIndex => {
                 f.write_str("ybb: file too short for the declared index region")
-            }
+            },
             BookError::Io(e) => write!(f, "ybb: i/o error: {e}"),
         }
     }
@@ -183,10 +183,10 @@ impl Book {
 
         let mut head = [0u8; HEADER_SIZE as usize];
         match index.read_exact(&mut head) {
-            Ok(()) => {}
+            Ok(()) => {},
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                 return Err(BookError::TruncatedHeader);
-            }
+            },
             Err(e) => return Err(BookError::Io(e)),
         }
         let (record_count, flags) = parse_header(&head)?;
@@ -241,7 +241,7 @@ impl Book {
                         return Ok(None);
                     }
                     return self.read_moves(&entry);
-                }
+                },
             }
         }
         Ok(None)
@@ -266,14 +266,14 @@ impl Book {
                     Some(buf) => Ok(Some(parse_index_entry(buf))),
                     None => Ok(None),
                 }
-            }
+            },
             Source::File { index, .. } => {
                 let mut buf = [0u8; INDEX_RECORD_SIZE as usize];
                 match read_at(index, offset, &mut buf)? {
                     true => Ok(Some(parse_index_entry(&buf))),
                     false => Ok(None),
                 }
-            }
+            },
         }
     }
 
@@ -303,7 +303,7 @@ impl Book {
                     ))),
                     None => Ok(None),
                 }
-            }
+            },
             Source::File { moves, .. } => {
                 let mut buf = vec![0u8; total as usize];
                 match read_at(moves, absolute, &mut buf)? {
@@ -315,7 +315,7 @@ impl Book {
                     ))),
                     false => Ok(None),
                 }
-            }
+            },
         }
     }
 }

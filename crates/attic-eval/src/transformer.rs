@@ -214,7 +214,7 @@ impl Accumulator {
                         pd.added(),
                         pd.removed(),
                     );
-                }
+                },
                 None => {
                     refresh_perspective(
                         &mut dst.perspectives[i],
@@ -222,7 +222,7 @@ impl Accumulator {
                         &net.ft_weights,
                         &active_features(post_pos, color),
                     );
-                }
+                },
             }
         }
     }
@@ -267,7 +267,7 @@ impl Accumulator {
                         pd.added(),
                         pd.removed(),
                     );
-                }
+                },
                 None => cache.refresh_into(net, post_pos, color, &mut dst.perspectives[i]),
             }
         }
@@ -335,7 +335,7 @@ pub(crate) fn apply_diff(
         _ => {
             transformer_kernel::sub_features(out, weights, removed);
             transformer_kernel::add_features(out, weights, added);
-        }
+        },
     }
 }
 

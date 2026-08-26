@@ -450,13 +450,13 @@ mod tests {
             let mut chars = rank_str.chars().peekable();
             while let Some(c) = chars.next() {
                 match c {
-                    '1'..='9' => {}
+                    '1'..='9' => {},
                     '+' => {
                         let _ = chars.next();
-                    }
+                    },
                     'K' => bk = Some(rank_idx),
                     'k' => wk = Some(rank_idx),
-                    _ => {}
+                    _ => {},
                 }
             }
         }

@@ -176,7 +176,10 @@ mod tests {
     fn fill_weights(weights: &mut [i16], seed: i16) {
         for (i, slot) in weights.iter_mut().enumerate() {
             // Spread across the i16 range so wrapping is actually exercised.
-            *slot = (i as i16).wrapping_mul(31).wrapping_add(seed).wrapping_mul(7);
+            *slot = (i as i16)
+                .wrapping_mul(31)
+                .wrapping_add(seed)
+                .wrapping_mul(7);
         }
     }
 

@@ -138,11 +138,11 @@ fn depth1_session_matches_reference_startpos_fixture() {
         (Some(cp), None) => {
             assert_eq!(score_kind, "cp", "expected a cp score in:\n{out}");
             assert_eq!(score_val, cp, "score cp mismatch in:\n{out}");
-        }
+        },
         (None, Some(mate)) => {
             assert_eq!(score_kind, "mate", "expected a mate score in:\n{out}");
             assert_eq!(score_val, mate, "score mate mismatch in:\n{out}");
-        }
+        },
         other => panic!("fixture score must be exactly one of cp/mate, got {other:?}"),
     }
 }
