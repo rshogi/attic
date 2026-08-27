@@ -129,6 +129,47 @@ fn pick_random_plies(options: &Options, rng: &mut Rng) -> Vec<bool> {
     flags
 }
 
+/// How long one side has been lost enough to resign.
+///
+/// The score is from the side to move and the side to move alternates, so the
+/// losing side reads a losing score only on its own turns — on the other side's
+/// turn the same position reads as won. Counting "the side to move is behind"
+/// therefore breaks the run every other ply and never gets past one. What is
+/// counted here is the *side that is behind*, which does not alternate.
+#[derive(Default)]
+struct Resignation {
+    /// The side that is behind, `true` for Black, `None` when neither is.
+    losing: Option<bool>,
+    streak: u32,
+}
+
+impl Resignation {
+    /// The side that should resign, once it has been behind for `resign_count`
+    /// plies running. A `resign_cp` of zero or less turns the judgement off.
+    fn update(&mut self, root_cp: i32, black_to_move: bool, options: &Options) -> Option<bool> {
+        let behind = match options.resign_cp > 0 {
+            false => None,
+            true if root_cp <= -options.resign_cp => Some(black_to_move),
+            true if root_cp >= options.resign_cp => Some(!black_to_move),
+            _ => None,
+        };
+        match behind {
+            Some(side) if self.losing == Some(side) => self.streak += 1,
+            Some(side) => {
+                self.losing = Some(side);
+                self.streak = 1;
+            },
+            None => {
+                self.losing = None;
+                self.streak = 0;
+            },
+        }
+        // `max(1)` so a count of zero resigns on the first losing ply rather
+        // than on the position before it was ever judged.
+        behind.filter(|_| self.streak >= options.resign_count.max(1))
+    }
+}
+
 /// Plays one game with an already-built searcher.
 ///
 /// `qs` is deliberately a caller-owned parameter rather than built here.
@@ -136,21 +177,28 @@ fn pick_random_plies(options: &Options, rng: &mut Rng) -> Vec<bool> {
 /// `(2*2*32*81) * (32*81)` `i16` — 51MB, zero-filled. Building one per move cost
 /// ~5GB of allocation per game and made the search 28x slower than the reference
 /// engine; the searcher is built once per worker and reused across games.
+/// `start` overrides where the game begins, which is what recovery plays from:
+/// a position restored out of an existing corpus, its move number already set.
+/// `None` draws an opening the usual way.
 pub fn play_game(
     qs: &mut QSearch<'_>,
     collected: &Arc<Mutex<DeepestPvs>>,
     options: &Options,
     rng: &mut Rng,
+    start: Option<Position>,
 ) -> Game {
     // Drawn here rather than in the worker because `Rng::below` is private to
     // this module, and the worker's `rng` is already threaded through.
-    let mut pos = match options.start_sfens.len() {
-        0 => Position::startpos(),
-        count => {
-            let sfen = &options.start_sfens[rng.below(count)];
-            // Every line was parsed when the file was read, so a failure here
-            // would mean the list was corrupted after startup.
-            parse_sfen(sfen).expect("start positions are validated at startup")
+    let mut pos = match start {
+        Some(position) => position,
+        None => match options.start_sfens.len() {
+            0 => Position::startpos(),
+            count => {
+                let sfen = &options.start_sfens[rng.below(count)];
+                // Every line was parsed when the file was read, so a failure
+                // here would mean the list was corrupted after startup.
+                parse_sfen(sfen).expect("start positions are validated at startup")
+            },
         },
     };
     let mut records = Vec::new();
@@ -158,7 +206,7 @@ pub fn play_game(
     // filter drops records without shortening the game — and not `pos.ply()`
     // either, which counts from the opening's own move number.
     let mut ply_count = 0u16;
-    let mut resign_streak = 0u32;
+    let mut resignation = Resignation::default();
     let mut undos = Vec::new();
     let random_plies = pick_random_plies(options, rng);
     let mut legal: Vec<Move> = Vec::with_capacity(128);
@@ -197,15 +245,8 @@ pub fn play_game(
 
         let root_cp = i32::from(outcome.score);
 
-        // Resignation is judged from the side to move, so a streak only counts
-        // when the same side keeps seeing a lost position.
-        if root_cp <= -options.resign_cp {
-            resign_streak += 1;
-            if resign_streak >= options.resign_count {
-                break (if side_to_move_is_black { -1 } else { 1 }, "resign");
-            }
-        } else {
-            resign_streak = 0;
+        if let Some(black_resigns) = resignation.update(root_cp, side_to_move_is_black, options) {
+            break (if black_resigns { -1 } else { 1 }, "resign");
         }
 
         // Spread the opening: always playing the best move from one start
@@ -275,7 +316,7 @@ mod random_ply_tests {
     use super::*;
     use crate::options::Format;
 
-    fn options(count: u32, minply: u16, maxply: u16) -> Options {
+    pub(super) fn options(count: u32, minply: u16, maxply: u16) -> Options {
         Options {
             eval_dir: std::path::PathBuf::new(),
             out: std::path::PathBuf::new(),
@@ -297,6 +338,7 @@ mod random_ply_tests {
             random_move_minply: minply,
             random_move_maxply: maxply,
             start_sfens: Vec::new(),
+            recover_from: None,
             seed: 1,
             hash_mb: 16,
         }
@@ -466,5 +508,102 @@ impl Game {
         }
         out.push_str("]}");
         out
+    }
+}
+
+#[cfg(test)]
+mod resignation_tests {
+    use super::*;
+
+    /// `true` is Black to move, matching `Resignation::update`'s second argument
+    /// and `side_to_move_is_black` at the call site.
+    const BLACK: bool = true;
+    const WHITE: bool = false;
+
+    fn opts(resign_cp: i32, resign_count: u32) -> Options {
+        Options {
+            resign_cp,
+            resign_count,
+            ..super::random_ply_tests::options(0, 16, 32)
+        }
+    }
+
+    #[test]
+    fn a_streak_survives_the_side_to_move_alternating() {
+        // The regression this guards: the score is from the side to move, so a
+        // lost position reads `-3100` on the losing side's turn and `+3100` on
+        // the winning side's. Counting "the side to move is behind" broke the
+        // run every other ply and never got past one, which made the default
+        // `resign_count` unreachable and left games playing on to mate.
+        let options = opts(3000, 4);
+        let mut resignation = Resignation::default();
+        assert_eq!(resignation.update(-3100, BLACK, &options), None);
+        assert_eq!(resignation.update(3100, WHITE, &options), None);
+        assert_eq!(resignation.update(-3200, BLACK, &options), None);
+        assert_eq!(
+            resignation.update(3300, WHITE, &options),
+            Some(BLACK),
+            "four plies of Black being lost is four plies"
+        );
+    }
+
+    #[test]
+    fn coming_back_inside_the_bound_clears_the_count() {
+        let options = opts(3000, 4);
+        let mut resignation = Resignation::default();
+        resignation.update(-3100, BLACK, &options);
+        resignation.update(3100, WHITE, &options);
+        assert_eq!(resignation.update(-100, BLACK, &options), None, "level again");
+
+        // Counting starts over, so the next three plies are not enough.
+        assert_eq!(resignation.update(3100, WHITE, &options), None);
+        assert_eq!(resignation.update(-3100, BLACK, &options), None);
+        assert_eq!(resignation.update(3100, WHITE, &options), None);
+        assert_eq!(resignation.update(-3100, BLACK, &options), Some(BLACK));
+    }
+
+    #[test]
+    fn the_count_restarts_when_the_losing_side_changes() {
+        let options = opts(3000, 2);
+        let mut resignation = Resignation::default();
+        assert_eq!(resignation.update(-3100, BLACK, &options), None);
+        assert_eq!(
+            resignation.update(-3100, WHITE, &options),
+            None,
+            "White is behind now; Black's count does not carry over"
+        );
+        assert_eq!(resignation.update(3100, BLACK, &options), Some(WHITE));
+    }
+
+    #[test]
+    fn a_count_of_one_resigns_on_the_first_lost_ply() {
+        let options = opts(3000, 1);
+        assert_eq!(
+            Resignation::default().update(-3000, BLACK, &options),
+            Some(BLACK),
+            "the bound itself is lost enough"
+        );
+    }
+
+    #[test]
+    fn a_score_inside_the_bound_never_resigns() {
+        let options = opts(3000, 1);
+        let mut resignation = Resignation::default();
+        for ply in 0..64 {
+            let score = if ply % 2 == 0 { -2999 } else { 2999 };
+            assert_eq!(resignation.update(score, ply % 2 == 0, &options), None);
+        }
+    }
+
+    #[test]
+    fn a_resign_cp_of_zero_never_resigns() {
+        // What generating endgame positions runs with: the game has to reach
+        // mate for the mate scores to be recorded.
+        let options = opts(0, 1);
+        let mut resignation = Resignation::default();
+        for ply in 0..64 {
+            let mated = 31_999 - ply;
+            assert_eq!(resignation.update(-mated, BLACK, &options), None);
+        }
     }
 }
