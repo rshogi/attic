@@ -57,10 +57,17 @@ pub struct Options {
     /// average game length turns out to be.
     pub positions: u64,
     pub max_ply: u16,
-    /// Resign once the score is worse than this for `resign_count` plies in a
-    /// row. Without it a lost game plays on to `max_ply`, and those positions
-    /// teach nothing that the resignation itself does not.
+    /// Resign once one side has been worse than this for `resign_count` plies
+    /// in a row. Without it a lost game plays on to `max_ply` or to mate, and
+    /// those positions teach nothing that the resignation itself does not.
+    ///
+    /// `0` or less turns resignation off, which is what generating endgame
+    /// positions wants: the game then runs to mate and the mate scores are
+    /// recorded, provided `eval_limit` is off as well.
     pub resign_cp: i32,
+    /// Plies in a row the same side must be behind before it resigns. Counted
+    /// over the side that is behind, not the side to move — see `Resignation`
+    /// in [`crate::game`] for why that distinction is load-bearing.
     pub resign_count: u32,
     /// Cores to leave idle for whoever else is on the machine.
     ///
@@ -110,6 +117,14 @@ pub struct Options {
     /// than kept as `Position`, so each game gets a position with no history
     /// behind it. One parse against a depth-9 search is nothing.
     pub start_sfens: Vec<String>,
+    /// A directory of existing `.bin` shards to resume games out of, instead of
+    /// starting new ones.
+    ///
+    /// Each game in there is replayed from the last position it still has a
+    /// record for; see [`crate::recover`]. Set, this replaces the opening draw
+    /// entirely — `--start-sfens` and `--random-move-count` have nothing to act
+    /// on, and both are refused alongside it.
+    pub recover_from: Option<PathBuf>,
     pub seed: u64,
     /// Hash size per worker, in MB. Small on purpose: hundreds of workers each
     /// hold one, and a fixed-depth search does not benefit from a large table
@@ -122,12 +137,12 @@ impl Options {
 usage: attic-gensfen --eval-dir DIR --out FILE
                      [--depth 9] [--nodes N] [--multipv 5] [--threads N]
                      [--games N] [--positions N]
-                     [--max-ply 320] [--resign-cp 3000] [--resign-count 4]
+                     [--max-ply 320] [--resign-cp 3000] [--resign-count 1]
                      [--fv-scale 28] [--format jsonl|psv|pack]
                      [--headroom 8] [--governor-secs 30] [--eval-limit N]
                      [--random-move-count 5] [--random-move-minply 16]
                      [--random-move-maxply 32] [--start-sfens FILE]
-                     [--seed 1] [--hash 16]";
+                     [--recover-from DIR] [--seed 1] [--hash 16]";
 
     pub fn parse(args: impl Iterator<Item = String>) -> Result<Self, String> {
         let mut eval_dir = None;
@@ -140,7 +155,7 @@ usage: attic-gensfen --eval-dir DIR --out FILE
         let mut positions = 0u64;
         let mut max_ply = 320u16;
         let mut resign_cp = 3000;
-        let mut resign_count = 4;
+        let mut resign_count = 1;
         let mut headroom = 8usize;
         let mut governor_secs = 30u64;
         let mut eval_limit = 0i32;
@@ -150,6 +165,7 @@ usage: attic-gensfen --eval-dir DIR --out FILE
         let mut random_move_minply = 16u16;
         let mut random_move_maxply = 32u16;
         let mut start_sfens: Option<PathBuf> = None;
+        let mut recover_from: Option<PathBuf> = None;
         let mut seed = 1u64;
         let mut hash_mb = 16usize;
 
@@ -183,6 +199,7 @@ usage: attic-gensfen --eval-dir DIR --out FILE
                     random_move_maxply = parse_field(&value()?, "--random-move-maxply")?;
                 },
                 "--start-sfens" => start_sfens = Some(PathBuf::from(value()?)),
+                "--recover-from" => recover_from = Some(PathBuf::from(value()?)),
                 "--seed" => seed = parse_field(&value()?, "--seed")?,
                 "--hash" => hash_mb = parse_field(&value()?, "--hash")?,
                 other => return Err(format!("unknown flag {other}")),
@@ -206,6 +223,47 @@ usage: attic-gensfen --eval-dir DIR --out FILE
                  --random-move-maxply {random_move_maxply}"
             ));
         }
+        if let Some(dir) = &recover_from {
+            if start_sfens.is_some() {
+                return Err(
+                    "--recover-from replaces the opening draw; --start-sfens has nothing to act on"
+                        .to_string(),
+                );
+            }
+            if random_move_count > 0 {
+                return Err(
+                    "--recover-from resumes positions that are already decided; a random move \
+                     there rewrites a result the prefix was recorded with. Pass \
+                     --random-move-count 0"
+                        .to_string(),
+                );
+            }
+            if matches!(format, Format::Jsonl) {
+                return Err(
+                    "--recover-from carries the kept records through as bytes, which only \
+                     --format psv or pack can hold"
+                        .to_string(),
+                );
+            }
+            // The output is opened for append, so pointing it at the input
+            // directory grows the very shards being read — and the reader would
+            // then walk into records this run wrote.
+            let out_dir = out
+                .as_ref()
+                .and_then(|path| path.parent())
+                .map(|parent| parent.to_path_buf())
+                .unwrap_or_else(|| PathBuf::from("."));
+            if let (Ok(input), Ok(output)) = (dir.canonicalize(), out_dir.canonicalize()) {
+                if input == output {
+                    return Err(format!(
+                        "--recover-from and --out share the directory {}; the output is opened \
+                         for append and would grow the shards being read",
+                        input.display()
+                    ));
+                }
+            }
+        }
+
         let start_sfens = match start_sfens {
             Some(path) => load_start_sfens(&path)?,
             None => Vec::new(),
@@ -232,6 +290,7 @@ usage: attic-gensfen --eval-dir DIR --out FILE
             random_move_minply,
             random_move_maxply,
             start_sfens,
+            recover_from,
             seed,
             hash_mb,
         })

@@ -19,6 +19,7 @@
 mod game;
 mod governor;
 mod options;
+mod recover;
 mod worker;
 
 use std::sync::Arc;
@@ -82,6 +83,34 @@ fn main() {
         std::time::Duration::from_secs(options.governor_secs),
     );
 
+    // Recovery reads the corpus back at the same record width it was written
+    // with, which `--format` and `--multipv` are what state — the files carry
+    // neither.
+    let source = match &options.recover_from {
+        None => None,
+        Some(dir) => {
+            let stride = match options.format {
+                options::Format::Psv => 0,
+                _ => options.multipv,
+            };
+            match recover::Source::new(dir, stride) {
+                Ok(source) => {
+                    eprintln!(
+                        "gensfen: recovering {} shards from {}",
+                        source.len(),
+                        dir.display()
+                    );
+                    Some(source)
+                },
+                Err(err) => {
+                    eprintln!("{err}");
+                    std::process::exit(1);
+                },
+            }
+        },
+    };
+    let source = source.as_ref();
+
     let games_played = Arc::new(AtomicU64::new(0));
     let positions_written = Arc::new(AtomicU64::new(0));
     let numa = Arc::new(numa);
@@ -140,6 +169,7 @@ fn main() {
                                 index,
                                 &games_played,
                                 &positions_written,
+                                source,
                             );
                         });
                     }
