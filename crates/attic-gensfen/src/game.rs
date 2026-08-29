@@ -702,7 +702,7 @@ mod resumed_budget_tests {
 
     use super::*;
 
-    /// The budget every game here is given. Ten because a fourfold cannot
+    /// The budget most games here are given. Ten because a fourfold cannot
     /// happen inside it: returning to a position takes four plies, so a fourth
     /// occurrence needs twelve. That leaves `--max-ply` as the only way any of
     /// these games can end, which is what makes the ply counts assertable.
@@ -723,10 +723,10 @@ mod resumed_budget_tests {
 
     /// Resignation off, one ply of search, one PV line. Small on every axis:
     /// these tests play real games and only the *length* of one is the answer.
-    fn options() -> Options {
+    fn options(max_ply: u16) -> Options {
         let mut options = super::random_ply_tests::options(0, 1, 1);
         options.depth = 1;
-        options.max_ply = BUDGET;
+        options.max_ply = max_ply;
         options.multipv = 1;
         options.resign_cp = 0;
         options
@@ -767,7 +767,7 @@ mod resumed_budget_tests {
         // was handed the budget again and played a second game on top of the
         // first. Here the budget is spent exactly, and the right number of
         // further plies is none at all.
-        let options = options();
+        let options = options(BUDGET);
         let game = play(
             Some(Start {
                 position: Position::startpos(),
@@ -783,7 +783,7 @@ mod resumed_budget_tests {
     fn a_resumed_game_plays_only_the_plies_its_budget_has_left() {
         // Six spent of ten leaves four, and four is what it must play — not
         // ten.
-        let options = options();
+        let options = options(BUDGET);
         let game = play(
             Some(Start {
                 position: Position::startpos(),
@@ -799,7 +799,7 @@ mod resumed_budget_tests {
     fn a_game_that_was_not_resumed_gets_the_whole_budget() {
         // The other side of the same arithmetic: nothing has been spent, so
         // nothing is deducted. This is what every recovered game used to get.
-        let options = options();
+        let options = options(BUDGET);
         let game = play(None, &options);
         assert_eq!(plies(&game), BUDGET, "a fresh game plays its whole budget");
         assert_eq!(game.reason, "max_ply");
@@ -811,7 +811,7 @@ mod resumed_budget_tests {
         // number, restored from the record the game resumed at. They are
         // different numbers and a corpus needs both — the budget so the game
         // stops, the move number so its records still sort into a game.
-        let options = options();
+        let options = options(BUDGET);
         let mut position = Position::startpos();
         position.set_ply(137);
         let game = play(
@@ -824,6 +824,37 @@ mod resumed_budget_tests {
 
         let plies: Vec<u16> = game.records.iter().map(|record| record.ply).collect();
         assert_eq!(plies, vec![137, 138, 139], "7 spent of 10 leaves 3");
+    }
+
+    #[test]
+    fn a_game_resumed_at_move_500_stops_at_move_512() {
+        // The full-size shape of it, at the numbers a real corpus carries: a
+        // game 500 plies deep, resumed under a 512-ply cap, must stop at 512.
+        // Not at 1012, which zero-based counting gave it.
+        //
+        // The last position *recorded* is move 511 — that record is the one
+        // whose move produces move 512, and the game ends there rather than
+        // searching a position it has no budget to move from.
+        let options = options(512);
+        let mut position = Position::startpos();
+        position.set_ply(500);
+        let game = play(
+            Some(Start {
+                position,
+                played: 500,
+            }),
+            &options,
+        );
+
+        assert_eq!(game.reason, "max_ply", "nothing else should end this game");
+        assert_eq!(plies(&game), 12, "500 spent of 512 leaves 12");
+        let last = game.records.last().expect("the game played something");
+        assert_eq!(last.ply, 511, "the last record moves into 512");
+        assert_eq!(
+            game.records.first().expect("the game played something").ply,
+            500,
+            "and the first is the position it resumed at",
+        );
     }
 }
 
