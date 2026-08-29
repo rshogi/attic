@@ -2,9 +2,10 @@
 
 use std::sync::{Arc, Mutex};
 
-use attic_search::{PvInfo, PvOutputConfig, PvSink, QSearch};
+use attic_search::{EnteringKingConfig, PvInfo, PvOutputConfig, PvSink, QSearch, RootKind};
 use attic_state::{
-    Move, PackedSfen, Position, format_sfen, format_usi_move, parse_sfen, sfen_pack,
+    Move, PackedSfen, Position, RepetitionState, format_sfen, format_usi_move, parse_sfen,
+    sfen_pack,
 };
 use attic_storage::TranspositionTable;
 
@@ -169,6 +170,65 @@ impl Resignation {
     }
 }
 
+/// How a terminal position scores, as `(result, reason)`.
+///
+/// `result` is from Black throughout, matching [`Game::result`], which is why
+/// every one of these needs to know whose turn it was.
+type Ending = (i32, &'static str);
+
+/// Score a win for the side to move.
+fn stm_wins(black_to_move: bool) -> i32 {
+    if black_to_move { 1 } else { -1 }
+}
+
+/// The result a repetition carries, or `None` when the position is not one.
+///
+/// The viewpoint is [`RepetitionState`]'s: `Lose` means the **side to move** is
+/// the one that has been perpetually checking, so it is the side to move that
+/// loses. Getting this backwards is silent — perpetual check is rare enough
+/// that an inverted sign would not show up in an aggregate win rate.
+fn repetition_ending(state: RepetitionState, black_to_move: bool) -> Option<Ending> {
+    match state {
+        RepetitionState::Draw => Some((0, "repetition")),
+        RepetitionState::Lose => Some((-stm_wins(black_to_move), "perpetual_check")),
+        RepetitionState::Win => Some((stm_wins(black_to_move), "perpetual_check")),
+        // `Superior` / `Inferior` describe a repetition with *unequal* hands,
+        // which is no repetition under the rules at all — they are search
+        // heuristics and end no game. `game_repetition` never returns them, and
+        // treating them as a draw here would end games that are still running.
+        RepetitionState::None | RepetitionState::Superior | RepetitionState::Inferior => None,
+    }
+}
+
+/// The result a root search that never searched carries, or `None` for an
+/// ordinary one.
+///
+/// Both shortcuts return from `run_root` before a node is visited, so they emit
+/// no `info` line and reach the PV collector as an empty list. Read the kind
+/// rather than the list: taken as "no candidates", a declaration win would score
+/// as a **mate against the declaring side** — not a missing rule but an
+/// inverted result.
+fn root_ending(kind: RootKind, black_to_move: bool) -> Option<Ending> {
+    match kind {
+        RootKind::DeclarationWin => Some((stm_wins(black_to_move), "declaration")),
+        RootKind::Resign => Some((-stm_wins(black_to_move), "mated")),
+        RootKind::Normal => None,
+    }
+}
+
+/// Where a game begins when it does not begin from an opening.
+///
+/// The two fields travel together because they are one fact: the game is being
+/// picked up part-way through, and both where it stopped and how far it had
+/// already got are needed to continue it. Passing only the position is what let
+/// a recovered game play a second full `--max-ply` budget.
+pub struct Start {
+    /// The position to play on from, its move number already restored.
+    pub position: Position,
+    /// Plies the original game had already spent against `--max-ply`.
+    pub played: u16,
+}
+
 /// Plays one game with an already-built searcher.
 ///
 /// `qs` is deliberately a caller-owned parameter rather than built here.
@@ -177,34 +237,46 @@ impl Resignation {
 /// ~5GB of allocation per game and made the search 28x slower than the reference
 /// engine; the searcher is built once per worker and reused across games.
 /// `start` overrides where the game begins, which is what recovery plays from:
-/// a position restored out of an existing corpus, its move number already set.
-/// `None` draws an opening the usual way.
+/// a position restored out of an existing corpus, its move number already set,
+/// and the plies it took to get there. `None` draws an opening the usual way.
 pub fn play_game(
     qs: &mut QSearch<'_>,
     collected: &Arc<Mutex<DeepestPvs>>,
     options: &Options,
     rng: &mut Rng,
-    start: Option<Position>,
+    start: Option<Start>,
 ) -> Game {
     // Drawn here rather than in the worker because `Rng::below` is private to
     // this module, and the worker's `rng` is already threaded through.
-    let mut pos = match start {
-        Some(position) => position,
-        None => match options.start_sfens.len() {
-            0 => Position::startpos(),
-            count => {
-                let sfen = &options.start_sfens[rng.below(count)];
-                // Every line was parsed when the file was read, so a failure
-                // here would mean the list was corrupted after startup.
-                parse_sfen(sfen).expect("start positions are validated at startup")
-            },
+    let (mut pos, already_played) = match start {
+        Some(start) => (start.position, start.played),
+        None => {
+            let pos = match options.start_sfens.len() {
+                0 => Position::startpos(),
+                count => {
+                    let sfen = &options.start_sfens[rng.below(count)];
+                    // Every line was parsed when the file was read, so a failure
+                    // here would mean the list was corrupted after startup.
+                    parse_sfen(sfen).expect("start positions are validated at startup")
+                },
+            };
+            (pos, 0)
         },
     };
+    // The entering-king thresholds are a snapshot of the root's material, so
+    // they are taken once per game — and, for the `_H` rules, they have to be
+    // taken from *this* position rather than left at the default.
+    let entering_king = EnteringKingConfig::new(options.entering_king, &pos);
+    qs.set_entering_king(entering_king);
     let mut records = Vec::new();
     // Plies played in this game, which is not `records.len()` — the eval-limit
     // filter drops records without shortening the game — and not `pos.ply()`
     // either, which counts from the opening's own move number.
-    let mut ply_count = 0u16;
+    //
+    // A recovered game starts this at what the original had already spent:
+    // `--max-ply` bounds the game, not the continuation, and starting from zero
+    // handed every recovered game a second full budget.
+    let mut ply_count = already_played;
     let mut resignation = Resignation::default();
     let mut undos = Vec::new();
     let random_plies = pick_random_plies(options, rng);
@@ -222,6 +294,10 @@ pub fn play_game(
 
         let outcome = qs.run_root(&pos, options.depth);
         let side_to_move_is_black = pos.side_to_move() == attic_state::Color::Black;
+
+        if let Some(ending) = root_ending(outcome.kind, side_to_move_is_black) {
+            break ending;
+        }
 
         let mut lines = {
             let mut slot = collected.lock().expect("pv collector mutex poisoned");
@@ -295,6 +371,15 @@ pub fn play_game(
 
         ply_count += 1;
         undos.push((played, pos.do_move(played)));
+
+        // Judged on the position just reached, and with the *game* rule rather
+        // than the search's: `Position::is_repetition` adjudicates a two-fold
+        // under the default `quick-draw` build and looks back only sixteen
+        // plies, both of which are right inside a tree and wrong for a result.
+        let black_to_move = pos.side_to_move() == attic_state::Color::Black;
+        if let Some(ending) = repetition_ending(pos.game_repetition(), black_to_move) {
+            break ending;
+        }
     };
 
     // Unwind so the position is reusable; `do_move` borrows structures the next
@@ -326,6 +411,7 @@ mod random_ply_tests {
             games: 0,
             positions: 0,
             max_ply: 320,
+            entering_king: attic_search::EnteringKingRule::Point27,
             resign_cp: 3000,
             resign_count: 4,
             headroom: 0,
@@ -604,5 +690,92 @@ mod resignation_tests {
             let mated = 31_999 - ply;
             assert_eq!(resignation.update(-mated, BLACK, &options), None);
         }
+    }
+}
+
+#[cfg(test)]
+mod ending_tests {
+    use super::*;
+
+    const BLACK: bool = true;
+    const WHITE: bool = false;
+
+    #[test]
+    fn a_fourfold_ends_the_game_as_a_draw() {
+        assert_eq!(
+            repetition_ending(RepetitionState::Draw, BLACK),
+            Some((0, "repetition")),
+        );
+        assert_eq!(
+            repetition_ending(RepetitionState::Draw, WHITE),
+            Some((0, "repetition")),
+        );
+    }
+
+    #[test]
+    fn perpetual_check_loses_for_the_side_that_was_checking() {
+        // `RepetitionState::Lose` is stated from the side to move, so LOSE with
+        // Black to move is a win for White: -1. Reading the state from the
+        // *checked* side instead inverts every one of these, and perpetual
+        // check is rare enough that the inversion would not move an aggregate
+        // win rate off 50%.
+        assert_eq!(
+            repetition_ending(RepetitionState::Lose, BLACK),
+            Some((-1, "perpetual_check")),
+        );
+        assert_eq!(
+            repetition_ending(RepetitionState::Lose, WHITE),
+            Some((1, "perpetual_check")),
+        );
+        assert_eq!(
+            repetition_ending(RepetitionState::Win, BLACK),
+            Some((1, "perpetual_check")),
+        );
+        assert_eq!(
+            repetition_ending(RepetitionState::Win, WHITE),
+            Some((-1, "perpetual_check")),
+        );
+    }
+
+    #[test]
+    fn an_unequal_hand_repetition_does_not_end_the_game() {
+        // Superior/inferior are search heuristics for a repetition with unequal
+        // hands, which is not a repetition under the rules. Ending a game on one
+        // would cut games short and score them as draws.
+        for state in [
+            RepetitionState::None,
+            RepetitionState::Superior,
+            RepetitionState::Inferior,
+        ] {
+            assert_eq!(repetition_ending(state, BLACK), None, "{state:?}");
+            assert_eq!(repetition_ending(state, WHITE), None, "{state:?}");
+        }
+    }
+
+    #[test]
+    fn a_declaration_wins_for_the_side_that_declared() {
+        // The bug this replaced: `run_root` returns before searching, so the PV
+        // collector is empty and the old loop read that as "no legal move" —
+        // scoring an entering-king *win* as a mate against the declaring side.
+        assert_eq!(
+            root_ending(RootKind::DeclarationWin, BLACK),
+            Some((1, "declaration")),
+        );
+        assert_eq!(
+            root_ending(RootKind::DeclarationWin, WHITE),
+            Some((-1, "declaration")),
+        );
+    }
+
+    #[test]
+    fn no_legal_move_loses_for_the_side_to_move() {
+        assert_eq!(root_ending(RootKind::Resign, BLACK), Some((-1, "mated")));
+        assert_eq!(root_ending(RootKind::Resign, WHITE), Some((1, "mated")));
+    }
+
+    #[test]
+    fn an_ordinary_search_ends_nothing() {
+        assert_eq!(root_ending(RootKind::Normal, BLACK), None);
+        assert_eq!(root_ending(RootKind::Normal, WHITE), None);
     }
 }

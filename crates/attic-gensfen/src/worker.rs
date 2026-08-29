@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use attic_search::{PvOutputConfig, QSearch, SearchControl};
 use attic_storage::TranspositionTable;
 
-use crate::game::{Collector, DeepestPvs, Rng, play_game};
+use crate::game::{Collector, DeepestPvs, Rng, Start, play_game};
 use crate::governor::Governor;
 use crate::options::{Format, Options};
 use crate::recover::{Resume, Shard, Source, record_len, resume_from, rewrite_results};
@@ -116,7 +116,13 @@ pub fn run(
             },
         };
         let (start, prefix) = match resume {
-            Some(resume) => (Some(resume.position), resume.prefix),
+            Some(resume) => (
+                Some(Start {
+                    position: resume.position,
+                    played: resume.played,
+                }),
+                resume.prefix,
+            ),
             None => (None, Vec::new()),
         };
         let game = play_game(&mut qs, &collected, options, &mut rng, start);

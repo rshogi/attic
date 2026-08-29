@@ -52,6 +52,13 @@ pub struct Resume {
     pub prefix: Vec<u8>,
     /// The position the last kept record holds, with its move number restored.
     pub position: Position,
+    /// Plies the original game had already played when it reached `position`.
+    ///
+    /// `--max-ply` bounds the game, not the continuation, so the new run has to
+    /// start its count here rather than at zero. Records up to the cut are one
+    /// per ply — that is what `cut_at` looks for — so the prefix's length is
+    /// the count.
+    pub played: u16,
 }
 
 /// Stamp `result` into every record of a prefix, from each one's side to move.
@@ -132,7 +139,14 @@ pub fn resume_from(records: &[u8], record_len: usize) -> Option<Result<Resume, S
     // that matches the game it belongs to, so the original is dropped.
     let last = &records[(cut - 1) * record_len..cut * record_len];
     let prefix = records[..(cut - 1) * record_len].to_vec();
-    Some(position_from(last).map(|position| Resume { prefix, position }))
+    // `cut - 1` plies, saturating only against a corpus whose games are longer
+    // than a `u16` — which the ply field itself could not have held.
+    let played = u16::try_from(cut - 1).unwrap_or(u16::MAX);
+    Some(position_from(last).map(|position| Resume {
+        prefix,
+        position,
+        played,
+    }))
 }
 
 /// One shard, read a game at a time.
@@ -377,6 +391,29 @@ mod tests {
             resume.prefix.len(),
             2 * record_len(MULTIPV),
             "ply 3 is dropped: the replay records that position itself"
+        );
+    }
+
+    #[test]
+    fn a_resume_carries_the_plies_the_original_game_already_spent() {
+        // `--max-ply` bounds the game, not the continuation. Before this was
+        // carried through, a recovered game restarted its count at zero and got
+        // a second full budget — a 320-ply cap that let games reach 640.
+        let mut records = Vec::new();
+        for ply in 1..=40 {
+            records.extend_from_slice(&record(&startpos(), ply, 1));
+        }
+        let resume = resume_from(&records, record_len(MULTIPV))
+            .expect("the game has records")
+            .expect("they decode");
+        assert_eq!(
+            resume.played, 39,
+            "the last record is replayed, so 39 plies are behind it",
+        );
+        assert_eq!(
+            usize::from(resume.played) * record_len(MULTIPV),
+            resume.prefix.len(),
+            "up to the cut there is one record per ply",
         );
     }
 

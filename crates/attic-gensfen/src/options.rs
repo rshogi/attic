@@ -57,6 +57,16 @@ pub struct Options {
     /// average game length turns out to be.
     pub positions: u64,
     pub max_ply: u16,
+    /// Which entering-king (nyugyoku) law ends a game by declaration, spelled
+    /// the way the engine's own `EnteringKingRule` option is
+    /// (`CSARule27`, `CSARule24`, `TryRule`, `NoEnteringKing`, …).
+    ///
+    /// This is a *rule of the games being generated*, not a search setting: a
+    /// king that walks into the enemy camp is never mated and never resigns, so
+    /// without it those games run to `max_ply` and are written out as draws.
+    /// Defaults to `CSARule27`, which is the engine's default and the law
+    /// ordinary tournament play uses.
+    pub entering_king: attic_search::EnteringKingRule,
     /// Resign once one side has been worse than this for `resign_count` plies
     /// in a row. Without it a lost game plays on to `max_ply` or to mate, and
     /// those positions teach nothing that the resignation itself does not.
@@ -137,7 +147,8 @@ impl Options {
 usage: attic-gensfen --eval-dir DIR --out FILE
                      [--depth 9] [--nodes N] [--multipv 5] [--threads N]
                      [--games N] [--positions N]
-                     [--max-ply 320] [--resign-cp 3000] [--resign-count 1]
+                     [--max-ply 320] [--entering-king CSARule27]
+                     [--resign-cp 3000] [--resign-count 1]
                      [--fv-scale 28] [--format jsonl|psv|pack]
                      [--headroom 8] [--governor-secs 30] [--eval-limit N]
                      [--random-move-count 5] [--random-move-minply 16]
@@ -154,6 +165,7 @@ usage: attic-gensfen --eval-dir DIR --out FILE
         let mut games = 0u64;
         let mut positions = 0u64;
         let mut max_ply = 320u16;
+        let mut entering_king = attic_search::EnteringKingRule::Point27;
         let mut resign_cp = 3000;
         let mut resign_count = 1;
         let mut headroom = 8usize;
@@ -182,6 +194,7 @@ usage: attic-gensfen --eval-dir DIR --out FILE
                 "--games" => games = parse_field(&value()?, "--games")?,
                 "--positions" => positions = parse_field(&value()?, "--positions")?,
                 "--max-ply" => max_ply = parse_field(&value()?, "--max-ply")?,
+                "--entering-king" => entering_king = parse_entering_king(&value()?)?,
                 "--resign-cp" => resign_cp = parse_field(&value()?, "--resign-cp")?,
                 "--resign-count" => resign_count = parse_field(&value()?, "--resign-count")?,
                 "--headroom" => headroom = parse_field(&value()?, "--headroom")?,
@@ -279,6 +292,7 @@ usage: attic-gensfen --eval-dir DIR --out FILE
             games,
             positions,
             max_ply,
+            entering_king,
             resign_cp,
             resign_count,
             headroom,
@@ -295,6 +309,28 @@ usage: attic-gensfen --eval-dir DIR --out FILE
             hash_mb,
         })
     }
+}
+
+/// `--entering-king`, taking the engine's own option spellings.
+///
+/// Deliberately not [`EnteringKingRule::from_option`], which answers an
+/// unrecognised string with [`EnteringKingRule::None`] because the USI option
+/// layer has already validated it against the declared `var` list. Nothing has
+/// validated a command line, and there the same fallback would silently turn
+/// declaration off for the whole run and write the resulting games out as
+/// draws.
+fn parse_entering_king(raw: &str) -> Result<attic_search::EnteringKingRule, String> {
+    use attic_search::EnteringKingRule;
+
+    EnteringKingRule::STRINGS
+        .contains(&raw)
+        .then(|| EnteringKingRule::from_option(raw))
+        .ok_or_else(|| {
+            format!(
+                "unknown --entering-king {raw:?} ({})",
+                EnteringKingRule::STRINGS.join(", ")
+            )
+        })
 }
 
 fn parse_field<T: std::str::FromStr>(raw: &str, flag: &str) -> Result<T, String> {
@@ -329,6 +365,39 @@ mod start_sfen_tests {
         let mut args = vec!["--eval-dir", "eval", "--out", "out"];
         args.extend_from_slice(extra);
         Options::parse(args.into_iter().map(String::from))
+    }
+
+    #[test]
+    fn declaration_is_on_by_default_and_takes_the_engines_spellings() {
+        use attic_search::EnteringKingRule;
+
+        assert_eq!(
+            parse_with(&[]).expect("parses").entering_king,
+            EnteringKingRule::Point27,
+            "a generator that cannot declare writes entered-king games out as \
+             draws, so the rule has to be on unless it is turned off",
+        );
+        for (spelling, rule) in [
+            ("CSARule24", EnteringKingRule::Point24),
+            ("CSARule27", EnteringKingRule::Point27),
+            ("TryRule", EnteringKingRule::Try),
+            ("NoEnteringKing", EnteringKingRule::None),
+        ] {
+            let options = parse_with(&["--entering-king", spelling]).expect("parses");
+            assert_eq!(options.entering_king, rule, "--entering-king {spelling}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_entering_king_rule_is_refused_rather_than_disabled() {
+        // `EnteringKingRule::from_option` answers an unrecognised string with
+        // `None`, which is safe behind a validated USI combo and silently turns
+        // declaration off on a command line.
+        let error = match parse_with(&["--entering-king", "27"]) {
+            Err(error) => error,
+            Ok(_) => panic!("`27` is not one of the engine's spellings"),
+        };
+        assert!(error.contains("CSARule27"), "the error lists the spellings");
     }
 
     #[test]
