@@ -2,12 +2,11 @@
 
 use std::sync::{Arc, Mutex};
 
-use attic_search::{EnteringKingConfig, PvInfo, PvOutputConfig, PvSink, QSearch, RootKind};
+use attic_search::{EnteringKingConfig, PvInfo, PvSink, QSearch, RootKind};
 use attic_state::{
     Move, PackedSfen, Position, RepetitionState, format_sfen, format_usi_move, parse_sfen,
     sfen_pack,
 };
-use attic_storage::TranspositionTable;
 
 use crate::options::Options;
 
@@ -690,6 +689,141 @@ mod resignation_tests {
             let mated = 31_999 - ply;
             assert_eq!(resignation.update(-mated, BLACK, &options), None);
         }
+    }
+}
+
+#[cfg(test)]
+mod resumed_budget_tests {
+    use std::time::{Duration, Instant};
+
+    use attic_eval::{NetHeader, NnueNetwork, NnueNetworkBuilder};
+    use attic_search::PvOutputConfig;
+    use attic_storage::TranspositionTable;
+
+    use super::*;
+
+    /// The budget every game here is given. Ten because a fourfold cannot
+    /// happen inside it: returning to a position takes four plies, so a fourth
+    /// occurrence needs twelve. That leaves `--max-ply` as the only way any of
+    /// these games can end, which is what makes the ply counts assertable.
+    const BUDGET: u16 = 10;
+
+    /// A network of zeros. Every position evaluates to the same 0, so the games
+    /// below are not good shogi — which is the point: what is under test is the
+    /// ply budget, and a search with nothing to prefer still plays legal moves
+    /// and still counts them.
+    fn flat_net() -> NnueNetwork {
+        let header = NetHeader {
+            version: 0,
+            hash: 0,
+            arch_id: "synthetic".to_string(),
+        };
+        NnueNetworkBuilder::new(header, [0u8; 32]).build()
+    }
+
+    /// Resignation off, one ply of search, one PV line. Small on every axis:
+    /// these tests play real games and only the *length* of one is the answer.
+    fn options() -> Options {
+        let mut options = super::random_ply_tests::options(0, 1, 1);
+        options.depth = 1;
+        options.max_ply = BUDGET;
+        options.multipv = 1;
+        options.resign_cp = 0;
+        options
+    }
+
+    /// Play one game from `start`, returning the finished [`Game`].
+    fn play(start: Option<Start>, options: &Options) -> Game {
+        let net = flat_net();
+        let mut tt = TranspositionTable::new();
+        tt.resize(1);
+        let collected = Arc::new(Mutex::new(DeepestPvs::default()));
+        let mut qs = QSearch::new(&net, &tt);
+        qs.set_multi_pv(options.multipv);
+        qs.set_pv_output(
+            PvOutputConfig {
+                multi_pv: options.multipv,
+                pv_interval: Duration::ZERO,
+                consideration_mode: false,
+                output_fail_lh_pv: false,
+                start_time: Instant::now(),
+            },
+            Box::new(Collector(Arc::clone(&collected))),
+        );
+        let mut rng = Rng::new(7);
+        play_game(&mut qs, &collected, options, &mut rng, start)
+    }
+
+    /// Plies this game played. With `--eval-limit` off nothing is dropped, so
+    /// the record count is the move count.
+    fn plies(game: &Game) -> u16 {
+        u16::try_from(game.records.len()).expect("these games are short")
+    }
+
+    #[test]
+    fn a_game_resumed_at_its_limit_plays_no_further_ply() {
+        // The sharp end of it: `ply_count` used to restart at zero on the
+        // recovery pass, so a game that had already spent its whole `--max-ply`
+        // was handed the budget again and played a second game on top of the
+        // first. Here the budget is spent exactly, and the right number of
+        // further plies is none at all.
+        let options = options();
+        let game = play(
+            Some(Start {
+                position: Position::startpos(),
+                played: BUDGET,
+            }),
+            &options,
+        );
+        assert_eq!(plies(&game), 0, "the budget was already spent");
+        assert_eq!(game.reason, "max_ply");
+    }
+
+    #[test]
+    fn a_resumed_game_plays_only_the_plies_its_budget_has_left() {
+        // Six spent of ten leaves four, and four is what it must play — not
+        // ten.
+        let options = options();
+        let game = play(
+            Some(Start {
+                position: Position::startpos(),
+                played: 6,
+            }),
+            &options,
+        );
+        assert_eq!(plies(&game), BUDGET - 6);
+        assert_eq!(game.reason, "max_ply");
+    }
+
+    #[test]
+    fn a_game_that_was_not_resumed_gets_the_whole_budget() {
+        // The other side of the same arithmetic: nothing has been spent, so
+        // nothing is deducted. This is what every recovered game used to get.
+        let options = options();
+        let game = play(None, &options);
+        assert_eq!(plies(&game), BUDGET, "a fresh game plays its whole budget");
+        assert_eq!(game.reason, "max_ply");
+    }
+
+    #[test]
+    fn the_records_of_a_resumed_game_carry_the_resumed_move_numbers() {
+        // `played` counts against the budget; `ply` is the position's own move
+        // number, restored from the record the game resumed at. They are
+        // different numbers and a corpus needs both — the budget so the game
+        // stops, the move number so its records still sort into a game.
+        let options = options();
+        let mut position = Position::startpos();
+        position.set_ply(137);
+        let game = play(
+            Some(Start {
+                position,
+                played: 7,
+            }),
+            &options,
+        );
+
+        let plies: Vec<u16> = game.records.iter().map(|record| record.ply).collect();
+        assert_eq!(plies, vec![137, 138, 139], "7 spent of 10 leaves 3");
     }
 }
 
