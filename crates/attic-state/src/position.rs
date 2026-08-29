@@ -911,6 +911,79 @@ impl Position {
             .count()
     }
 
+    /// The **game**-rule verdict for the current position: the fourfold
+    /// repetition a game is actually scored by, and its perpetual-check
+    /// exception.
+    ///
+    /// [`Self::is_repetition`] answers a different question and is not a
+    /// substitute. That one is the *search's* adjudication: its look-back is
+    /// bounded to `min(16, plies_from_null)`, and under the default
+    /// `quick-draw` build it decides on the **second** occurrence rather than
+    /// the fourth. Both choices are deliberate and both are worth Elo inside a
+    /// tree — and both are wrong for scoring a game. Anything that plays games
+    /// out and records their results wants this method.
+    ///
+    /// The differences, then: the whole recorded history is walked rather than
+    /// sixteen plies of it, and adjudication waits for the fourth occurrence.
+    /// The perpetual-check viewpoint is [`RepetitionState`]'s throughout —
+    /// [`RepetitionState::Lose`] means the **side to move** is the one that has
+    /// been checking, and so loses.
+    ///
+    /// Only `None` / `Draw` / `Win` / `Lose` are returned.
+    /// [`RepetitionState::Superior`] and [`RepetitionState::Inferior`] describe
+    /// a repetition with *unequal* hands, which is not a repetition under the
+    /// rules at all — they are search heuristics and have no standing as a
+    /// result.
+    ///
+    /// What counts as history is what this `Position` has been walked through.
+    /// A position set up from an sfen starts with none, so repetitions that
+    /// happened before the setup are invisible here — exactly as they are to an
+    /// engine handed that sfen without the `moves` list behind it.
+    pub fn game_repetition(&self) -> RepetitionState {
+        let len = self.history.len();
+        // The timeline `[root, history[0], …, history[len-1] == current]`, the
+        // one [`Self::state_back`] indexes. Distance 0 is the current position
+        // and counts as the first of the four. The root counts too — a game
+        // resumed from an sfen can repeat the position it was handed, and
+        // [`Self::position_occurrences`] deliberately does not look there.
+        //
+        // Only even distances can match, because the side to move alternates.
+        let mut occurrences = 0usize;
+        // Distance back to the *oldest* occurrence, which is the span the check
+        // has to have been continuous across — not the gap to the nearest one,
+        // which is what the search's incremental chain compares against.
+        // Measuring the whole cycle gets the reference's "a cycle that was only
+        // partly perpetual check is an ordinary draw" rule for free, with no
+        // chain to carry it.
+        let mut span = 0i32;
+        let mut dist = 0usize;
+        while dist <= len {
+            if let Some(state) = self.state_back(dist)
+                && self.matches_current_state(state)
+            {
+                occurrences += 1;
+                span = dist as i32;
+            }
+            dist += 2;
+        }
+
+        if occurrences < 4 {
+            return RepetitionState::None;
+        }
+
+        // Both are ply counts: `continuous_check` is stepped by two per
+        // checking move, and a cycle is an even number of plies because the
+        // side to move matches at both ends.
+        let stm = self.side_to_move;
+        if span <= self.current_continuous_check(stm) {
+            RepetitionState::Lose
+        } else if span <= self.current_continuous_check(stm.flip()) {
+            RepetitionState::Win
+        } else {
+            RepetitionState::Draw
+        }
+    }
+
     /// Yield the history entries between (exclusive) the most-recent prior
     /// occurrence of the current position in `history[..len-1]` and `history`'s
     /// end (inclusive). Iteration order is **oldest-to-newest** — i.e., the
@@ -2098,6 +2171,130 @@ mod tests {
             p.is_repetition(16),
             RepetitionState::Win,
             "the checked side to move must be classified WIN",
+        );
+    }
+
+    // ---- game_repetition -------------------------------------------------
+
+    #[test]
+    fn game_repetition_waits_for_the_fourth_occurrence() {
+        // The sennichite fixture is a four-ply king shuffle whose root recurs
+        // every four plies, and it runs exactly three cycles — so the fourth
+        // occurrence of the position lands on the last move and nowhere
+        // earlier. The search's answer and the game's answer disagree for the
+        // whole run up to that point, which is the reason this method exists:
+        // `is_repetition` adjudicates the 2nd occurrence under `quick-draw`,
+        // and no arbiter would call a game there.
+        let (sfen, moves) = load_sennichite();
+        let mut pos = parse_sfen(&sfen).expect("fixture sfen parses");
+        assert_eq!(moves.len(), 12, "fixture should run three four-ply cycles");
+
+        for (idx, usi) in moves.iter().enumerate() {
+            let m = crate::move_::parse_usi_move(usi, &pos).expect("fixture move parses");
+            pos.do_move(m);
+            let depth = idx + 1;
+            let expected = match depth {
+                12 => RepetitionState::Draw,
+                _ => RepetitionState::None,
+            };
+            assert_eq!(
+                pos.game_repetition(),
+                expected,
+                "fourfold must adjudicate at depth 12 and at no earlier depth \
+                 (depth {depth})",
+            );
+        }
+    }
+
+    #[test]
+    fn game_repetition_is_lose_for_the_side_that_kept_checking() {
+        // The LOSE fixture above, run for three cycles instead of one so the
+        // position actually recurs a fourth time. Black checks on every one of
+        // its moves, so at the fourfold Black — the side to move — is the
+        // perpetual checker and loses.
+        let mut p = Position::empty();
+        let bk = Piece::new(PieceKind::King, Color::Black);
+        let wk = Piece::new(PieceKind::King, Color::White);
+        let br = Piece::new(PieceKind::Rook, Color::Black);
+        p.board_mut().set(Square::new(0, 8).unwrap(), Some(bk));
+        p.board_mut().set(Square::new(4, 0).unwrap(), Some(wk));
+        p.board_mut().set(Square::new(8, 1).unwrap(), Some(br));
+        p.refresh_keys();
+
+        let a = Square::new(8, 1).unwrap();
+        let b = Square::new(8, 0).unwrap();
+        let k0 = Square::new(4, 0).unwrap();
+        let k1 = Square::new(4, 1).unwrap();
+        for cycle in 0..3 {
+            p.do_move(Move::make(a, b, br)); // Black rook A→B, checks WK@K0
+            p.do_move(Move::make(k0, k1, wk)); // White king escapes to K1
+            p.do_move(Move::make(b, a, br)); // Black rook B→A, checks WK@K1
+            p.do_move(Move::make(k1, k0, wk)); // White king back to K0 (== root)
+            if cycle < 2 {
+                assert_eq!(
+                    p.game_repetition(),
+                    RepetitionState::None,
+                    "cycle {cycle} is not yet a fourfold",
+                );
+            }
+        }
+
+        assert_eq!(
+            p.game_repetition(),
+            RepetitionState::Lose,
+            "the side to move checked across the whole cycle and must lose",
+        );
+    }
+
+    #[test]
+    fn game_repetition_is_win_when_the_opponent_kept_checking() {
+        // Mirror of the LOSE case over three cycles: White perpetually checks a
+        // shuffling Black king, so at the fourfold the side to move wins.
+        let mut p = Position::empty();
+        let bk = Piece::new(PieceKind::King, Color::Black);
+        let wk = Piece::new(PieceKind::King, Color::White);
+        let wr = Piece::new(PieceKind::Rook, Color::White);
+        p.board_mut().set(Square::new(0, 8).unwrap(), Some(wk));
+        p.board_mut().set(Square::new(4, 0).unwrap(), Some(bk));
+        p.board_mut().set(Square::new(8, 0).unwrap(), Some(wr));
+        p.set_side_to_move(Color::Black);
+        p.refresh_keys();
+
+        let a = Square::new(8, 1).unwrap();
+        let b = Square::new(8, 0).unwrap();
+        let k0 = Square::new(4, 0).unwrap();
+        let k1 = Square::new(4, 1).unwrap();
+        for _ in 0..3 {
+            p.do_move(Move::make(k0, k1, bk)); // Black king escapes to K1
+            p.do_move(Move::make(b, a, wr)); // White rook B→A, checks BK@K1
+            p.do_move(Move::make(k1, k0, bk)); // Black king back to K0
+            p.do_move(Move::make(a, b, wr)); // White rook A→B, checks BK@K0
+        }
+
+        assert_eq!(
+            p.game_repetition(),
+            RepetitionState::Win,
+            "the opponent checked across the whole cycle and must lose",
+        );
+    }
+
+    #[test]
+    fn game_repetition_is_a_plain_draw_when_nobody_was_checking() {
+        // The same four-ply shuffle with no checks at all: two kings pacing on
+        // opposite sides of an otherwise empty board. A fourfold with neither
+        // `continuous_check` run covering the cycle is an ordinary draw, which
+        // is what separates DRAW from WIN/LOSE.
+        let mut p = setup_king_shuffle_pos();
+        for _ in 0..3 {
+            for m in shuffle_cycle() {
+                p.do_move(m);
+            }
+        }
+
+        assert_eq!(
+            p.game_repetition(),
+            RepetitionState::Draw,
+            "a fourfold with no perpetual check is an ordinary draw",
         );
     }
 
