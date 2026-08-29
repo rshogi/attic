@@ -14,6 +14,7 @@
 //! ```text
 //! attic-gensfen --eval-dir DIR --out FILE [--depth 9] [--multipv 5]
 //!               [--threads N] [--games N] [--max-ply 320] [--resign-cp 3000]
+//!               [--entering-king CSARule27]
 //! ```
 
 mod game;
