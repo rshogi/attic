@@ -723,7 +723,7 @@ mod resumed_budget_tests {
 
     /// Resignation off, one ply of search, one PV line. Small on every axis:
     /// these tests play real games and only the *length* of one is the answer.
-    fn options(max_ply: u16) -> Options {
+    pub(super) fn options(max_ply: u16) -> Options {
         let mut options = super::random_ply_tests::options(0, 1, 1);
         options.depth = 1;
         options.max_ply = max_ply;
@@ -733,7 +733,7 @@ mod resumed_budget_tests {
     }
 
     /// Play one game from `start`, returning the finished [`Game`].
-    fn play(start: Option<Start>, options: &Options) -> Game {
+    pub(super) fn play(start: Option<Start>, options: &Options) -> Game {
         let net = flat_net();
         let mut tt = TranspositionTable::new();
         tt.resize(1);
@@ -855,6 +855,164 @@ mod resumed_budget_tests {
             500,
             "and the first is the position it resumed at",
         );
+    }
+}
+
+/// Playing games to the endings the rules give them, rather than checking the
+/// judgements in isolation the way [`ending_tests`] does.
+///
+/// These share the zero-eval network of [`resumed_budget_tests`]: a search that
+/// prefers nothing still has to be *stopped* by something, and what stops it is
+/// exactly what is under test.
+#[cfg(test)]
+mod played_ending_tests {
+    use super::resumed_budget_tests::{options, play};
+    use super::*;
+
+    fn position(sfen: &str) -> Position {
+        parse_sfen(sfen).expect("the sfen is valid")
+    }
+
+    /// Two bare kings. Neither side can mate, neither can declare — the kings
+    /// are alone, so the eleven-piece condition can never hold — and with a
+    /// flat eval the search has no reason to go anywhere in particular. What is
+    /// left is shuffling, and shuffling is a fourfold.
+    const BARE_KINGS: &str = "4k4/9/9/9/9/9/9/9/4K4 b - 1";
+
+    /// Black to move, 30 points: eleven pieces in the enemy field (king, four
+    /// golds, four silvers, two pawns) for 10 after the king is excluded, plus
+    /// two rooks and two bishops in hand at five each.
+    ///
+    /// Thirty is the whole point of the position. It clears `CSARule27`'s 28
+    /// and falls short of `CSARule24`'s 31, so the two rules disagree about it
+    /// — which is the only way to tell that the flag selects a rule rather than
+    /// just switching declaration on.
+    const THIRTY_POINTS: &str = "KGGGG4/SSSS5/PP7/9/9/9/9/9/4k4 b 2R2B 1";
+
+    /// The same position with one pawn more in hand: 31, which both rules
+    /// allow.
+    ///
+    /// A pawn rather than the gold that first suggested itself. Black already
+    /// holds all four golds on the board, and `sfen_pack` writes leftover
+    /// pieces into a piece box whose size is fixed — a fifth gold makes the
+    /// packed position 261 bits instead of 256. That is a `debug_assert`, so a
+    /// release run would not panic on it; it would write the corrupt record.
+    const THIRTY_ONE_POINTS: &str = "KGGGG4/SSSS5/PP7/9/9/9/9/9/4k4 b 2R2BP 1";
+
+    #[test]
+    fn every_fixture_here_packs_to_a_whole_record() {
+        // Checked first because the failure mode is quiet: `sfen_pack`'s width
+        // check is a `debug_assert`, so a fixture holding more pieces than a
+        // set contains panics in a test build and silently writes a short
+        // record in a release one.
+        for sfen in [BARE_KINGS, THIRTY_POINTS, THIRTY_ONE_POINTS] {
+            let position = position(sfen);
+            assert_eq!(sfen_pack(&position).len(), 32, "{sfen}");
+        }
+    }
+
+    #[test]
+    fn two_bare_kings_shuffle_into_a_fourfold_draw() {
+        // The rule that was missing entirely. Before it, this game ran to
+        // `--max-ply` and was written as a draw for the wrong reason — and
+        // every real game that repeated did the same, playing on past the
+        // point the result was settled.
+        let mut options = options(200);
+        options.entering_king = attic_search::EnteringKingRule::Point27;
+        let game = play(
+            Some(Start {
+                position: position(BARE_KINGS),
+                played: 0,
+            }),
+            &options,
+        );
+        assert_eq!(game.reason, "repetition");
+        assert_eq!(game.result, 0, "a fourfold is a draw for both sides");
+        assert!(
+            game.records.len() >= 12,
+            "a fourth occurrence needs twelve plies, got {}",
+            game.records.len(),
+        );
+        assert!(
+            game.records.len() < 200,
+            "and it must end well short of the cap, or the cap is what ended it",
+        );
+    }
+
+    #[test]
+    fn thirty_points_declares_under_the_27_rule() {
+        let mut options = options(8);
+        options.entering_king = attic_search::EnteringKingRule::Point27;
+        let game = play(
+            Some(Start {
+                position: position(THIRTY_POINTS),
+                played: 0,
+            }),
+            &options,
+        );
+        assert_eq!(game.reason, "declaration");
+        assert_eq!(game.result, 1, "Black declared, so Black won");
+        assert!(
+            game.records.is_empty(),
+            "the declaration is found before any move is searched",
+        );
+    }
+
+    #[test]
+    fn thirty_points_is_not_enough_under_the_24_rule() {
+        // Same position, same side, one flag apart. `CSARule24` wants 31 from
+        // both sides, so this one plays on — and a run that asked for the
+        // 24-point law but silently got the 27-point one would end games here
+        // that the tournament it is imitating would not.
+        let mut options = options(8);
+        options.entering_king = attic_search::EnteringKingRule::Point24;
+        let game = play(
+            Some(Start {
+                position: position(THIRTY_POINTS),
+                played: 0,
+            }),
+            &options,
+        );
+        assert_ne!(game.reason, "declaration", "30 is short of 31");
+    }
+
+    #[test]
+    fn thirty_one_points_declares_under_both_rules() {
+        // The other half of the discrimination: `CSARule24` is stricter, not
+        // broken. One more point and it declares too, which is what separates
+        // "the 24-rule is implemented" from "the 24-rule never fires".
+        for rule in [
+            attic_search::EnteringKingRule::Point24,
+            attic_search::EnteringKingRule::Point27,
+        ] {
+            let mut options = options(8);
+            options.entering_king = rule;
+            let game = play(
+                Some(Start {
+                    position: position(THIRTY_ONE_POINTS),
+                    played: 0,
+                }),
+                &options,
+            );
+            assert_eq!(game.reason, "declaration", "{rule:?}");
+            assert_eq!(game.result, 1, "{rule:?}");
+        }
+    }
+
+    #[test]
+    fn the_none_rule_never_declares() {
+        // `--entering-king NoEnteringKing` has to actually turn it off, since
+        // that is the flag a run would use to reproduce the old corpus.
+        let mut options = options(8);
+        options.entering_king = attic_search::EnteringKingRule::None;
+        let game = play(
+            Some(Start {
+                position: position(THIRTY_ONE_POINTS),
+                played: 0,
+            }),
+            &options,
+        );
+        assert_ne!(game.reason, "declaration");
     }
 }
 
