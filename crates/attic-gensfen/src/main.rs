@@ -10,12 +10,8 @@
 //! candidates and their scores (the material for a policy distribution), the
 //! root score (for the value target), and the move actually played.
 //!
-//! Usage:
-//! ```text
-//! attic-gensfen --eval-dir DIR --out FILE [--depth 9] [--multipv 5]
-//!               [--threads N] [--games N] [--max-ply 320] [--resign-cp 3000]
-//!               [--entering-king CSARule27]
-//! ```
+//! `attic-gensfen --help` prints the option table and `--version` the commit
+//! the binary was built from. Both are on stdout and exit 0.
 
 mod game;
 mod governor;
@@ -33,11 +29,20 @@ use attic_storage::TranspositionTable;
 use options::Options;
 
 fn main() {
-    let options = match Options::parse(std::env::args().skip(1)) {
-        Ok(options) => options,
+    let options = match options::parse(std::env::args().skip(1)) {
+        Ok(options::Invocation::Run(options)) => *options,
+        Ok(options::Invocation::Help) => {
+            println!("{}\n\n{}", Options::USAGE, Options::HELP);
+            return;
+        },
+        Ok(options::Invocation::Version) => {
+            println!("{}", options::version_line());
+            return;
+        },
         Err(message) => {
             eprintln!("{message}");
             eprintln!("{}", Options::USAGE);
+            eprintln!("run with --help for the full option list");
             std::process::exit(2);
         },
     };
@@ -72,9 +77,36 @@ fn main() {
     // so the worker total is exactly what was asked for.
     let extra = options.threads % nodes;
 
+    // Two lines, because a log is the only record of what a corpus was made
+    // with: the files carry no settings, and the ones that change what gets
+    // written — the random plies above all — are invisible in the output until
+    // someone goes looking for them a week later.
     eprintln!(
-        "gensfen: numa_nodes={nodes} threads={} depth={} multipv={} fv_scale={}",
-        options.threads, options.depth, options.multipv, options.fv_scale
+        "gensfen: {} numa_nodes={nodes} threads={} depth={} nodes_limit={} multipv={} \
+         fv_scale={} hash_mb={} seed={}",
+        options::version_line(),
+        options.threads,
+        options.depth,
+        options.nodes,
+        options.multipv,
+        options.fv_scale,
+        options.hash_mb,
+        options.seed,
+    );
+    eprintln!(
+        "gensfen: format={} max_ply={} entering_king={} resign_cp={} resign_count={} \
+         eval_limit={} random_moves={}@{}..{} games={} positions={}",
+        options.format.name(),
+        options.max_ply,
+        options::entering_king_name(options.entering_king),
+        options.resign_cp,
+        options.resign_count,
+        options.eval_limit,
+        options.random_move_count,
+        options.random_move_minply,
+        options.random_move_maxply,
+        options.games,
+        options.positions,
     );
 
     // `--threads` is the ceiling; the governor decides how much of it to use.
