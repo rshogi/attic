@@ -41,7 +41,10 @@ use crate::types::NUM_FEATURES;
 // in a test: under `kp256` the table is 1,710 rows and an index that still
 // reached past 73,000 would be read, not rejected. `features.rs`'s own bound
 // check is a `debug_assert!` and disappears from the builds that matter.
-#[cfg(any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
+#[cfg(any(
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+))]
 const _: () = assert!(FEATURE_DIMENSION == NUM_FEATURES);
 #[cfg(feature = "nnue_kp_256x2_32_32")]
 const _: () = assert!(NUM_FEATURES == FE_END + 2 * SQ_NB);
@@ -242,7 +245,10 @@ pub(crate) fn hand_plane(kind: PieceKind, is_friend: bool) -> usize {
 }
 
 /// Combine the mirrored king code with a plane-adjusted piece code.
-#[cfg(any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
+#[cfg(any(
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+))]
 #[inline]
 fn encode_feature(sq_k_code: usize, p_adj: usize) -> FeatureIndex {
     debug_assert!(sq_k_code < SQ_K_COUNT);
@@ -278,7 +284,10 @@ fn encode_feature(_sq_k_code: usize, p_adj: usize) -> FeatureIndex {
 
 /// The king code pieces are crossed on, and whether the board is mirrored to
 /// keep that king on the left five files.
-#[cfg(any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
+#[cfg(any(
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+))]
 fn king_code(pos: &Position, perspective: Color) -> (usize, bool) {
     let own = from_persp(king_square(pos, perspective), perspective);
     let mirror = needs_mirror(own);
@@ -304,7 +313,10 @@ fn king_code(_pos: &Position, _perspective: Color) -> (usize, bool) {
 /// Above the piece-code level because not every shape's king lands somewhere
 /// `encode_feature` can reach: Manaka's HalfKP points both kings at a padding
 /// row past the end of the crossed table, which is an index and not a plane.
-#[cfg(any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
+#[cfg(any(
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+))]
 #[inline]
 fn king_feature(_is_friend: bool, sq_code: usize, sq_k_code: usize) -> Option<FeatureIndex> {
     // Both kings collapse into the shared `[FE_END, E_KING)` plane.
@@ -625,8 +637,7 @@ impl Dirty {
                 if piece.kind == PieceKind::King {
                     return king_feature(piece.color == persp, sq_code, sq_k_code);
                 }
-                let p_adj =
-                    board_plane(piece.kind, piece.promoted, piece.color == persp) + sq_code;
+                let p_adj = board_plane(piece.kind, piece.promoted, piece.color == persp) + sq_code;
                 Some(encode_feature(sq_k_code, p_adj))
             },
             Dirty::Hand { color, kind, count } => Some(encode_feature(
@@ -793,7 +804,10 @@ impl MoveDelta {
     }
 }
 
-#[cfg(all(test, not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512"))))]
+#[cfg(all(
+    test,
+    not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512"))
+))]
 mod tests {
     use super::*;
     use attic_state::{parse_sfen, parse_usi_move};

@@ -84,6 +84,7 @@ pub enum Backend {
 /// `-C target-cpu=native` was in effect) rather than silently compiling scalar.
 #[cfg(all(
     target_arch = "x86_64",
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
     target_feature = "avx512f",
     target_feature = "avx512bw",
     target_feature = "avx512vnni"
@@ -96,6 +97,7 @@ pub const fn active_backend() -> Backend {
 /// carries the documentation).
 #[cfg(not(all(
     target_arch = "x86_64",
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
     target_feature = "avx512f",
     target_feature = "avx512bw",
     target_feature = "avx512vnni"
@@ -107,11 +109,16 @@ pub const fn active_backend() -> Backend {
 /// Feature-transformer accumulate/update kernels, selected at compile time.
 ///
 /// The AVX-512 arm is compiled only when the build enables `avx512f` +
-/// `avx512bw` (exactly the features [`super::avx512`]'s kernels declare); every
-/// other build gets the scalar baseline. These two `cfg` arms are the only
-/// place that condition is spelled out for the FT family.
+/// `avx512bw` (exactly the features [`super::avx512`]'s kernels declare) *and*
+/// selects the 1536 shape, which is the only shape [`super::avx512`] itself is
+/// compiled for. Every other build gets AVX2 or the scalar baseline.
+///
+/// The shape belongs in this condition and not only on the module: without it,
+/// an AVX-512 host cannot compile any shape but 1536 at all, because the arm
+/// selects a module that is not there.
 #[cfg(all(
     target_arch = "x86_64",
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
     target_feature = "avx512f",
     target_feature = "avx512bw"
 ))]
@@ -171,7 +178,11 @@ pub mod transformer_kernel {
 #[cfg(all(
     target_arch = "x86_64",
     target_feature = "avx2",
-    not(all(target_feature = "avx512f", target_feature = "avx512bw"))
+    not(all(
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+        target_feature = "avx512f",
+        target_feature = "avx512bw"
+    ))
 ))]
 pub mod transformer_kernel {
     use super::FeatureIndex;
@@ -224,7 +235,11 @@ pub mod transformer_kernel {
 #[cfg(not(all(
     target_arch = "x86_64",
     any(
-        all(target_feature = "avx512f", target_feature = "avx512bw"),
+        all(
+            feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+            target_feature = "avx512f",
+            target_feature = "avx512bw"
+        ),
         target_feature = "avx2"
     )
 )))]
@@ -238,6 +253,7 @@ pub mod transformer_kernel {
 /// [`avx512_post_ft::fused_fc_chain`] directly on a VNNI-enabled build.
 #[cfg(all(
     target_arch = "x86_64",
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
     target_feature = "avx512f",
     target_feature = "avx512bw"
 ))]
@@ -297,7 +313,11 @@ pub mod post_ft_kernel {
 #[cfg(all(
     target_arch = "x86_64",
     target_feature = "avx2",
-    not(all(target_feature = "avx512f", target_feature = "avx512bw"))
+    not(all(
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+        target_feature = "avx512f",
+        target_feature = "avx512bw"
+    ))
 ))]
 pub mod post_ft_kernel {
     pub use super::scalar_post_ft::{affine, sqr_clipped_relu};
@@ -323,7 +343,11 @@ pub mod post_ft_kernel {
 #[cfg(not(all(
     target_arch = "x86_64",
     any(
-        all(target_feature = "avx512f", target_feature = "avx512bw"),
+        all(
+            feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+            target_feature = "avx512f",
+            target_feature = "avx512bw"
+        ),
         target_feature = "avx2"
     )
 )))]

@@ -279,7 +279,10 @@ impl Accumulator {
     /// Layout is `[stm-half | ~stm-half]`; each half is the pairwise
     /// element-wise multiply described in the module docs. Byte-for-byte
     /// equivalent to the reference scalar `transformer_ewm`.
-    #[cfg(any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
+    #[cfg(any(
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+    ))]
     pub fn output_transform(&self, stm: Color, out: &mut [u8; FT_OUTPUT_DIMS]) {
         const HALF: usize = HIDDEN_SIZE / 2;
         let stm_half = &self.perspectives[stm.index()];

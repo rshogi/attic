@@ -1,0 +1,146 @@
+name: CI
+
+on:
+  push:
+    branches-ignore:
+      - master
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+# What this gates, and what it deliberately does not.
+#
+# Every network shape is compiled, because the shape is chosen by cfg: a rename
+# or a mis-gated item breaks one shape while the other five stay green, and
+# nothing but a build per shape catches that.
+#
+# The tests run under one shape. `attic-eval`'s unit tests assert the HalfKA
+# feature space and 16 of them fail under the two NNUE shapes, and
+# `attic-protocol`'s session tests stage a synthetic `nn.bin` written at the
+# 1536 shape's dimensions alone. Both are worth fixing. Until they are, running
+# the matrix over six shapes would mean six red jobs, not six tested shapes.
+#
+# Clippy runs without `-D warnings`. The tree carries 32 pre-existing warning
+# sites, most of them items that are live under one shape and dead under
+# another, so the flag would fail every run from the first day. Clippy still
+# fails on errors, which is the half that catches real breakage.
+
+jobs:
+  commitlint:
+    name: Commit messages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install commitlint
+        run: bun install @commitlint/config-conventional commitlint
+      - name: Check the pull request's commits
+        if: github.event_name == 'pull_request'
+        run: |
+          bunx commitlint \
+            --from ${{ github.event.pull_request.head.sha }}~${{ github.event.pull_request.commits }} \
+            --to ${{ github.event.pull_request.head.sha }} \
+            --verbose
+      - name: Check the pushed commit
+        if: github.event_name == 'push'
+        run: bunx commitlint --last --verbose
+
+  format:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # No toolchain action anywhere in this workflow: `rust-toolchain.toml`
+      # pins the version and names rustfmt and clippy as components, so the
+      # first cargo call installs exactly what the workspace asks for. An
+      # action that installed `stable` would check a different rustfmt than the
+      # one developers run, which for a format gate is the whole question.
+      - run: rustup show active-toolchain
+      - run: cargo fmt --all --check
+
+  build:
+    name: Build ${{ matrix.shape }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shape: sfnn_halfkahm2_1536_15_32_k3k3
+            targets: --all-targets
+          - shape: sfnn_halfkahm2_2304_15_64_progress8ek
+            targets: --all-targets
+          - shape: nnue_kp_256x2_32_32
+            targets: --all-targets
+          - shape: nnue_halfkp_256x2_32_32
+            targets: --all-targets
+          # The two Manaka shapes build their libraries and binaries but not
+          # their test targets: `attic-search`'s tests import NetHeader,
+          # HIDDEN_SIZE and their neighbours unconditionally, and those items
+          # do not exist here, so `--all-targets` stops at E0432 in
+          # `qsearch.rs` and `lib.rs` before clippy sees anything. Widen this
+          # to `--all-targets` once those imports are behind the same cfg as
+          # the code that uses them.
+          - shape: sym_kp_128x2_512
+            targets: ""
+          - shape: sym_halfkp_128x2_512
+            targets: ""
+    steps:
+      - uses: actions/checkout@v5
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.shape }}
+      # `attic` and `attic-gensfen` are the two roots, and the feature reaches
+      # attic-protocol, attic-search and attic-eval through them. Setting it on
+      # `attic-eval` alone leaves attic-search with no shape at all and the
+      # workspace does not compile.
+      - name: Clippy
+        run: |
+          cargo clippy --locked --workspace ${{ matrix.targets }} \
+            --features "attic/${{ matrix.shape }},attic-gensfen/${{ matrix.shape }}"
+      # `.cargo/config.toml` builds with `-C target-cpu=native`, and GitHub's
+      # runners are a mix of AVX-512 and not — so which SIMD arms compile
+      # depends on which machine picks up the job, and a shape can pass here
+      # and fail on a developer's desk. This second pass names an AVX-512 VNNI
+      # target explicitly, so every arm is compiled on every run.
+      - name: Clippy against an AVX-512 VNNI target
+        env:
+          RUSTFLAGS: -C target-cpu=x86-64-v4 -C target-feature=+avx512vnni
+        run: |
+          cargo clippy --locked --workspace --target x86_64-unknown-linux-gnu \
+            ${{ matrix.targets }} \
+            --features "attic/${{ matrix.shape }},attic-gensfen/${{ matrix.shape }}"
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    env:
+      SHAPE: sfnn_halfkahm2_1536_15_32_k3k3
+    steps:
+      - uses: actions/checkout@v5
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: test
+      - run: cargo test --locked --workspace --features "attic/$SHAPE,attic-gensfen/$SHAPE"
+
+  scripts:
+    name: Scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+      # `ruff format` is not gated: the tree predates it and reformatting it
+      # here would bury the next real change in whitespace.
+      - run: uvx ruff check scripts
