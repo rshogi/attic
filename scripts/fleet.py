@@ -136,7 +136,8 @@ def on(node: str, script: str, timeout: int = 60) -> tuple[int, str]:
 
 def wrap_detached(command: str, log: str) -> str:
     """A command that outlives the SSH session without holding it open."""
-    return f"setsid sh -c {shlex.quote(command)} >{log} 2>&1 </dev/null & disown 2>/dev/null; exit 0"
+    quoted = shlex.quote(command)
+    return f"setsid sh -c {quoted} >{log} 2>&1 </dev/null & disown 2>/dev/null; exit 0"
 
 
 def take_seed(passthrough: list[str]) -> tuple[int, list[str]]:
@@ -274,7 +275,8 @@ def probe(node: str, opts: argparse.Namespace) -> Node:
         # from rather than reporting zero.
         f"c=$(grep -h concurrency= $log 2>/dev/null | tail -1 "
         f"   | sed 's/.*concurrency=\\([0-9]*\\).*/\\1/'); "
-        f"[ -n \"$c\" ] || c=$(grep -ho 'ceiling=[0-9]*' $log 2>/dev/null | tail -1 | cut -d= -f2); "
+        f"[ -n \"$c\" ] || c=$(grep -ho 'ceiling=[0-9]*' $log 2>/dev/null "
+        f"   | tail -1 | cut -d= -f2); "
         f"[ -n \"$c\" ] || c=$(pgrep -a -x '{PATTERN}' 2>/dev/null | head -1 "
         f"   | grep -o -- '--threads [0-9]*' | cut -d' ' -f2); "
         # Every worker reports the process-wide total, so the last line of any
@@ -294,7 +296,10 @@ def probe(node: str, opts: argparse.Namespace) -> Node:
         '"${b:-0}" "${u:-0}" "${fmt:-jsonl}" "${mpv:-5}" "${s:-0/0}"',
     )
     f = (out.split() + ["0"] * 8)[:8]
-    num = lambda s: int(s) if s.isdigit() else 0
+
+    def num(s: str) -> int:
+        return int(s) if s.isdigit() else 0
+
     # A scan that did not happen reports zeroes, and a zero here has to stay
     # distinct from a counted zero: it is what makes `positions` fall back to
     # the byte estimate rather than claiming the shards are empty.
