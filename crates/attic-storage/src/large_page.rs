@@ -19,10 +19,12 @@
 //!   apply);
 //! * the byte size is rounded **up** to a whole multiple of [`LARGE_PAGE_ALIGN`]
 //!   (`size = ((allocSize + alignment - 1) / alignment) * alignment`);
-//! * the region is zero-initialised (`alloc_zeroed`);
 //! * on Linux the whole rounded region is `madvise(MADV_HUGEPAGE)`-hinted, the
 //!   call being silent and its return value ignored exactly as the reference
-//!   ignores it (the hint is best-effort).
+//!   ignores it (the hint is best-effort);
+//! * the region is zero-initialised **after** the hint, because the hint only
+//!   governs pages faulted in from that point on and zeroing is what faults
+//!   them in.
 //!
 //! Two safe containers sit on top of that raw helper:
 //!
@@ -36,7 +38,7 @@
 //! all-zero bit pattern; that requirement is captured by the [`Zeroable`]
 //! marker.
 
-use std::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
+use std::alloc::{Layout, alloc, dealloc, handle_alloc_error};
 use std::fmt;
 use std::mem::{align_of, size_of};
 use std::ops::{Deref, DerefMut};
@@ -106,10 +108,19 @@ pub(crate) fn alloc_zeroed_large(min_bytes: usize) -> (NonNull<u8>, Layout) {
     let layout = Layout::from_size_align(size, LARGE_PAGE_ALIGN)
         .expect("large-page allocation size/alignment is valid");
 
+    // Uninitialised, not zeroed, because the hint below has to come first.
+    // `alloc_zeroed` on an over-aligned layout does not reach `calloc`: the
+    // system allocator falls back to `alloc` plus a `write_bytes` of the whole
+    // block, and that write faults every page in before anything has asked for
+    // huge pages. `MADV_HUGEPAGE` does not retroactively collapse pages that
+    // are already present, so the region stays on 4 KiB pages for its whole
+    // life. Measured on a 512 MiB table: zero bytes backed by huge pages that
+    // way, all 512 MiB backed when the hint precedes the first touch.
+    //
     // SAFETY: `layout` has non-zero size (`min_bytes >= 1` ⇒ `size >=
-    // LARGE_PAGE_ALIGN`). `alloc_zeroed` returns a `LARGE_PAGE_ALIGN`-aligned,
-    // fully zeroed block.
-    let raw = unsafe { alloc_zeroed(layout) };
+    // LARGE_PAGE_ALIGN`), so `alloc` is being called on a valid, non-zero
+    // layout and returns a `LARGE_PAGE_ALIGN`-aligned block.
+    let raw = unsafe { alloc(layout) };
     let ptr = match NonNull::new(raw) {
         Some(p) => p,
         None => handle_alloc_error(layout),
@@ -126,6 +137,14 @@ pub(crate) fn alloc_zeroed_large(min_bytes: usize) -> (NonNull<u8>, Layout) {
             libc::madvise(ptr.as_ptr() as *mut libc::c_void, size, libc::MADV_HUGEPAGE);
         }
     }
+
+    // Now zero it, which is also what faults it in — under the hint this time.
+    // The reference reaches the same order from the other side: it hands back
+    // uninitialised memory and leaves the clearing to the caller.
+    //
+    // SAFETY: `ptr` is a live, writable allocation of exactly `size` bytes, and
+    // an all-zero bit pattern is what every caller of this function expects.
+    unsafe { ptr::write_bytes(ptr.as_ptr(), 0, size) };
 
     (ptr, layout)
 }
