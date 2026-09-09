@@ -153,11 +153,13 @@ pub fn evaluate_with(net: &NnueNetwork, acc: &Accumulator, pos: &Position) -> i3
 /// at compile time — through [`crate::simd`]. Both are byte-for-byte equivalent
 /// to `sfnn-1536.h::Propagate` and the reference `per_layer_flow`. Returns the
 /// raw network output (pre-`fv_scale`).
+///
+/// The fused arm is 1536 only, because [`crate::simd::avx512_post_ft`] is
+/// compiled for that shape alone: 2304 ends its chain in a packed tail that
+/// has no port here yet. Naming both shapes here made an AVX-512 host unable
+/// to compile 2304 at all.
 #[cfg(all(
-    any(
-        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-    ),
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
     target_arch = "x86_64",
     target_feature = "avx512f",
     target_feature = "avx512bw",
@@ -190,6 +192,7 @@ fn per_layer_flow(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> 
         feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
     ),
     not(all(
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
         target_arch = "x86_64",
         target_feature = "avx512f",
         target_feature = "avx512bw",
