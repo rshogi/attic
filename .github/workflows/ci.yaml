@@ -110,6 +110,18 @@ jobs:
         run: |
           cargo clippy --locked --workspace ${{ matrix.targets }} \
             --features "attic/${{ matrix.shape }},attic-gensfen/${{ matrix.shape }}"
+      # `.cargo/config.toml` builds with `-C target-cpu=native`, and GitHub's
+      # runners are a mix of AVX-512 and not — so which SIMD arms compile
+      # depends on which machine picks up the job, and a shape can pass here
+      # and fail on a developer's desk. This second pass names an AVX-512 VNNI
+      # target explicitly, so every arm is compiled on every run.
+      - name: Clippy against an AVX-512 VNNI target
+        env:
+          RUSTFLAGS: -C target-cpu=x86-64-v4 -C target-feature=+avx512vnni
+        run: |
+          cargo clippy --locked --workspace --target x86_64-unknown-linux-gnu \
+            ${{ matrix.targets }} \
+            --features "attic/${{ matrix.shape }},attic-gensfen/${{ matrix.shape }}"
 
   test:
     name: Test
