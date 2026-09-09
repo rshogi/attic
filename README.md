@@ -174,8 +174,11 @@ run started on an empty machine gives way when someone else arrives and takes
 the room back when they leave. `--governor-secs 0` fixes it instead, which is
 what a dedicated machine or a benchmark wants.
 
-`scripts/fleet.py` runs one process per machine over SSH; unrecognised
-arguments are passed through.
+`scripts/fleet.py` runs attic-gensfen over SSH on a set of machines;
+unrecognised arguments are passed through. Two are read by the script rather
+than passed on unchanged, because counting per process is the wrong reading for
+a fleet: `--seed` is a base the run counts up from, and **`--games` is the total
+across the fleet**. `--positions` is not — it stays per node.
 
 ```bash
 scripts/fleet.py launch --nodes node1,node2 --depth 9 --format pack
@@ -183,6 +186,45 @@ scripts/fleet.py watch          # redraws, with games/sec per node
 scripts/fleet.py status         # one frame
 scripts/fleet.py stop
 ```
+
+Without `--games` each machine runs one unbounded process. With it they take
+blocks from a shared queue on the home filesystem instead, one process per
+block, until the fleet has played the number asked for. Nothing is divided up
+front: a machine half as fast takes half as many blocks, and the run ends on
+all of them at once rather than trailing on the slowest. An even share is what
+this replaced — on eight nodes asked for 12,500 games each, the fastest
+finished in 22m17s and the slowest in 40m20s, the last 18 minutes of it alone.
+
+Nine hundred thousand games over the same eight nodes, in blocks of 5,000, took
+4h21m06s and ended with a tail of 11m50s. The nodes were as uneven as before —
+g19 played 131,040 games in 25 blocks, g24 78,120 in 15, a spread of 1.68 — and
+the queue absorbed all of it. What is left of the tail is one block on the
+slowest node, so a smaller `--block` shortens it and pays more startups for it.
+
+`--block N` sets the block; the default is a fifth of the total per node, with
+a floor of 1,000. Two costs set that floor. A block is a process, and a process
+spends 19 seconds loading the evaluation function and the start positions
+before it plays anything. And a process overshoots its `--games`, because each
+worker checks the quota before starting a game and adds to it after, so
+everything already in flight when the number is reached still finishes. On
+256-core nodes that averaged 232.6 games a block over 172 blocks, between
+202 and 242. Blocks near that size are mostly overshoot.
+
+The overshoot the fleet pays is one round of it, not one per block: the queue
+counts games actually produced, so a block that came back long stops the next
+one from being issued. Those 172 blocks overshot by 40,002 games in total, and
+the fleet finished 901,865 against the 900,000 asked for — 1,865 over, one last
+round across eight nodes, not the 40,002 the blocks spent.
+
+The queue lives in `$HOME/.attic-fleet/<name of --out>` and `launch` clears it,
+so a total that is already running is refused rather than restarted underneath
+itself. A node that does not answer is refused on the same grounds: it has not
+been shown to be idle, and clearing the queue under a fleet that is still
+playing would set every node counting from nothing. Eight nodes can stop
+answering at once without one of them having stopped — a cold jump host does
+it — so `status` prints `unreachable` rather than `not running` for those, and
+says under the totals that they are not in them. `stop` removes each node's
+marker before killing the process, so the node does not start its next block.
 
 ## Building
 
