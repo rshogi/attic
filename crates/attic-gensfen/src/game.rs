@@ -637,7 +637,11 @@ mod resignation_tests {
         let mut resignation = Resignation::default();
         resignation.update(-3100, BLACK, &options);
         resignation.update(3100, WHITE, &options);
-        assert_eq!(resignation.update(-100, BLACK, &options), None, "level again");
+        assert_eq!(
+            resignation.update(-100, BLACK, &options),
+            None,
+            "level again"
+        );
 
         // Counting starts over, so the next three plies are not enough.
         assert_eq!(resignation.update(3100, WHITE, &options), None);
