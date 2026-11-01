@@ -561,6 +561,10 @@ fn emit_group_masked<G: GroupSpec>(
     for from in G::pieces(board, stm).squares() {
         let piece = G::piece(board, stm, from);
         let targets = G::attacks(from, piece, occ) & mask;
+        // Most pieces have nowhere to go in a capture or evasion pass.
+        if targets.is_empty() {
+            continue;
+        }
         G::emit(from, targets, piece, all, out);
     }
 }
