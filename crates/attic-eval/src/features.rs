@@ -355,7 +355,31 @@ pub(crate) fn active_features_into(
     list.reserve(MAX_ACTIVE_FEATURES);
 
     let (sq_k_code, mirror) = king_code(pos, perspective);
+    scan_active(pos, perspective, sq_k_code, mirror, |feature| {
+        list.push(feature)
+    });
 
+    // A legal 40-piece position is already full and skips this loop.
+    debug_assert!(list.len() <= MAX_ACTIVE_FEATURES);
+    while list.len() < MAX_ACTIVE_FEATURES {
+        list.push(encode_feature(sq_k_code, BONA_PIECE_ZERO));
+    }
+}
+
+/// Hand every real active feature of `pos` seen from `perspective` to `emit`:
+/// one per board piece in square order, then one per held-piece instance. The
+/// `BONA_PIECE_ZERO` padding is the caller's business; this emits none.
+///
+/// `(sq_k_code, mirror)` is `king_code(pos, perspective)`, passed in because
+/// callers need `sq_k_code` for the padding as well.
+#[inline(always)]
+fn scan_active(
+    pos: &Position,
+    perspective: Color,
+    sq_k_code: usize,
+    mirror: bool,
+    mut emit: impl FnMut(FeatureIndex),
+) {
     for index in 0..Square::COUNT as u8 {
         let sq = Square::from_index(index).expect("index < Square::COUNT is valid");
         let Some(piece) = pos.board().get(sq) else {
@@ -368,12 +392,12 @@ pub(crate) fn active_features_into(
         if piece.kind == PieceKind::King {
             // `None` is YaneuraOu's HalfKP, which numbers no king at all.
             if let Some(feature) = king_feature(is_friend, sq_code, sq_k_code) {
-                list.push(feature);
+                emit(feature);
             }
             continue;
         }
         let p_adj = board_plane(piece.kind, piece.promoted, is_friend) + sq_code;
-        list.push(encode_feature(sq_k_code, p_adj));
+        emit(encode_feature(sq_k_code, p_adj));
     }
 
     // The k-th held piece of a kind lands at `base + k`.
@@ -384,15 +408,9 @@ pub(crate) fn active_features_into(
             let count = hand.count(kind);
             let base = hand_plane(kind, is_friend);
             for i in 1..=count as usize {
-                list.push(encode_feature(sq_k_code, base + i));
+                emit(encode_feature(sq_k_code, base + i));
             }
         }
-    }
-
-    // A legal 40-piece position is already full and skips this loop.
-    debug_assert!(list.len() <= MAX_ACTIVE_FEATURES);
-    while list.len() < MAX_ACTIVE_FEATURES {
-        list.push(encode_feature(sq_k_code, BONA_PIECE_ZERO));
     }
 }
 
@@ -419,6 +437,140 @@ pub fn requires_full_refresh(mv: Move, perspective: Color) -> bool {
     // A king never promotes, so `moved_piece_after` reports it directly.
     let piece = mv.moved_piece_after();
     piece.kind == PieceKind::King && piece.color == perspective
+}
+
+/// Offsets a feature can have within one own-king bucket: every shape's index
+/// is `bucket_base + offset` with the offset below this (`encode_feature` adds
+/// `p_adj < FE_END + 2 * SQ_NB` to a base that depends only on the own king).
+#[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
+const BUCKET_FEATURES: usize = FE_END + 2 * SQ_NB;
+#[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
+const BUCKET_WORDS: usize = BUCKET_FEATURES.div_ceil(64);
+#[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
+const _: () = assert!(E_KING <= BUCKET_FEATURES);
+
+/// The active-feature multiset of one position and perspective, as a bitset over
+/// the offsets within its own-king bucket, plus the count of padding copies.
+///
+/// The multiset difference of two such sets is a few word operations, where the
+/// list form had to sort both lists first. That is possible because the only
+/// repeated feature is the `BONA_PIECE_ZERO` padding (see
+/// [`active_features`]), which is offset `0` and counted rather than stored; a
+/// real feature never has offset `0`, and no two real ones coincide.
+///
+/// Only two sets from the **same bucket** (same perspective and own-king
+/// square, hence the same `base`) can be compared, which is exactly how the
+/// finny table uses them.
+#[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
+#[derive(Clone, Debug)]
+pub(crate) struct FeatureSet {
+    bits: [u64; BUCKET_WORDS],
+    /// Index of offset `0`: the bucket's `BONA_PIECE_ZERO` feature.
+    base: FeatureIndex,
+    /// Copies of the offset-`0` padding feature in the multiset.
+    padding: u32,
+}
+
+#[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
+impl FeatureSet {
+    pub(crate) fn new() -> Self {
+        FeatureSet {
+            bits: [0; BUCKET_WORDS],
+            base: 0,
+            padding: 0,
+        }
+    }
+
+    /// Overwrite `self` with the multiset [`active_features`] would list for
+    /// `pos` and `perspective`.
+    ///
+    /// # Panics
+    /// Panics if `pos` is missing `perspective`'s king, or (an invariant
+    /// violation) if a feature falls outside its bucket's offset range.
+    pub(crate) fn fill(&mut self, pos: &Position, perspective: Color) {
+        let (sq_k_code, mirror) = king_code(pos, perspective);
+        let base = encode_feature(sq_k_code, BONA_PIECE_ZERO);
+        let bits = &mut self.bits;
+        *bits = [0; BUCKET_WORDS];
+        let mut real = 0usize;
+        scan_active(pos, perspective, sq_k_code, mirror, |feature| {
+            // An index below `base` wraps to a huge offset and trips the bounds
+            // check below rather than setting a wrong bit.
+            let offset = feature.wrapping_sub(base) as usize;
+            debug_assert!(offset != 0, "a real feature coincides with the padding");
+            debug_assert_eq!(
+                bits[offset / 64] >> (offset % 64) & 1,
+                0,
+                "two real features coincide"
+            );
+            bits[offset / 64] |= 1u64 << (offset % 64);
+            real += 1;
+        });
+        debug_assert!(real <= MAX_ACTIVE_FEATURES);
+        self.base = base;
+        self.padding = MAX_ACTIVE_FEATURES.saturating_sub(real) as u32;
+    }
+
+    /// The multiset as an ascending list, padding first -- the order
+    /// [`changed_indices_into`] works in.
+    #[cfg(test)]
+    pub(crate) fn to_indices(&self) -> Vec<FeatureIndex> {
+        let mut out = vec![self.base; self.padding as usize];
+        for (word_index, &word) in self.bits.iter().enumerate() {
+            let mut word = word;
+            while word != 0 {
+                let offset = word_index * 64 + word.trailing_zeros() as usize;
+                out.push(self.base + offset as FeatureIndex);
+                word &= word - 1;
+            }
+        }
+        out
+    }
+}
+
+/// Multiset difference of two [`FeatureSet`]s of the same bucket:
+/// `removed = before - after`, `added = after - before`. Both come out in
+/// ascending index order with the padding first, which is exactly what
+/// [`changed_indices_into`] returns for the two equivalent lists, so a caller
+/// can swap one for the other without the result changing in any way.
+///
+/// # Panics
+/// Panics if the sets are from different buckets.
+#[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
+pub(crate) fn diff_feature_sets(
+    before: &FeatureSet,
+    after: &FeatureSet,
+    removed: &mut Vec<FeatureIndex>,
+    added: &mut Vec<FeatureIndex>,
+) {
+    assert_eq!(
+        before.base, after.base,
+        "feature sets from different buckets"
+    );
+    removed.clear();
+    added.clear();
+    let base = before.base;
+    for _ in after.padding..before.padding {
+        removed.push(base);
+    }
+    for _ in before.padding..after.padding {
+        added.push(base);
+    }
+    for word_index in 0..BUCKET_WORDS {
+        let (b, a) = (before.bits[word_index], after.bits[word_index]);
+        let mut gone = b & !a;
+        let mut new = a & !b;
+        while gone != 0 {
+            let offset = word_index * 64 + gone.trailing_zeros() as usize;
+            removed.push(base + offset as FeatureIndex);
+            gone &= gone - 1;
+        }
+        while new != 0 {
+            let offset = word_index * 64 + new.trailing_zeros() as usize;
+            added.push(base + offset as FeatureIndex);
+            new &= new - 1;
+        }
+    }
 }
 
 /// Multiset difference of two active-feature lists: `(removed, added)` such
@@ -1142,6 +1294,92 @@ mod tests {
             }
         }
         assert!(checked > 600, "only {checked} moves were checked");
+    }
+
+    /// The bitset difference is the sorted-merge difference, element for element
+    /// and in the same order -- on real games (full 40-piece positions, same
+    /// bucket revisited many times) and on sparse positions, where the padding
+    /// count differs between the two sides.
+    #[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
+    #[test]
+    fn feature_set_diff_equals_the_sorted_merge() {
+        use std::collections::HashMap;
+
+        fn check(persp: Color, before: &Position, after: &Position, what: &str) {
+            let (kb, ka) = (before.king_square(persp), after.king_square(persp));
+            assert_eq!(kb, ka, "test bug: not the same bucket");
+            let (list_b, list_a) = (
+                active_features(before, persp),
+                active_features(after, persp),
+            );
+            let (want_removed, want_added) = changed_indices(&list_b, &list_a);
+
+            let (mut set_b, mut set_a) = (FeatureSet::new(), FeatureSet::new());
+            set_b.fill(before, persp);
+            set_a.fill(after, persp);
+            assert_eq!(set_b.to_indices(), sorted(&list_b), "{what}: before set");
+            assert_eq!(set_a.to_indices(), sorted(&list_a), "{what}: after set");
+
+            let (mut removed, mut added) = (Vec::new(), Vec::new());
+            diff_feature_sets(&set_b, &set_a, &mut removed, &mut added);
+            assert_eq!(removed, want_removed, "{what}: removed");
+            assert_eq!(added, want_added, "{what}: added");
+        }
+
+        // 1. Random games: remember the last position seen per (perspective,
+        // own-king square) and diff against it whenever the bucket recurs.
+        let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let mut compared = 0;
+        let mut last: HashMap<(usize, u8), Position> = HashMap::new();
+        for _ in 0..30 {
+            let mut pos = parse_sfen(STARTPOS).unwrap();
+            for ply in 0..120 {
+                for persp in [Color::Black, Color::White] {
+                    let king = pos.king_square(persp).unwrap().index();
+                    if let Some(prev) = last.get(&(persp.index(), king)) {
+                        check(persp, prev, &pos, &format!("game ply {ply}"));
+                        compared += 1;
+                    }
+                    last.insert((persp.index(), king), pos.clone());
+                }
+                let mut moves = Vec::new();
+                pos.generate_legal_all(&mut moves);
+                if moves.is_empty() {
+                    break;
+                }
+                let mv = moves[(next() % moves.len() as u64) as usize];
+                let _ = pos.do_move(mv);
+            }
+        }
+        assert!(
+            compared > 500,
+            "only {compared} same-bucket pairs were compared"
+        );
+
+        // 2. Sparse positions with the kings fixed: the padding count differs
+        // (5 pieces vs 12 vs 2), pieces appear and vanish, hands change.
+        let sparse = [
+            "4k4/9/9/9/9/9/9/9/4K4 b - 1",
+            "4k4/9/9/9/9/9/9/9/4K4 b P 1",
+            "4k4/9/9/9/9/9/9/9/4K4 w 3P3p 1",
+            "4k4/2p+P5/9/3+r5/9/6+b2/9/1R1+B5/4K4 w 2G2S2N2L8Pgsnl 1",
+            "4k4/9/4p4/9/9/9/4P4/9/4K4 b 2G 1",
+            "4k4/9/9/9/9/9/9/9/4K4 b RB2G2S2N2L9Prb2g2s2n2l9p 1",
+        ];
+        let positions: Vec<Position> = sparse.iter().map(|f| parse_sfen(f).unwrap()).collect();
+        for persp in [Color::Black, Color::White] {
+            for a in &positions {
+                for b in &positions {
+                    check(persp, a, b, "sparse pair");
+                }
+            }
+        }
     }
 
     #[test]
