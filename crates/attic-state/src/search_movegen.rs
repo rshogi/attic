@@ -103,11 +103,16 @@ enum Target {
 /// every mask.
 fn reachable(board: &Board, from: Square, piece: Piece, target: Target) -> Bitboard {
     let occ = board.occupied();
-    let attacks = attacks_bb(from, piece, occ);
+    attacks_bb(from, piece, occ) & target_mask(board, piece.color, target)
+}
+
+/// The destination squares `target` keeps for a mover of colour `stm`.
+#[inline(always)]
+fn target_mask(board: &Board, stm: Color, target: Target) -> Bitboard {
     match target {
-        Target::Captures => attacks & board.pieces_color(piece.color.flip()),
-        Target::Quiets => attacks & !occ,
-        Target::BlockOrCapture => attacks & !board.pieces_color(piece.color),
+        Target::Captures => board.pieces_color(stm.flip()),
+        Target::Quiets => !board.occupied(),
+        Target::BlockOrCapture => !board.pieces_color(stm),
     }
 }
 
@@ -391,6 +396,23 @@ trait GroupSpec {
     /// by `Group::contains`.
     fn pieces(board: &Board, stm: Color) -> Bitboard;
 
+    /// The piece of this group standing on `from`. A group of a single
+    /// unpromoted kind names it without reading the board.
+    #[inline(always)]
+    fn piece(board: &Board, _stm: Color, from: Square) -> Piece {
+        board
+            .get(from)
+            .expect("group_pieces bit implies a piece stands on the square")
+    }
+
+    /// The squares `piece`, standing on `from`, attacks under occupancy `occ`
+    /// — [`attacks_bb`] with the kind dispatch resolved at compile time where
+    /// the group fixes it.
+    #[inline(always)]
+    fn attacks(from: Square, piece: Piece, occ: Bitboard) -> Bitboard {
+        attacks_bb(from, piece, occ)
+    }
+
     /// The static counterpart of `Group::emit`.
     fn emit(from: Square, targets: Bitboard, piece: Piece, all: bool, out: &mut Vec<ExtMove>);
 }
@@ -409,6 +431,14 @@ impl GroupSpec for PawnG {
     fn pieces(board: &Board, stm: Color) -> Bitboard {
         board.pieces_pattern(stm, pat::PAWN)
     }
+    #[inline(always)]
+    fn piece(_board: &Board, stm: Color, _from: Square) -> Piece {
+        Piece::new(PieceKind::Pawn, stm)
+    }
+    #[inline(always)]
+    fn attacks(from: Square, piece: Piece, _occ: Bitboard) -> Bitboard {
+        crate::bitboard::pawn_attacks(piece.color, from)
+    }
     fn emit(from: Square, targets: Bitboard, piece: Piece, all: bool, out: &mut Vec<ExtMove>) {
         emit_pawn(from, targets, piece, all, out);
     }
@@ -417,6 +447,14 @@ impl GroupSpec for PawnG {
 impl GroupSpec for LanceG {
     fn pieces(board: &Board, stm: Color) -> Bitboard {
         board.pieces_pattern(stm, pat::LANCE)
+    }
+    #[inline(always)]
+    fn piece(_board: &Board, stm: Color, _from: Square) -> Piece {
+        Piece::new(PieceKind::Lance, stm)
+    }
+    #[inline(always)]
+    fn attacks(from: Square, piece: Piece, occ: Bitboard) -> Bitboard {
+        crate::bitboard::lance_attacks(piece.color, from, occ)
     }
     fn emit(from: Square, targets: Bitboard, piece: Piece, all: bool, out: &mut Vec<ExtMove>) {
         emit_lance(from, targets, piece, all, out);
@@ -427,6 +465,14 @@ impl GroupSpec for KnightG {
     fn pieces(board: &Board, stm: Color) -> Bitboard {
         board.pieces_pattern(stm, pat::KNIGHT)
     }
+    #[inline(always)]
+    fn piece(_board: &Board, stm: Color, _from: Square) -> Piece {
+        Piece::new(PieceKind::Knight, stm)
+    }
+    #[inline(always)]
+    fn attacks(from: Square, piece: Piece, _occ: Bitboard) -> Bitboard {
+        crate::bitboard::knight_attacks(piece.color, from)
+    }
     fn emit(from: Square, targets: Bitboard, piece: Piece, _all: bool, out: &mut Vec<ExtMove>) {
         emit_knight(from, targets, piece, out);
     }
@@ -436,6 +482,14 @@ impl GroupSpec for SilverG {
     fn pieces(board: &Board, stm: Color) -> Bitboard {
         board.pieces_pattern(stm, pat::SILVER)
     }
+    #[inline(always)]
+    fn piece(_board: &Board, stm: Color, _from: Square) -> Piece {
+        Piece::new(PieceKind::Silver, stm)
+    }
+    #[inline(always)]
+    fn attacks(from: Square, piece: Piece, _occ: Bitboard) -> Bitboard {
+        crate::bitboard::silver_attacks(piece.color, from)
+    }
     fn emit(from: Square, targets: Bitboard, piece: Piece, _all: bool, out: &mut Vec<ExtMove>) {
         emit_silver(from, targets, piece, out);
     }
@@ -444,6 +498,15 @@ impl GroupSpec for SilverG {
 impl GroupSpec for BishopRookG {
     fn pieces(board: &Board, stm: Color) -> Bitboard {
         board.pieces_pattern(stm, pat::BISHOP) | board.pieces_pattern(stm, pat::ROOK)
+    }
+    #[inline(always)]
+    fn attacks(from: Square, piece: Piece, occ: Bitboard) -> Bitboard {
+        // The group holds only unpromoted bishops and rooks.
+        if piece.kind == PieceKind::Bishop {
+            crate::bitboard::bishop_attacks(from, occ)
+        } else {
+            crate::bitboard::rook_attacks(from, occ)
+        }
     }
     fn emit(from: Square, targets: Bitboard, piece: Piece, all: bool, out: &mut Vec<ExtMove>) {
         emit_bishop_rook(from, targets, piece, all, out);
@@ -468,6 +531,7 @@ impl<const KING: bool> GroupSpec for GoldHdkG<KING> {
 /// Iterate the side-to-move's group-`G` pieces by ascending square and emit
 /// their pseudo-moves onto the `target` squares. `all` is the
 /// `GenerateAllLegalMoves` flag, which widens the suppressed non-promotions.
+#[inline(always)]
 fn emit_group<G: GroupSpec>(
     board: &Board,
     stm: Color,
@@ -482,6 +546,7 @@ fn emit_group<G: GroupSpec>(
 /// `restrict` — the reference `target2` mask, interpose-or-capture-the-checker.
 /// Because `restrict` only removes destinations, the emitted moves stay a
 /// subsequence of the unrestricted emission.
+#[inline(always)]
 fn emit_group_masked<G: GroupSpec>(
     board: &Board,
     stm: Color,
@@ -490,11 +555,12 @@ fn emit_group_masked<G: GroupSpec>(
     all: bool,
     out: &mut Vec<ExtMove>,
 ) {
+    let occ = board.occupied();
+    // The destination mask is the same for every piece of the group.
+    let mask = target_mask(board, stm, target) & restrict;
     for from in G::pieces(board, stm).squares() {
-        let piece = board
-            .get(from)
-            .expect("group_pieces bit implies a piece stands on the square");
-        let targets = reachable(board, from, piece, target) & restrict;
+        let piece = G::piece(board, stm, from);
+        let targets = G::attacks(from, piece, occ) & mask;
         G::emit(from, targets, piece, all, out);
     }
 }
