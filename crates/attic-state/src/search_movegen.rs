@@ -820,8 +820,14 @@ impl Position {
 
         // `slider_blockers(c)` returns `(blockersForKing[c], pinners[~c])`, so
         // the pinners half from `slider_blockers(Black)` is `pinners[White]`.
-        let (blk_black, pin_white) = crate::see::slider_blockers(board, Color::Black);
-        let (blk_white, pin_black) = crate::see::slider_blockers(board, Color::White);
+        let (black_king, white_king) = match stm {
+            Color::Black => (own_king, enemy_king),
+            Color::White => (enemy_king, own_king),
+        };
+        let (blk_black, pin_white) =
+            crate::see::slider_blockers_at(board, Color::Black, black_king);
+        let (blk_white, pin_black) =
+            crate::see::slider_blockers_at(board, Color::White, white_king);
         let mut blockers = [Bitboard::EMPTY; Color::COUNT];
         blockers[Color::Black.index()] = blk_black;
         blockers[Color::White.index()] = blk_white;
