@@ -26,6 +26,10 @@ nnue_kp_256x2_32_32 = ["attic-eval/nnue_kp_256x2_32_32"]
 nnue_halfkp_256x2_32_32 = ["attic-eval/nnue_halfkp_256x2_32_32"]
 sym_kp_128x2_512 = ["attic-eval/sym_kp_128x2_512"]
 sym_halfkp_128x2_512 = ["attic-eval/sym_halfkp_128x2_512"]
+# Make `go nodes N` stop where the reference does: leave the `check_time` poll out
+# of `qsearch` and start each `go` with `callsCnt` at 0. For comparing against
+# YaneuraOu only; the default keeps the earlier abort latency.
+ref_check_time = []
 
 [dev-dependencies]
 serde = { version = "~1.0", features = ["derive"] }

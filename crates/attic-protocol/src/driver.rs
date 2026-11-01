@@ -2457,6 +2457,9 @@ fn run_coordinated<W: Write + Send + 'static>(job: CoordinatorJob<W>) -> Coordin
     let ponder_candidate = chosen_result.ponder_candidate;
     // `uciPvSent` is the main worker's flag, whatever worker is chosen.
     let mut uci_pv_sent = results[0].uci_pv_sent;
+    // The reference's `pvIdx` after an aborted MultiPV loop, which the final
+    // `pv()` reads: the line that was being searched keeps its fail bound.
+    let aborted_pv_idx = results[0].aborted_pv_idx;
 
     // The `timeReduction` comes from the main worker even when the vote chose
     // another.
@@ -2499,7 +2502,14 @@ fn run_coordinated<W: Write + Send + 'static>(job: CoordinatorJob<W>) -> Coordin
     // (`worker.pvIdx == multiPV`).
     if !uci_pv_sent || resign_by_value {
         let n = pv_lines.len();
-        let infos = qs.build_pv_infos(&pos, &pv_lines, n, completed_depth, n, total_nodes);
+        let infos = qs.build_pv_infos(
+            &pos,
+            &pv_lines,
+            aborted_pv_idx.unwrap_or(n),
+            completed_depth,
+            n,
+            total_nodes,
+        );
         let mut guard = writer.lock().unwrap_or_else(|e| e.into_inner());
         for info in &infos {
             let _ = write_pv_info(&mut *guard, info);

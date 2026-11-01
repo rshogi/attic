@@ -22,6 +22,7 @@ nnue_kp_256x2_32_32 = ["attic-search/nnue_kp_256x2_32_32"]
 nnue_halfkp_256x2_32_32 = ["attic-search/nnue_halfkp_256x2_32_32"]
 sym_kp_128x2_512 = ["attic-search/sym_kp_128x2_512"]
 sym_halfkp_128x2_512 = ["attic-search/sym_halfkp_128x2_512"]
+ref_check_time = ["attic-search/ref_check_time"]
 
 [dev-dependencies]
 serde = { version = "~1.0", features = ["derive"] }
