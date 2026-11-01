@@ -1109,6 +1109,41 @@ mod tests {
         check_move_delta_invariant(STARTPOS, "5i5h");
     }
 
+    /// Every legal move of a spread of positions, not a hand-picked few: both
+    /// sides to move, hands full and empty, promoted pieces, drops, captures
+    /// (including a capture of a promoted piece), promotions and king moves.
+    /// Each is held against the `active_features` scan by the same invariant.
+    ///
+    /// Every position must be legal for the side it names: with the other king
+    /// en prise the generator offers to capture it, and the shapes that read
+    /// the king square (HalfKP, SFNN) then panic on a position with no king.
+    #[test]
+    fn move_delta_reconstructs_after_for_every_legal_move() {
+        let positions = [
+            STARTPOS,
+            DROP_HEAVY,
+            "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL w - 1",
+            "pnsg1k2l/l1rg2s2/+P1p3n1p/Pp2pp3/L2p2pp1/1B2P2P1/NP1PGPPRP/3S1K2L/3G1S1N1 b B 55",
+            "pnsg1k2l/l1rg2s2/+P1p3n1p/Pp2pp3/L2p2pp1/1B2P2P1/NP1PGPPRP/3S1K2L/3G1S1N1 w Bp 56",
+            "4k4/2pP5/9/3+r5/9/6+b2/9/1R1+B5/4K4 b 2G2S2N2L8Pgsnl 1",
+            "4k4/2pP5/9/3+r5/9/6+b2/9/1R1+B5/4K4 w 2G2S2N2L8Pgsnl 1",
+            "k8/9/9/9/9/9/9/9/8K b RB2G2S2N2L9Prb2g2s2n2l9p 1",
+            "1k7/9/9/9/9/9/9/9/7K1 w 3P3p 1",
+        ];
+        let mut checked = 0;
+        for sfen in positions {
+            let pos = parse_sfen(sfen).unwrap();
+            let mut moves = Vec::new();
+            pos.generate_legal_all(&mut moves);
+            assert!(!moves.is_empty(), "no legal moves in {sfen}");
+            for mv in moves {
+                check_move_delta_invariant(sfen, &attic_state::format_usi_move(mv));
+                checked += 1;
+            }
+        }
+        assert!(checked > 600, "only {checked} moves were checked");
+    }
+
     #[test]
     fn move_delta_holds_with_a_king_off_the_left_five_files() {
         // Black's king on 8i: file index 7, which is what `needs_mirror` fires
