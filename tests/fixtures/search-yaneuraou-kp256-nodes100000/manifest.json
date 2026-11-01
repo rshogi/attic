@@ -1,0 +1,71 @@
+{
+ "engine": "YaneuraOu",
+ "version": "9.80git",
+ "commit": "d47c9bfb",
+ "family": "kp256",
+ "edition": "YANEURAOU_ENGINE_NNUE_KP256",
+ "build": "make normal TARGET_CPU=AVX2 COMPILER=g++ (FOR_TOURNAMENT なし)",
+ "binary_sha256": "69db85d0a80cfb9d9aa3a2040b76db5385dcc9c0e2a3ff73cfa1f45442fe8b37",
+ "eval_sha256": "ddd2cc1d5ad42a4885ce88736edc6f7ffbf453797dcfa3660b7f1c6577f1ffe7",
+ "go": "go nodes 100000",
+ "nodes": 100000,
+ "options": {
+  "Threads": 1,
+  "USI_Hash": 16,
+  "MultiPV": 1,
+  "BookFile": "no_book",
+  "USI_OwnBook": "false",
+  "FV_SCALE": 16,
+  "NetworkDelay": 0,
+  "NetworkDelay2": 0,
+  "MinimumThinkingTime": 0,
+  "PvInterval": 0
+ },
+ "per_search": "usinewgame → isready(readyok を待つ) → position sfen → go",
+ "compared": "全 info 行(time / nps / hashfull を除く)と bestmove(ponder 手を含む)",
+ "sfens_sha256": "b295a3604dbc9c7d49d0ae8ca4e07d8e857d745fc481ebe02b4cfec64d068030",
+ "created": "2026-11-01 13:29:17 UTC",
+ "full_fixture_positions": 16384,
+ "positions": 160,
+ "selection": "全 16384 局面を idx 順に並べて 128 局面おき(128 局面)＋ある修正を外すと不一致になる局面(movegen-occ 8、tt-probe-skip 12、tt-reeval 12)",
+ "sentinels": {
+  "movegen-occ": [
+   213260,
+   709140,
+   709377,
+   730320,
+   1255360,
+   1379785,
+   2197415,
+   2502015
+  ],
+  "tt-probe-skip": [
+   50838,
+   63846,
+   177988,
+   187359,
+   205561,
+   241203,
+   246302,
+   322277,
+   376673,
+   387334,
+   462769,
+   485608
+  ],
+  "tt-reeval": [
+   1145,
+   2058,
+   7143,
+   34763,
+   39034,
+   46648,
+   52552,
+   53080,
+   59017,
+   74911,
+   98180,
+   110601
+  ]
+ }
+}
