@@ -176,7 +176,7 @@ fn per_layer_flow(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> 
 #[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
 fn per_layer_flow(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> i32 {
     let mut fc_0_out = [0i32; FC_0_OUTPUT_DIMS];
-    post_ft_kernel::affine(
+    post_ft_kernel::affine_u7(
         &mut fc_0_out,
         &stack.fc_0_biases,
         &stack.fc_0_weights,
@@ -185,9 +185,9 @@ fn per_layer_flow(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> 
         FC_0_PADDED_INPUT_DIMS,
     );
     let mut act_0 = [0u8; FC_1_INPUT_DIMS];
-    clipped_relu(&fc_0_out, &mut act_0);
+    post_ft_kernel::clipped_relu(&fc_0_out, &mut act_0);
     let mut fc_1_out = [0i32; FC_1_OUTPUT_DIMS];
-    post_ft_kernel::affine(
+    post_ft_kernel::affine_u7(
         &mut fc_1_out,
         &stack.fc_1_biases,
         &stack.fc_1_weights,
@@ -196,9 +196,9 @@ fn per_layer_flow(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> 
         FC_1_PADDED_INPUT_DIMS,
     );
     let mut act_1 = [0u8; FC_2_INPUT_DIMS];
-    clipped_relu(&fc_1_out, &mut act_1);
+    post_ft_kernel::clipped_relu(&fc_1_out, &mut act_1);
     let mut fc_2_out = [0i32; FC_2_OUTPUT_DIMS];
-    post_ft_kernel::affine(
+    post_ft_kernel::affine_u7(
         &mut fc_2_out,
         &stack.fc_2_biases,
         &stack.fc_2_weights,
@@ -207,12 +207,6 @@ fn per_layer_flow(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> 
         FC_2_PADDED_INPUT_DIMS,
     );
     fc_2_out[0]
-}
-#[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
-fn clipped_relu(src: &[i32], dst: &mut [u8]) {
-    for (slot, &sum) in dst.iter_mut().zip(src) {
-        *slot = (sum >> 6).clamp(0, 127) as u8;
-    }
 }
 #[cfg(any(
     feature = "sfnn_halfkahm2_1536_15_32_k3k3",

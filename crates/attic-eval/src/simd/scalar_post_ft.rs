@@ -49,6 +49,23 @@ pub fn affine(
     }
 }
 
+/// [`affine`] for inputs that are all at most 127.
+///
+/// The scalar loop has no use for the bound; it exists so the AVX2 kernel,
+/// which does (`maddubs` saturates above 127), has a same-signature baseline to
+/// match bit for bit, and so a build without AVX2 can call one name.
+pub fn affine_u7(
+    output: &mut [i32],
+    biases: &[i32],
+    weights: &[i8],
+    input: &[u8],
+    in_dims: usize,
+    padded_in: usize,
+) {
+    debug_assert!(input[..in_dims].iter().all(|&x| x <= 127));
+    affine(output, biases, weights, input, in_dims, padded_in);
+}
+
 /// Clipped ReLU: `output = clamp(input >> WEIGHT_SCALE_BITS, 0, 127)`.
 pub fn clipped_relu(input: &[i32], output: &mut [u8]) {
     debug_assert_eq!(input.len(), output.len());

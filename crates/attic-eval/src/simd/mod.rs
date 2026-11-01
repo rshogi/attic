@@ -257,6 +257,24 @@ pub mod post_ft_kernel {
     ) {
         scalar_post_ft::affine(output, biases, weights, input, in_dims, padded_in);
     }
+
+    /// [`affine`] for inputs of at most 127, which the KP/HalfKP chain
+    /// guarantees: the AVX2 kernel, since `avx512bw` implies `avx2`.
+    #[inline]
+    pub fn affine_u7(
+        output: &mut [i32],
+        biases: &[i32],
+        weights: &[i8],
+        input: &[u8],
+        in_dims: usize,
+        padded_in: usize,
+    ) {
+        // SAFETY: a build enabling avx512bw enables avx2 with it, and only runs
+        // on a host providing both.
+        unsafe {
+            super::avx2_post_ft::affine_u7(output, biases, weights, input, in_dims, padded_in)
+        }
+    }
 }
 
 /// Output-transform and layer element-wise kernels — scalar arm (the AVX-512 arm
@@ -275,6 +293,27 @@ pub mod post_ft_kernel {
 ))]
 pub mod post_ft_kernel {
     pub use super::scalar_post_ft::{affine, sqr_clipped_relu};
+
+    /// [`affine`] for inputs of at most 127 (`maddubs` saturates above that).
+    /// Every layer of the KP/HalfKP chain is fed `clamp(0, 127)` bytes; the SFNN
+    /// chains are not and keep the general kernel.
+    #[inline]
+    pub fn affine_u7(
+        output: &mut [i32],
+        biases: &[i32],
+        weights: &[i8],
+        input: &[u8],
+        in_dims: usize,
+        padded_in: usize,
+    ) {
+        // SAFETY: this module is compiled only into a build that enables avx2 —
+        // exactly what the callee's `#[target_feature]` names — and such a build
+        // only runs on a host providing it. The caller guarantees the 7-bit
+        // input.
+        unsafe {
+            super::avx2_post_ft::affine_u7(output, biases, weights, input, in_dims, padded_in)
+        }
+    }
 
     /// Pairwise element-wise multiply for one perspective half.
     #[inline]
@@ -302,7 +341,9 @@ pub mod post_ft_kernel {
     )
 )))]
 pub mod post_ft_kernel {
-    pub use super::scalar_post_ft::{affine, clipped_relu, ewm_one_perspective, sqr_clipped_relu};
+    pub use super::scalar_post_ft::{
+        affine, affine_u7, clipped_relu, ewm_one_perspective, sqr_clipped_relu,
+    };
 }
 
 #[cfg(test)]
