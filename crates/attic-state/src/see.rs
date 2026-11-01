@@ -44,9 +44,8 @@ const HORSE_VALUE: i32 = 945;
 const DRAGON_VALUE: i32 = 1395;
 const KING_VALUE: i32 = 15000;
 
-/// `Eval::PieceValue[piece]` — the value of a concrete board piece, with
-/// promoted pieces returning their promoted value.
-pub fn piece_value(p: Piece) -> i32 {
+/// The match form of [`piece_value`], used once to build [`PIECE_VALUE_OF_CODE`].
+const fn piece_value_match(p: Piece) -> i32 {
     use crate::piece::PieceKind;
     match (p.kind, p.promoted) {
         (PieceKind::Pawn, false) => PAWN_VALUE,
@@ -64,6 +63,25 @@ pub fn piece_value(p: Piece) -> i32 {
         (PieceKind::Rook, true) => DRAGON_VALUE,
         (PieceKind::King, _) => KING_VALUE,
     }
+}
+
+/// [`piece_value`] for every [`Piece::code`], so the lookup is one load rather
+/// than a two-level `match`.
+static PIECE_VALUE_OF_CODE: [i32; Piece::CODES] = {
+    let mut t = [0i32; Piece::CODES];
+    let mut code = 0;
+    while code < Piece::CODES {
+        t[code] = piece_value_match(Piece::from_code(code));
+        code += 1;
+    }
+    t
+};
+
+/// `Eval::PieceValue[piece]` — the value of a concrete board piece, with
+/// promoted pieces returning their promoted value.
+#[inline(always)]
+pub fn piece_value(p: Piece) -> i32 {
+    PIECE_VALUE_OF_CODE[p.code()]
 }
 
 /// The reference's `pieces(<TYPE>)` least-valuable-attacker buckets. `Golds`

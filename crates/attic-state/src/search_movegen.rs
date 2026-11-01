@@ -737,7 +737,7 @@ impl CheckSquares {
     /// True iff `m` gives a **direct** check by the moved piece — as
     /// [`Position::gives_direct_check`], but read off the snapshot.
     pub fn gives_direct_check(&self, m: Move) -> bool {
-        self.table[check_pattern(m.moved_piece_after())].test(m.to_sq())
+        self.table[m.moved_pattern()].test(m.to_sq())
     }
 }
 
@@ -898,7 +898,7 @@ impl Position {
         let board = self.board();
         let to = m.to_sq();
 
-        let mut checkers = if parent.check_squares[check_pattern(m.moved_piece_after())].test(to) {
+        let mut checkers = if parent.check_squares[m.moved_pattern()].test(to) {
             Bitboard::from_square(to)
         } else {
             Bitboard::EMPTY
@@ -959,7 +959,7 @@ impl Position {
             return false;
         }
 
-        if ci.check_squares[check_pattern(m.moved_piece_after())].test(to) {
+        if ci.check_squares[m.moved_pattern()].test(to) {
             return true;
         }
 
@@ -986,7 +986,7 @@ impl Position {
     /// approximation.
     pub fn gives_direct_check(&self, m: Move) -> bool {
         let ci = self.check_info();
-        ci.check_squares[check_pattern(m.moved_piece_after())].test(m.to_sq())
+        ci.check_squares[m.moved_pattern()].test(m.to_sq())
     }
 
     /// Snapshot the cached `checkSquares` table by value, so that the per-quiet
