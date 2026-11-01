@@ -837,6 +837,31 @@ impl Position {
         injected_in_check: Option<bool>,
         injected_checkers: Option<Bitboard>,
     ) -> CheckInfo {
+        let mut out = core::mem::MaybeUninit::<CheckInfo>::uninit();
+        // SAFETY: `out` is valid for one `CheckInfo` write and does not alias
+        // `self`; the callee fully initialises it.
+        unsafe {
+            self.compute_check_info_into(out.as_mut_ptr(), injected_in_check, injected_checkers);
+            out.assume_init()
+        }
+    }
+
+    /// [`Self::compute_check_info_impl`] written straight into `out`, so that
+    /// `do_move` can build the child's info in its final slot instead of on the
+    /// stack followed by a 256-byte copy.
+    ///
+    /// # Safety
+    ///
+    /// `out` must be valid for writing one `CheckInfo`. It may point into
+    /// storage owned by `self` provided that storage is not the data this
+    /// function reads (the board, hands and side to move).
+    #[inline(always)]
+    pub(crate) unsafe fn compute_check_info_into(
+        &self,
+        out: *mut CheckInfo,
+        injected_in_check: Option<bool>,
+        injected_checkers: Option<Bitboard>,
+    ) {
         let board = self.board();
         let stm = self.side_to_move();
         let enemy = stm.flip();
@@ -865,23 +890,16 @@ impl Position {
             let bishop = bishop_attacks(eks, occ);
             let rook = rook_attacks(eks, occ);
             let king_ring = king_attacks(enemy, eks);
-            check_squares[check_pattern(Piece::new(PieceKind::Pawn, enemy))] =
-                pawn_attacks(enemy, eks);
-            check_squares[check_pattern(Piece::new(PieceKind::Lance, enemy))] =
-                lance_attacks(enemy, eks, occ);
-            check_squares[check_pattern(Piece::new(PieceKind::Knight, enemy))] =
-                knight_attacks(enemy, eks);
-            check_squares[check_pattern(Piece::new(PieceKind::Silver, enemy))] =
-                silver_attacks(enemy, eks);
-            check_squares[check_pattern(Piece::new(PieceKind::Gold, enemy))] =
-                gold_attacks(enemy, eks);
-            check_squares[check_pattern(Piece::new(PieceKind::Bishop, enemy))] = bishop;
-            check_squares[check_pattern(Piece::new(PieceKind::Rook, enemy))] = rook;
-            check_squares[check_pattern(Piece::promoted(PieceKind::Bishop, enemy).unwrap())] =
-                bishop | king_ring;
-            check_squares[check_pattern(Piece::promoted(PieceKind::Rook, enemy).unwrap())] =
-                rook | king_ring;
-            check_squares[check_pattern(Piece::new(PieceKind::King, enemy))] = Bitboard::EMPTY;
+            check_squares[pat::PAWN] = pawn_attacks(enemy, eks);
+            check_squares[pat::LANCE] = lance_attacks(enemy, eks, occ);
+            check_squares[pat::KNIGHT] = knight_attacks(enemy, eks);
+            check_squares[pat::SILVER] = silver_attacks(enemy, eks);
+            check_squares[pat::GOLD] = gold_attacks(enemy, eks);
+            check_squares[pat::BISHOP] = bishop;
+            check_squares[pat::ROOK] = rook;
+            check_squares[pat::HORSE] = bishop | king_ring;
+            check_squares[pat::DRAGON] = rook | king_ring;
+            check_squares[pat::KING] = Bitboard::EMPTY;
         }
 
         // `slider_blockers(c)` returns `(blockersForKing[c], pinners[~c])`, so
@@ -894,12 +912,6 @@ impl Position {
             crate::see::slider_blockers_at(board, Color::Black, black_king);
         let (blk_white, pin_black) =
             crate::see::slider_blockers_at(board, Color::White, white_king);
-        let mut blockers = [Bitboard::EMPTY; Color::COUNT];
-        blockers[Color::Black.index()] = blk_black;
-        blockers[Color::White.index()] = blk_white;
-        let mut pinners = [Bitboard::EMPTY; Color::COUNT];
-        pinners[Color::Black.index()] = pin_black;
-        pinners[Color::White.index()] = pin_white;
 
         // The injected flag equals this probe in legal play, a move giving check
         // iff the resulting side to move is in check. The oracle is
@@ -936,15 +948,19 @@ impl Position {
             }
         };
 
-        CheckInfo {
-            board_key: self.board_key(),
-            enemy_king,
-            own_king,
-            in_check,
-            check_squares,
-            blockers,
-            pinners,
-            checkers,
+        // SAFETY: the caller guarantees `out` is valid for this write.
+        unsafe {
+            out.write(CheckInfo {
+                board_key: self.board_key(),
+                enemy_king,
+                own_king,
+                in_check,
+                check_squares,
+                // Indexed by [`Color::index`], Black first.
+                blockers: [blk_black, blk_white],
+                pinners: [pin_black, pin_white],
+                checkers,
+            });
         }
     }
 

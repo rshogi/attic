@@ -139,14 +139,16 @@ pub struct Position {
     /// Partial position keys over **all non-pawn board pieces** of each colour,
     /// **king included**. Empty value zero (`StateInfo::nonPawnKey`).
     non_pawn_key: [u64; Color::COUNT],
-    /// Per-state check info of the *current* position
-    /// (`StateInfo::{checkSquares, blockersForKing}`), recomputed on every
-    /// state change. Excluded from [`PartialEq`] as a derived cache.
+    /// Per-state check info (`StateInfo::{checkSquares, blockersForKing}`) of
+    /// the position at the head of the line, which is the *current* position's
+    /// while [`Self::check_info_chain`] is empty. Excluded from [`PartialEq`] as
+    /// a derived cache.
     check_info: crate::search_movegen::CheckInfo,
-    /// The parent [`Self::check_info`] values, one entry per live `do_move` /
-    /// `do_null_move`, so the matching undo restores its parent in O(1).
-    /// Excluded from [`PartialEq`] as auxiliary cache state.
-    check_info_stack: Vec<crate::search_movegen::CheckInfo>,
+    /// The check info of each state a live `do_move` / `do_null_move` reached,
+    /// oldest first, so that the current position's is the last entry and the
+    /// matching undo restores its parent just by dropping that entry. Excluded
+    /// from [`PartialEq`] as auxiliary cache state.
+    check_info_chain: Vec<crate::search_movegen::CheckInfo>,
 }
 
 /// Structural equality over the *primary* state only. The keys are excluded so
@@ -184,7 +186,7 @@ impl Position {
             minor_piece_key: 0,
             non_pawn_key: [0; Color::COUNT],
             check_info: crate::search_movegen::CheckInfo::EMPTY,
-            check_info_stack: Vec::new(),
+            check_info_chain: Vec::new(),
         }
     }
 
@@ -240,7 +242,8 @@ impl Position {
     /// selects which king is own and which enemy.
     pub fn set_side_to_move(&mut self, color: Color) {
         self.side_to_move = color;
-        self.check_info = self.compute_check_info();
+        let ci = self.compute_check_info();
+        *self.current_check_info_mut() = ci;
     }
 
     pub const fn ply(&self) -> u16 {
@@ -271,13 +274,33 @@ impl Position {
 
     /// The per-state [`crate::search_movegen::CheckInfo`] of the current
     /// position.
+    #[inline(always)]
     pub(crate) fn check_info(&self) -> &crate::search_movegen::CheckInfo {
+        let ci = self.current_check_info();
         debug_assert_eq!(
-            self.check_info.board_key,
+            ci.board_key,
             self.board_key(),
             "cached check_info is stale relative to the current board_key",
         );
-        &self.check_info
+        ci
+    }
+
+    /// The current position's check info slot: the newest chain entry, else the
+    /// head-of-line value.
+    #[inline(always)]
+    fn current_check_info(&self) -> &crate::search_movegen::CheckInfo {
+        match self.check_info_chain.last() {
+            Some(ci) => ci,
+            None => &self.check_info,
+        }
+    }
+
+    #[inline(always)]
+    fn current_check_info_mut(&mut self) -> &mut crate::search_movegen::CheckInfo {
+        match self.check_info_chain.last_mut() {
+            Some(ci) => ci,
+            None => &mut self.check_info,
+        }
     }
 
     /// Hand half of the key.
@@ -369,7 +392,8 @@ impl Position {
         self.minor_piece_key = minor_piece_key;
         self.non_pawn_key = non_pawn_key;
         // Those same mutations invalidated the per-state check info.
-        self.check_info = self.compute_check_info();
+        let ci = self.compute_check_info();
+        *self.current_check_info_mut() = ci;
     }
 
     /// Play `m`, deciding check status from the parent's cached check info
@@ -392,11 +416,13 @@ impl Position {
 
         // The state this move is played from, whose `plies_from_null` and
         // `continuous_check` the new state extends.
-        let prev = self
-            .history
-            .last()
-            .cloned()
-            .unwrap_or_else(|| self.root.as_ref().expect("root captured above").clone());
+        let (prev_plies_from_null, prev_continuous_check) = {
+            let prev = self
+                .history
+                .last()
+                .unwrap_or_else(|| self.root.as_ref().expect("root captured above"));
+            (prev.plies_from_null, prev.continuous_check)
+        };
 
         let mover = self.side_to_move;
         let to = m.to_sq();
@@ -466,9 +492,9 @@ impl Position {
         }
 
         // The non-mover's run is inherited unchanged.
-        let mut continuous_check = prev.continuous_check;
+        let mut continuous_check = prev_continuous_check;
         continuous_check[mover.index()] = if gives_check {
-            prev.continuous_check[mover.index()] + 2
+            prev_continuous_check[mover.index()] + 2
         } else {
             0
         };
@@ -478,7 +504,7 @@ impl Position {
         // `self.check_info` is still the parent value here; the board and side
         // are already final.
         let child_checkers = if gives_check {
-            self.differential_child_checkers(m, mover, &self.check_info)
+            self.differential_child_checkers(m, mover, self.current_check_info())
         } else {
             Bitboard::EMPTY
         };
@@ -504,16 +530,14 @@ impl Position {
             }
         }
 
-        self.check_info_stack.push(self.check_info);
-        self.check_info =
-            self.compute_check_info_with_in_check_and_checkers(gives_check, child_checkers);
+        self.push_check_info(Some(gives_check), Some(child_checkers));
 
         self.history.push(StateInfo {
             hands: self.hands,
             side_to_move: self.side_to_move,
             gives_check,
             board_key: self.board_key,
-            plies_from_null: prev.plies_from_null + 1,
+            plies_from_null: prev_plies_from_null + 1,
             continuous_check,
             // Filled in by `store_current_repetition` below.
             #[cfg(not(feature = "quick-draw"))]
@@ -562,14 +586,40 @@ impl Position {
         }
     }
 
+    /// Compute the check info of the position as it now stands and append it to
+    /// the chain, building it in the chain's own storage.
+    #[inline(always)]
+    fn push_check_info(&mut self, in_check: Option<bool>, checkers: Option<Bitboard>) {
+        self.check_info_chain.reserve(1);
+        let len = self.check_info_chain.len();
+        // The slot lies in spare capacity (just reserved) of a heap buffer that
+        // `compute_check_info_into` does not read, so writing it through a raw
+        // pointer while `self` is shared is sound; `len` only grows once the
+        // slot is fully written.
+        let slot = self.check_info_chain.as_mut_ptr().wrapping_add(len);
+        // SAFETY: `slot` is in bounds of the reserved capacity and valid for one
+        // write; the callee initialises all of it.
+        unsafe {
+            self.compute_check_info_into(slot, in_check, checkers);
+            self.check_info_chain.set_len(len + 1);
+        }
+    }
+
+    /// Drop the newest chain entry, which makes its parent the current check
+    /// info again. An empty chain means an undo with no matching `do_move`, so
+    /// there is no parent value to restore and the head-of-line info is
+    /// recomputed instead.
+    #[inline(always)]
+    fn pop_check_info(&mut self) {
+        match self.check_info_chain.len() {
+            0 => self.check_info = self.compute_check_info(),
+            n => self.check_info_chain.truncate(n - 1),
+        }
+    }
+
     pub fn undo_move(&mut self, m: Move, undo: Undo) {
         let _ = self.history.pop();
-        // An empty stack means an `undo_move` with no matching `do_move`, so
-        // there is no parent value to restore.
-        self.check_info = match self.check_info_stack.pop() {
-            Some(ci) => ci,
-            None => self.compute_check_info(),
-        };
+        self.pop_check_info();
         self.side_to_move = self.side_to_move.flip();
         self.ply = self.ply.wrapping_sub(1);
         self.board_key ^= crate::key::side();
@@ -618,11 +668,11 @@ impl Position {
             self.root = Some(self.root_state());
         }
 
-        let prev = self
+        let prev_continuous_check = self
             .history
             .last()
-            .cloned()
-            .unwrap_or_else(|| self.root.as_ref().expect("root captured above").clone());
+            .unwrap_or_else(|| self.root.as_ref().expect("root captured above"))
+            .continuous_check;
 
         let null_mover = self.side_to_move;
         self.side_to_move = self.side_to_move.flip();
@@ -632,14 +682,13 @@ impl Position {
         // A null move is never a check, so it breaks the passing side's streak.
         // The new side to move's run is already 0 by the reference invariant
         // that one cannot null out of check.
-        let mut continuous_check = prev.continuous_check;
+        let mut continuous_check = prev_continuous_check;
         continuous_check[null_mover.index()] = 0;
 
         // The board is unchanged, but passing the turn swaps which king is the
         // enemy, so the check info still differs. `in_check` is injected rather
         // than probed: a null move is only tried out of check.
-        self.check_info_stack.push(self.check_info);
-        self.check_info = self.compute_check_info_with_in_check(false);
+        self.push_check_info(Some(false), None);
 
         self.history.push(StateInfo {
             hands: self.hands,
@@ -662,10 +711,7 @@ impl Position {
     /// Undo the [`Self::do_null_move`] that reached the current position.
     pub fn undo_null_move(&mut self) {
         let _ = self.history.pop();
-        self.check_info = match self.check_info_stack.pop() {
-            Some(ci) => ci,
-            None => self.compute_check_info(),
-        };
+        self.pop_check_info();
         self.side_to_move = self.side_to_move.flip();
         self.ply = self.ply.wrapping_sub(1);
         self.board_key ^= crate::key::side();
@@ -905,7 +951,8 @@ impl Drop for BoardMut<'_> {
         // `compute_check_info` reads the board and side to move, both current,
         // and stamps the possibly still-stale `board_key`, so that the
         // freshness `debug_assert` stays consistent either way.
-        self.pos.check_info = self.pos.compute_check_info();
+        let ci = self.pos.compute_check_info();
+        *self.pos.current_check_info_mut() = ci;
     }
 }
 
