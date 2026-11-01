@@ -194,6 +194,29 @@ pub unsafe fn clipped_relu(input: &[i32], output: &mut [u8]) {
 /// Byte lanes in a 256-bit register.
 const U8_LANES: usize = 32;
 
+/// The one release-mode check the pointer loads in the affine kernels rely on:
+/// every slice is as long as the shape says. One `assert!` over a combined
+/// condition, so the hot path has a single not-taken branch and a single cold
+/// panic site; `checked_mul` also rules out an `output.len() * padded_in` that
+/// wraps around to a matching `weights.len()`.
+#[inline(always)]
+fn assert_affine_shape(
+    output_len: usize,
+    biases_len: usize,
+    weights_len: usize,
+    input_len: usize,
+    in_dims: usize,
+    padded_in: usize,
+) {
+    assert!(
+        output_len == biases_len
+            && in_dims <= padded_in
+            && input_len >= in_dims
+            && output_len.checked_mul(padded_in) == Some(weights_len),
+        "affine kernel: slice lengths do not match the layer shape"
+    );
+}
+
 /// Horizontal sum of the eight `i32` lanes of `v` (wrapping, like every other
 /// `i32` add in this file).
 #[inline]
@@ -247,12 +270,16 @@ pub unsafe fn affine_u7(
     in_dims: usize,
     padded_in: usize,
 ) {
-    // Real asserts, not debug ones: the loads below go through raw pointers and
-    // trust these lengths. They are a handful of compares per call.
-    assert_eq!(output.len(), biases.len());
-    assert_eq!(weights.len(), output.len() * padded_in);
-    assert!(in_dims <= padded_in);
-    assert!(input.len() >= in_dims);
+    // A real assert, not a debug one: the loads below go through raw pointers
+    // and trust these lengths.
+    assert_affine_shape(
+        output.len(),
+        biases.len(),
+        weights.len(),
+        input.len(),
+        in_dims,
+        padded_in,
+    );
     // The 7-bit bound is a value property, not a length: it would cost a pass
     // over the input, so it stays a debug-only check.
     debug_assert!(
@@ -374,13 +401,16 @@ pub unsafe fn affine_u7_wide(
     padded_in: usize,
 ) {
     // Real asserts, not debug ones: the loads below go through raw pointers and
-    // trust these lengths.
-    assert!(
-        in_dims % U8_LANES == 0 && in_dims <= padded_in && input.len() >= in_dims,
-        "affine_u7_wide shape"
+    // trust these lengths (and that the width is whole 32-byte chunks).
+    assert_affine_shape(
+        output.len(),
+        biases.len(),
+        weights.len(),
+        input.len(),
+        in_dims,
+        padded_in,
     );
-    assert_eq!(weights.len(), output.len() * padded_in);
-    assert_eq!(output.len(), biases.len());
+    assert!(in_dims % U8_LANES == 0, "affine_u7_wide needs whole chunks");
     // Value properties would cost a pass over the data, so they are checked in
     // debug builds only; `NetworkStack` proves the weights' once, at build.
     debug_assert!(
@@ -561,11 +591,15 @@ pub unsafe fn affine_u7_vnni(
     in_dims: usize,
     padded_in: usize,
 ) {
-    // Real asserts: the loads below trust these lengths.
-    assert_eq!(output.len(), biases.len());
-    assert_eq!(weights.len(), output.len() * padded_in);
-    assert!(in_dims <= padded_in);
-    assert!(input.len() >= in_dims);
+    // A real assert: the loads below trust these lengths.
+    assert_affine_shape(
+        output.len(),
+        biases.len(),
+        weights.len(),
+        input.len(),
+        in_dims,
+        padded_in,
+    );
 
     if in_dims % U8_LANES != 0 {
         scalar_post_ft::affine(output, biases, weights, input, in_dims, padded_in);
@@ -1170,5 +1204,16 @@ mod tests {
                 assert!(outcome.is_err(), "{name} accepted {what}");
             }
         }
+    }
+    /// `output.len() * padded_in` wrapping around to the weights' length must
+    /// not pass for a match: 2 * 2^63 wraps to 0, the length of an empty slice.
+    #[test]
+    fn affine_shape_check_rejects_a_wrapping_product() {
+        let wrapped = std::panic::catch_unwind(|| {
+            assert_affine_shape(2, 2, 0, 64, 32, 1usize << (usize::BITS - 1));
+        });
+        assert!(wrapped.is_err(), "a wrapping rows * padded_in was accepted");
+        // And a consistent shape still passes.
+        assert_affine_shape(32, 32, 32 * 512, 512, 512, 512);
     }
 }
