@@ -235,7 +235,8 @@ unsafe fn hsum_epi32(v: __m256i) -> i32 {
 /// # Safety
 /// The running CPU must support `avx2`. Every `input[..in_dims]` byte must be
 /// at most 127 (checked by `debug_assert!`); a larger byte may saturate inside
-/// `maddubs` and change the result.
+/// `maddubs` and change the result, though it cannot read out of bounds: the
+/// slice lengths are asserted on every call.
 #[inline]
 #[target_feature(enable = "avx2")]
 pub unsafe fn affine_u7(
@@ -246,10 +247,14 @@ pub unsafe fn affine_u7(
     in_dims: usize,
     padded_in: usize,
 ) {
-    debug_assert_eq!(output.len(), biases.len());
-    debug_assert_eq!(weights.len(), output.len() * padded_in);
-    debug_assert!(in_dims <= padded_in);
-    debug_assert!(input.len() >= in_dims);
+    // Real asserts, not debug ones: the loads below go through raw pointers and
+    // trust these lengths. They are a handful of compares per call.
+    assert_eq!(output.len(), biases.len());
+    assert_eq!(weights.len(), output.len() * padded_in);
+    assert!(in_dims <= padded_in);
+    assert!(input.len() >= in_dims);
+    // The 7-bit bound is a value property, not a length: it would cost a pass
+    // over the input, so it stays a debug-only check.
     debug_assert!(
         input[..in_dims].iter().all(|&x| x <= 127),
         "affine_u7 needs 7-bit inputs: maddubs saturates above 127"
@@ -368,10 +373,16 @@ pub unsafe fn affine_u7_wide(
     in_dims: usize,
     padded_in: usize,
 ) {
-    debug_assert_eq!(output.len(), biases.len());
-    debug_assert_eq!(weights.len(), output.len() * padded_in);
-    debug_assert!(in_dims <= padded_in);
-    debug_assert!(input.len() >= in_dims);
+    // Real asserts, not debug ones: the loads below go through raw pointers and
+    // trust these lengths.
+    assert!(
+        in_dims % U8_LANES == 0 && in_dims <= padded_in && input.len() >= in_dims,
+        "affine_u7_wide shape"
+    );
+    assert_eq!(weights.len(), output.len() * padded_in);
+    assert_eq!(output.len(), biases.len());
+    // Value properties would cost a pass over the data, so they are checked in
+    // debug builds only; `NetworkStack` proves the weights' once, at build.
     debug_assert!(
         input[..in_dims].iter().all(|&x| x <= 127),
         "affine_u7_wide needs 7-bit inputs: maddubs saturates above 127"
@@ -380,12 +391,6 @@ pub unsafe fn affine_u7_wide(
         scalar_post_ft::pair_sums_fit_i16(weights, output.len(), in_dims, padded_in),
         "affine_u7_wide called on weights whose i16 pair sums can overflow"
     );
-    assert!(
-        in_dims % U8_LANES == 0 && in_dims <= padded_in && input.len() >= in_dims,
-        "affine_u7_wide shape"
-    );
-    assert_eq!(weights.len(), output.len() * padded_in);
-    assert_eq!(output.len(), biases.len());
 
     let chunks = in_dims / U8_LANES;
     let rows = output.len();
@@ -1100,6 +1105,70 @@ mod tests {
             // SAFETY: guarded by `require_avxvnni!`.
             unsafe { affine_u7_vnni(&mut got, &biases, &weights, &input, in_dims, padded_in) };
             assert_eq!(want, got, "rows {rows} in {in_dims} padded {padded_in}");
+        }
+    }
+    /// The kernels read through raw pointers, so a slice shorter than the shape
+    /// says must stop them before the first load, in release builds too (the
+    /// test profile here is release). Each case below would otherwise read past
+    /// the end of the weights or the input.
+    #[test]
+    fn affine_kernels_refuse_inconsistent_lengths() {
+        require_avx2!();
+        let (rows, in_dims, padded_in) = (8usize, 64usize, 64usize);
+        let weights = vec![1i8; rows * padded_in];
+        let input = vec![1u8; in_dims];
+        let biases = vec![0i32; rows];
+
+        type Kernel = unsafe fn(&mut [i32], &[i32], &[i8], &[u8], usize, usize);
+        let mut kernels: Vec<(&str, Kernel)> =
+            vec![("affine_u7", affine_u7), ("affine_u7_wide", affine_u7_wide)];
+        if std::arch::is_x86_feature_detected!("avxvnni") {
+            kernels.push(("affine_u7_vnni", affine_u7_vnni));
+        }
+
+        for (name, kernel) in kernels {
+            // Each closure is a malformed call; none may return.
+            let cases: [(&str, Box<dyn Fn()>); 4] = [
+                ("short weights", {
+                    let (b, i) = (biases.clone(), input.clone());
+                    let w = weights[..weights.len() - 1].to_vec();
+                    Box::new(move || {
+                        let mut out = vec![0i32; rows];
+                        // SAFETY: avx2 checked above; the kernel must reject the call.
+                        unsafe { kernel(&mut out, &b, &w, &i, in_dims, padded_in) };
+                    })
+                }),
+                ("short input", {
+                    let (b, w) = (biases.clone(), weights.clone());
+                    let i = input[..in_dims - 1].to_vec();
+                    Box::new(move || {
+                        let mut out = vec![0i32; rows];
+                        // SAFETY: as above.
+                        unsafe { kernel(&mut out, &b, &w, &i, in_dims, padded_in) };
+                    })
+                }),
+                ("short biases", {
+                    let (w, i) = (weights.clone(), input.clone());
+                    let b = biases[..rows - 1].to_vec();
+                    Box::new(move || {
+                        let mut out = vec![0i32; rows];
+                        // SAFETY: as above.
+                        unsafe { kernel(&mut out, &b, &w, &i, in_dims, padded_in) };
+                    })
+                }),
+                ("in_dims past padded_in", {
+                    let (b, w, i) = (biases.clone(), weights.clone(), input.clone());
+                    Box::new(move || {
+                        let mut out = vec![0i32; rows];
+                        // SAFETY: as above.
+                        unsafe { kernel(&mut out, &b, &w, &i, in_dims + 32, padded_in) };
+                    })
+                }),
+            ];
+            for (what, call) in cases {
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(call));
+                assert!(outcome.is_err(), "{name} accepted {what}");
+            }
         }
     }
 }
