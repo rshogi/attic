@@ -55,12 +55,12 @@ fn every_array_is_aligned() {
     assert!(aligned(net.ft_biases.as_ptr() as *const u8));
     assert!(aligned(net.ft_weights.as_ptr() as *const u8));
     for stack in &net.stacks {
-        assert!(aligned(stack.fc_0_biases.as_ptr() as *const u8));
-        assert!(aligned(stack.fc_0_weights.as_ptr() as *const u8));
-        assert!(aligned(stack.fc_1_biases.as_ptr() as *const u8));
-        assert!(aligned(stack.fc_1_weights.as_ptr() as *const u8));
-        assert!(aligned(stack.fc_2_biases.as_ptr() as *const u8));
-        assert!(aligned(stack.fc_2_weights.as_ptr() as *const u8));
+        assert!(aligned(stack.fc_0_biases().as_ptr() as *const u8));
+        assert!(aligned(stack.fc_0_weights().as_ptr() as *const u8));
+        assert!(aligned(stack.fc_1_biases().as_ptr() as *const u8));
+        assert!(aligned(stack.fc_1_weights().as_ptr() as *const u8));
+        assert!(aligned(stack.fc_2_biases().as_ptr() as *const u8));
+        assert!(aligned(stack.fc_2_weights().as_ptr() as *const u8));
     }
 }
 

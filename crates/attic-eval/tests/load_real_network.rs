@@ -46,27 +46,27 @@ fn loads_real_network_if_present() {
     assert!(is_aligned(net.ft_weights.as_ptr() as *const u8));
     for (i, stack) in net.stacks.iter().enumerate() {
         assert!(
-            is_aligned(stack.fc_0_biases.as_ptr() as *const u8),
+            is_aligned(stack.fc_0_biases().as_ptr() as *const u8),
             "stack[{i}].fc_0_biases not 64-byte aligned"
         );
         assert!(
-            is_aligned(stack.fc_0_weights.as_ptr() as *const u8),
+            is_aligned(stack.fc_0_weights().as_ptr() as *const u8),
             "stack[{i}].fc_0_weights not 64-byte aligned"
         );
         assert!(
-            is_aligned(stack.fc_1_biases.as_ptr() as *const u8),
+            is_aligned(stack.fc_1_biases().as_ptr() as *const u8),
             "stack[{i}].fc_1_biases not 64-byte aligned"
         );
         assert!(
-            is_aligned(stack.fc_1_weights.as_ptr() as *const u8),
+            is_aligned(stack.fc_1_weights().as_ptr() as *const u8),
             "stack[{i}].fc_1_weights not 64-byte aligned"
         );
         assert!(
-            is_aligned(stack.fc_2_biases.as_ptr() as *const u8),
+            is_aligned(stack.fc_2_biases().as_ptr() as *const u8),
             "stack[{i}].fc_2_biases not 64-byte aligned"
         );
         assert!(
-            is_aligned(stack.fc_2_weights.as_ptr() as *const u8),
+            is_aligned(stack.fc_2_weights().as_ptr() as *const u8),
             "stack[{i}].fc_2_weights not 64-byte aligned"
         );
     }

@@ -319,24 +319,92 @@ impl NetLayout {
 #[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
 /// One layer stack's parameter arrays, each a 64-byte-aligned view into the
 /// network's single arena.
+///
+/// The arrays are read through the accessors ([`fc_0_weights`] and the five
+/// like it) and written only by [`NnueNetworkBuilder`], before
+/// [`build`](NnueNetworkBuilder::build). That is a safety property, not just
+/// tidiness: the standard shapes' AVX2 kernels load by pointer and trust the
+/// layer sizes, and fc_0's `i16` accumulation trusts a property of its weights,
+/// both proven once when the stack is built and kept in `fc_kernels`. A field
+/// that code outside the crate could overwrite -- by writing through the
+/// view's `DerefMut`, or by replacing it with a shorter one -- would leave
+/// that proof describing arrays that are no longer there.
+///
+/// Outside the crate the fields cannot be written, borrowed mutably or
+/// replaced (`E0616`, private field):
+///
+/// ```compile_fail,E0616
+/// fn overwrite(net: &mut attic_eval::NnueNetwork) {
+///     net.stacks[0].fc_0_weights.fill(127);
+/// }
+/// ```
+///
+/// ```compile_fail,E0616
+/// fn replace(net: &mut attic_eval::NnueNetwork) {
+///     let _slot = &mut net.stacks[0].fc_1_weights;
+/// }
+/// ```
+///
+/// [`fc_0_weights`]: NetworkStack::fc_0_weights
 #[derive(Debug)]
 pub struct NetworkStack {
-    pub fc_0_biases: ArenaSlice<i32>,
-    pub fc_0_weights: ArenaSlice<i8>,
-    pub fc_1_biases: ArenaSlice<i32>,
-    pub fc_1_weights: ArenaSlice<i8>,
-    pub fc_2_biases: ArenaSlice<i32>,
-    pub fc_2_weights: ArenaSlice<i8>,
+    pub(crate) fc_0_biases: ArenaSlice<i32>,
+    pub(crate) fc_0_weights: ArenaSlice<i8>,
+    pub(crate) fc_1_biases: ArenaSlice<i32>,
+    pub(crate) fc_1_weights: ArenaSlice<i8>,
+    pub(crate) fc_2_biases: ArenaSlice<i32>,
+    pub(crate) fc_2_weights: ArenaSlice<i8>,
     /// Which kernels the standard shapes' dense chain may use on this stack,
     /// decided once, when the network is built. See [`FcKernels`].
     ///
     /// A cache of properties of the arrays, so it is only valid while they are
-    /// unchanged. Their lengths cannot change, and every write to their values
-    /// goes through [`NnueNetworkBuilder`], which `build()` consumes -- the one
-    /// place this is computed. The AVX2 kernels re-check what they rely on in
+    /// unchanged. Nothing outside this crate can replace or write them (the
+    /// fields above are `pub(crate)`, and no code in the crate writes them
+    /// after `NnueNetworkBuilder::build`, the one place this is computed), and
+    /// a stack is only ever made by `NetworkStack::from_sections`, which
+    /// computes this alongside. The AVX2 kernels re-check what they rely on in
     /// debug builds.
     #[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
     pub(crate) fc_kernels: FcKernels,
+}
+
+#[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
+impl NetworkStack {
+    /// fc_0's bias vector.
+    #[inline]
+    pub fn fc_0_biases(&self) -> &[i32] {
+        &self.fc_0_biases
+    }
+
+    /// fc_0's weights, row-major `[output][padded input]`.
+    #[inline]
+    pub fn fc_0_weights(&self) -> &[i8] {
+        &self.fc_0_weights
+    }
+
+    /// fc_1's bias vector.
+    #[inline]
+    pub fn fc_1_biases(&self) -> &[i32] {
+        &self.fc_1_biases
+    }
+
+    /// fc_1's weights, row-major `[output][padded input]`.
+    #[inline]
+    pub fn fc_1_weights(&self) -> &[i8] {
+        &self.fc_1_weights
+    }
+
+    /// fc_2's bias vector.
+    #[inline]
+    pub fn fc_2_biases(&self) -> &[i32] {
+        &self.fc_2_biases
+    }
+
+    /// fc_2's weights, row-major `[output][padded input]`.
+    #[inline]
+    pub fn fc_2_weights(&self) -> &[i8] {
+        &self.fc_2_weights
+    }
 }
 
 /// Which kernels the standard shapes' dense chain (`network::per_layer_flow`)
