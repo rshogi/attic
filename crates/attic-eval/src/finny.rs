@@ -41,7 +41,7 @@ use attic_state::{Color, Position, Square};
 
 use crate::aligned::Aligned64;
 use crate::features::{
-    DiffScratch, FeatureIndex, MAX_ACTIVE_FEATURES, active_features_into, changed_indices_into,
+    FeatureIndex, FeatureSet, MAX_ACTIVE_FEATURES, active_features_into, diff_feature_sets,
 };
 use crate::transformer::{apply_diff, refresh_perspective};
 use crate::types::{HIDDEN_SIZE, NnueNetwork};
@@ -54,7 +54,7 @@ struct FinnyEntry {
     /// [`Self::initialized`] is set.
     accumulation: Aligned64<i16>,
     /// The active-feature multiset [`Self::accumulation`] corresponds to.
-    active: Vec<FeatureIndex>,
+    active: FeatureSet,
     /// Whether [`Self::accumulation`] currently satisfies the module invariant.
     initialized: bool,
 }
@@ -63,7 +63,7 @@ impl FinnyEntry {
     fn new() -> Self {
         FinnyEntry {
             accumulation: Aligned64::<i16>::zeroed(HIDDEN_SIZE),
-            active: Vec::with_capacity(MAX_ACTIVE_FEATURES),
+            active: FeatureSet::new(),
             initialized: false,
         }
     }
@@ -83,10 +83,14 @@ pub struct FinnyCache {
     /// Identity of the network the entries were built against; see
     /// [`network_token`]. `None` until the first rebuild.
     token: Option<NetworkToken>,
-    /// Reusable buffer for the post-move active-feature list.
+    /// Reusable buffer for the active-feature list of a cold rebuild.
     scratch_active: Vec<FeatureIndex>,
+    /// Reusable set for the post-move active features of a cached rebuild. It
+    /// trades places with the entry's set afterwards, so no copy is needed.
+    scratch_set: FeatureSet,
     /// Reusable buffers for the entry-vs-position feature diff.
-    diff: DiffScratch,
+    removed: Vec<FeatureIndex>,
+    added: Vec<FeatureIndex>,
 }
 
 /// Identity of the loaded network, as seen by the cache.
@@ -113,7 +117,9 @@ impl FinnyCache {
             entries: std::array::from_fn(|_| std::array::from_fn(|_| FinnyEntry::new())),
             token: None,
             scratch_active: Vec::with_capacity(MAX_ACTIVE_FEATURES),
-            diff: DiffScratch::default(),
+            scratch_set: FeatureSet::new(),
+            removed: Vec::with_capacity(2 * MAX_ACTIVE_FEATURES),
+            added: Vec::with_capacity(2 * MAX_ACTIVE_FEATURES),
         })
     }
 
@@ -151,7 +157,9 @@ impl FinnyCache {
         let FinnyCache {
             entries,
             scratch_active,
-            diff,
+            scratch_set,
+            removed,
+            added,
             ..
         } = self;
 
@@ -161,34 +169,33 @@ impl FinnyCache {
             .index() as usize;
         let entry = &mut entries[perspective.index()][bucket];
 
-        active_features_into(pos, perspective, scratch_active);
-
         if entry.initialized {
-            // Within one bucket the own-king square — and so `sq_k_code`, and so
-            // the `BONA_PIECE_ZERO` padding feature — is identical on both
+            // Within one bucket the own-king square -- and so `sq_k_code`, and so
+            // the `BONA_PIECE_ZERO` padding feature -- is identical on both
             // sides, so the padding cancels in the multiset diff exactly as it
             // does for an ordinary incremental update.
-            changed_indices_into(&entry.active, scratch_active, diff);
-            apply_diff(
-                &mut entry.accumulation,
-                &net.ft_weights,
-                &diff.added,
-                &diff.removed,
-            );
+            //
+            // The diff is taken between two bitsets and comes out in the same
+            // order the sorted merge of the two lists would give.
+            scratch_set.fill(pos, perspective);
+            diff_feature_sets(&entry.active, scratch_set, removed, added);
+            apply_diff(&mut entry.accumulation, &net.ft_weights, added, removed);
+            // The old set becomes the next call's scratch, so the steady state
+            // allocates and copies nothing.
+            std::mem::swap(&mut entry.active, scratch_set);
         } else {
+            active_features_into(pos, perspective, scratch_active);
             refresh_perspective(
                 &mut entry.accumulation,
                 &net.ft_biases,
                 &net.ft_weights,
                 scratch_active,
             );
+            entry.active.fill(pos, perspective);
             entry.initialized = true;
         }
 
         dst.copy_from_slice(&entry.accumulation);
-        // The old list becomes the next call's scratch, so the steady state
-        // allocates nothing.
-        std::mem::swap(&mut entry.active, scratch_active);
     }
 }
 
@@ -208,7 +215,7 @@ impl FinnyCache {
                     continue;
                 }
                 let mut expected: Vec<i16> = net.ft_biases.to_vec();
-                for &idx in &entry.active {
+                for idx in entry.active.to_indices() {
                     let base = idx as usize * HIDDEN_SIZE;
                     let col = &net.ft_weights[base..base + HIDDEN_SIZE];
                     for (a, &w) in expected.iter_mut().zip(col.iter()) {
