@@ -359,10 +359,20 @@ pub mod post_ft_kernel {
         in_dims: usize,
         padded_in: usize,
     ) {
+        // With AVX-VNNI in the build, `vpdpbusd` does `maddubs` + `madd` + `add`
+        // in one instruction and has no saturation to bound the input for.
+        // SAFETY: the build enables avxvnni (and avx2, which this module needs),
+        // exactly the features the callee names, and such a build only runs on
+        // a host providing them.
+        #[cfg(target_feature = "avxvnni")]
+        unsafe {
+            super::avx2_post_ft::affine_u7_vnni(output, biases, weights, input, in_dims, padded_in)
+        }
         // SAFETY: this module is compiled only into a build that enables avx2 —
         // exactly what the callee's `#[target_feature]` names — and such a build
         // only runs on a host providing it. The caller guarantees the 7-bit
         // input.
+        #[cfg(not(target_feature = "avxvnni"))]
         unsafe {
             super::avx2_post_ft::affine_u7(output, biases, weights, input, in_dims, padded_in)
         }
@@ -380,7 +390,15 @@ pub mod post_ft_kernel {
         in_dims: usize,
         padded_in: usize,
     ) {
+        // With AVX-VNNI there is no `i16` sum to keep in range, so the wide form
+        // is just the VNNI kernel; the weights' `pair_sums_fit_i16` is moot.
         // SAFETY: see `affine_u7`.
+        #[cfg(target_feature = "avxvnni")]
+        unsafe {
+            super::avx2_post_ft::affine_u7_vnni(output, biases, weights, input, in_dims, padded_in)
+        }
+        // SAFETY: see `affine_u7`.
+        #[cfg(not(target_feature = "avxvnni"))]
         unsafe {
             super::avx2_post_ft::affine_u7_wide(output, biases, weights, input, in_dims, padded_in)
         }

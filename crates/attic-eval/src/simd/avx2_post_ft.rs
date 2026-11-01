@@ -235,7 +235,8 @@ unsafe fn hsum_epi32(v: __m256i) -> i32 {
 /// # Safety
 /// The running CPU must support `avx2`. Every `input[..in_dims]` byte must be
 /// at most 127 (checked by `debug_assert!`); a larger byte may saturate inside
-/// `maddubs` and change the result.
+/// `maddubs` and change the result, though it cannot read out of bounds: the
+/// slice lengths are asserted on every call.
 #[inline]
 #[target_feature(enable = "avx2")]
 pub unsafe fn affine_u7(
@@ -246,10 +247,14 @@ pub unsafe fn affine_u7(
     in_dims: usize,
     padded_in: usize,
 ) {
-    debug_assert_eq!(output.len(), biases.len());
-    debug_assert_eq!(weights.len(), output.len() * padded_in);
-    debug_assert!(in_dims <= padded_in);
-    debug_assert!(input.len() >= in_dims);
+    // Real asserts, not debug ones: the loads below go through raw pointers and
+    // trust these lengths. They are a handful of compares per call.
+    assert_eq!(output.len(), biases.len());
+    assert_eq!(weights.len(), output.len() * padded_in);
+    assert!(in_dims <= padded_in);
+    assert!(input.len() >= in_dims);
+    // The 7-bit bound is a value property, not a length: it would cost a pass
+    // over the input, so it stays a debug-only check.
     debug_assert!(
         input[..in_dims].iter().all(|&x| x <= 127),
         "affine_u7 needs 7-bit inputs: maddubs saturates above 127"
@@ -368,10 +373,16 @@ pub unsafe fn affine_u7_wide(
     in_dims: usize,
     padded_in: usize,
 ) {
-    debug_assert_eq!(output.len(), biases.len());
-    debug_assert_eq!(weights.len(), output.len() * padded_in);
-    debug_assert!(in_dims <= padded_in);
-    debug_assert!(input.len() >= in_dims);
+    // Real asserts, not debug ones: the loads below go through raw pointers and
+    // trust these lengths.
+    assert!(
+        in_dims % U8_LANES == 0 && in_dims <= padded_in && input.len() >= in_dims,
+        "affine_u7_wide shape"
+    );
+    assert_eq!(weights.len(), output.len() * padded_in);
+    assert_eq!(output.len(), biases.len());
+    // Value properties would cost a pass over the data, so they are checked in
+    // debug builds only; `NetworkStack` proves the weights' once, at build.
     debug_assert!(
         input[..in_dims].iter().all(|&x| x <= 127),
         "affine_u7_wide needs 7-bit inputs: maddubs saturates above 127"
@@ -380,12 +391,6 @@ pub unsafe fn affine_u7_wide(
         scalar_post_ft::pair_sums_fit_i16(weights, output.len(), in_dims, padded_in),
         "affine_u7_wide called on weights whose i16 pair sums can overflow"
     );
-    assert!(
-        in_dims % U8_LANES == 0 && in_dims <= padded_in && input.len() >= in_dims,
-        "affine_u7_wide shape"
-    );
-    assert_eq!(weights.len(), output.len() * padded_in);
-    assert_eq!(output.len(), biases.len());
 
     let chunks = in_dims / U8_LANES;
     let rows = output.len();
@@ -489,9 +494,168 @@ pub unsafe fn affine_u7_wide(
     }
 }
 
+/// Reduce four 8-lane `i32` accumulators to `[sum(a0), sum(a1), sum(a2),
+/// sum(a3)]`. `hadd` works per 128-bit lane, so the low and high halves of the
+/// final vector each hold the four partials for the same four accumulators.
+#[inline]
+#[target_feature(enable = "avx2")]
+unsafe fn reduce4_epi32(a0: __m256i, a1: __m256i, a2: __m256i, a3: __m256i) -> __m128i {
+    let s01 = _mm256_hadd_epi32(a0, a1);
+    let s23 = _mm256_hadd_epi32(a2, a3);
+    let s = _mm256_hadd_epi32(s01, s23);
+    _mm_add_epi32(_mm256_castsi256_si128(s), _mm256_extracti128_si256::<1>(s))
+}
+
+/// The dot products of `R` consecutive weight rows with `input`, as `R`
+/// 8-lane `i32` accumulators (each lane a partial sum of 4-byte groups).
+///
+/// `vpdpbusd` multiplies unsigned input bytes by signed weight bytes, adds the
+/// four products of each 32-bit lane and accumulates into `i32`, **without the
+/// `i16` saturation `maddubs` has**: one instruction replaces `maddubs` +
+/// `madd` + `add`. Its accumulate wraps modulo 2^32 like the scalar loop's
+/// `wrapping_add`, so the sum is the same for any input byte, 0..=255.
+///
+/// # Safety
+/// The CPU must support `avx2` and `avxvnni`. Every row pointer must be valid
+/// for `chunks * 32` bytes, and `input` likewise.
+#[inline]
+#[target_feature(enable = "avx2,avxvnni")]
+unsafe fn vnni_rows<const R: usize>(
+    rows: [*const i8; R],
+    input: *const u8,
+    chunks: usize,
+) -> [__m256i; R] {
+    let mut acc = [_mm256_setzero_si256(); R];
+    for c in 0..chunks {
+        let off = c * U8_LANES;
+        // SAFETY: off + 32 <= chunks * 32, in range for the input and each row.
+        unsafe {
+            let x = _mm256_loadu_si256(input.add(off).cast::<__m256i>());
+            for r in 0..R {
+                let w = _mm256_loadu_si256(rows[r].add(off).cast::<__m256i>());
+                acc[r] = _mm256_dpbusd_avx_epi32(acc[r], x, w);
+            }
+        }
+    }
+    acc
+}
+
+/// [`affine_u7`] with AVX-VNNI: the same row-major layout, the same result,
+/// and no 7-bit restriction (the products never saturate), but `vpdpbusd` does
+/// in one instruction what `maddubs` + `madd` + `add` do in three.
+///
+/// Eight output rows are taken together, which gives the `vpdpbusd` chains
+/// enough independent accumulators to cover its latency; a trailing 4 and then
+/// single rows follow. An `in_dims` that is not a multiple of 32 falls back to
+/// the scalar kernel.
+///
+/// # Safety
+/// The running CPU must support `avx2` and `avxvnni`.
+#[inline]
+#[target_feature(enable = "avx2,avxvnni")]
+pub unsafe fn affine_u7_vnni(
+    output: &mut [i32],
+    biases: &[i32],
+    weights: &[i8],
+    input: &[u8],
+    in_dims: usize,
+    padded_in: usize,
+) {
+    // Real asserts: the loads below trust these lengths.
+    assert_eq!(output.len(), biases.len());
+    assert_eq!(weights.len(), output.len() * padded_in);
+    assert!(in_dims <= padded_in);
+    assert!(input.len() >= in_dims);
+
+    if in_dims % U8_LANES != 0 {
+        scalar_post_ft::affine(output, biases, weights, input, in_dims, padded_in);
+        return;
+    }
+
+    let chunks = in_dims / U8_LANES;
+    let rows = output.len();
+    let in_ptr = input.as_ptr();
+    let w_ptr = weights.as_ptr();
+    let b_ptr = biases.as_ptr();
+    let out_ptr = output.as_mut_ptr();
+
+    let mut j = 0;
+    while j + 8 <= rows {
+        // SAFETY: j + 8 <= rows and weights.len() == rows * padded_in.
+        let acc = unsafe {
+            vnni_rows::<8>(
+                std::array::from_fn(|k| w_ptr.add((j + k) * padded_in)),
+                in_ptr,
+                chunks,
+            )
+        };
+        // SAFETY: guarded by this function's own target_feature.
+        let (lo, hi) = unsafe {
+            (
+                reduce4_epi32(acc[0], acc[1], acc[2], acc[3]),
+                reduce4_epi32(acc[4], acc[5], acc[6], acc[7]),
+            )
+        };
+        // SAFETY: j + 8 <= rows == biases.len() == output.len().
+        unsafe {
+            let (b_lo, b_hi) = (
+                _mm_loadu_si128(b_ptr.add(j).cast::<__m128i>()),
+                _mm_loadu_si128(b_ptr.add(j + 4).cast::<__m128i>()),
+            );
+            _mm_storeu_si128(out_ptr.add(j).cast::<__m128i>(), _mm_add_epi32(lo, b_lo));
+            _mm_storeu_si128(
+                out_ptr.add(j + 4).cast::<__m128i>(),
+                _mm_add_epi32(hi, b_hi),
+            );
+        }
+        j += 8;
+    }
+    if j + 4 <= rows {
+        // SAFETY: j + 4 <= rows and weights.len() == rows * padded_in.
+        let acc = unsafe {
+            vnni_rows::<4>(
+                std::array::from_fn(|k| w_ptr.add((j + k) * padded_in)),
+                in_ptr,
+                chunks,
+            )
+        };
+        // SAFETY: guarded by this function's own target_feature.
+        let sums = unsafe { reduce4_epi32(acc[0], acc[1], acc[2], acc[3]) };
+        // SAFETY: j + 4 <= rows == biases.len() == output.len().
+        unsafe {
+            let bias = _mm_loadu_si128(b_ptr.add(j).cast::<__m128i>());
+            _mm_storeu_si128(out_ptr.add(j).cast::<__m128i>(), _mm_add_epi32(sums, bias));
+        }
+        j += 4;
+    }
+    while j < rows {
+        // SAFETY: j < rows and weights.len() == rows * padded_in.
+        let acc = unsafe { vnni_rows::<1>([w_ptr.add(j * padded_in)], in_ptr, chunks) };
+        // SAFETY: guarded by this function's own target_feature; j < rows.
+        unsafe {
+            let sum = hsum_epi32(acc[0]);
+            *out_ptr.add(j) = (*b_ptr.add(j)).wrapping_add(sum);
+        }
+        j += 1;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Skip unless the CPU has AVX-VNNI (this build need not enable it: the
+    /// kernel is compiled regardless, so the tests run it wherever it exists).
+    macro_rules! require_avxvnni {
+        () => {
+            if !(std::arch::is_x86_feature_detected!("avx2")
+                && std::arch::is_x86_feature_detected!("avxvnni"))
+            {
+                eprintln!("skipping AVX-VNNI parity test: avxvnni unavailable");
+                return;
+            }
+        };
+    }
 
     macro_rules! require_avx2 {
         () => {
@@ -828,5 +992,183 @@ mod tests {
                 }
             })
             .collect()
+    }
+    /// Inputs over the full byte range, 0 and 255 over-represented: unlike
+    /// `maddubs`, `vpdpbusd` does not care about the 7-bit bound.
+    fn random_full_range_inputs(rng: &mut Rng, n: usize) -> Vec<u8> {
+        (0..n)
+            .map(|_| match rng.below(6) {
+                0 => 0u8,
+                1 => 255u8,
+                _ => rng.next() as u8,
+            })
+            .collect()
+    }
+
+    /// Shapes the dense chain uses plus ones that exercise each of the 8-row,
+    /// 4-row and single-row paths and a padded stride.
+    const VNNI_SHAPES: [(usize, usize, usize); 11] = [
+        (32, 512, 512),
+        (32, 32, 32),
+        (1, 32, 32),
+        (7, 64, 64),
+        (8, 64, 64),
+        (13, 96, 128),
+        (12, 32, 64),
+        (4, 32, 64),
+        (3, 32, 32),
+        (9, 160, 160),
+        (17, 224, 256),
+    ];
+
+    #[test]
+    fn affine_u7_vnni_matches_scalar_on_random_data() {
+        require_avxvnni!();
+        let mut rng = Rng(0xC0FF_EE15_600D_F00D);
+        for &(rows, in_dims, padded_in) in &VNNI_SHAPES {
+            for round in 0..200 {
+                let weights = random_weights(&mut rng, rows * padded_in);
+                // Half the rounds use the full byte range, which `affine_u7`
+                // may not be given and this kernel may.
+                let input = if round % 2 == 0 {
+                    random_inputs(&mut rng, in_dims)
+                } else {
+                    random_full_range_inputs(&mut rng, in_dims)
+                };
+                let biases = random_biases(&mut rng, rows);
+                let mut want = vec![0i32; rows];
+                let mut got = vec![0i32; rows];
+                scalar_post_ft::affine(&mut want, &biases, &weights, &input, in_dims, padded_in);
+                // SAFETY: guarded by `require_avxvnni!`.
+                unsafe { affine_u7_vnni(&mut got, &biases, &weights, &input, in_dims, padded_in) };
+                assert_eq!(want, got, "rows {rows} in {in_dims} padded {padded_in}");
+            }
+        }
+    }
+
+    /// Every extreme product (127 * -128, 127 * 127, 255 * -128, 255 * 127,
+    /// zeros) with the bias at both ends of `i32`, so the wrapping accumulate
+    /// is exercised on every shape.
+    #[test]
+    fn affine_u7_vnni_is_exact_at_the_extremes() {
+        require_avxvnni!();
+        for (w, x) in [
+            (-128i8, 127u8),
+            (127, 127),
+            (-128, 255),
+            (127, 255),
+            (-128, 0),
+            (127, 0),
+            (-1, 255),
+        ] {
+            for bias in [0, i32::MAX, i32::MIN, -1, 1] {
+                for &(rows, in_dims, padded_in) in &VNNI_SHAPES {
+                    let weights = vec![w; rows * padded_in];
+                    let input = vec![x; in_dims];
+                    let biases = vec![bias; rows];
+                    let mut want = vec![0i32; rows];
+                    let mut got = vec![0i32; rows];
+                    scalar_post_ft::affine(
+                        &mut want, &biases, &weights, &input, in_dims, padded_in,
+                    );
+                    // SAFETY: guarded by `require_avxvnni!`.
+                    unsafe {
+                        affine_u7_vnni(&mut got, &biases, &weights, &input, in_dims, padded_in)
+                    };
+                    assert_eq!(
+                        want, got,
+                        "w {w} x {x} bias {bias} rows {rows} in {in_dims}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Padding bytes past `in_dims` in a weight row must not reach the sum, and
+    /// an `in_dims` that is not a multiple of 32 must take the scalar fallback.
+    #[test]
+    fn affine_u7_vnni_ignores_padding_and_handles_ragged_widths() {
+        require_avxvnni!();
+        let mut rng = Rng(0x5EED_0000_1234_ABCD);
+        for &(rows, in_dims, padded_in) in &[(4usize, 32usize, 64usize), (5, 48, 64), (9, 40, 64)] {
+            let mut weights = random_weights(&mut rng, rows * padded_in);
+            for r in 0..rows {
+                for i in in_dims..padded_in {
+                    weights[r * padded_in + i] = 127;
+                }
+            }
+            let input = random_inputs(&mut rng, in_dims);
+            let biases = random_biases(&mut rng, rows);
+            let mut want = vec![0i32; rows];
+            let mut got = vec![0i32; rows];
+            scalar_post_ft::affine(&mut want, &biases, &weights, &input, in_dims, padded_in);
+            // SAFETY: guarded by `require_avxvnni!`.
+            unsafe { affine_u7_vnni(&mut got, &biases, &weights, &input, in_dims, padded_in) };
+            assert_eq!(want, got, "rows {rows} in {in_dims} padded {padded_in}");
+        }
+    }
+    /// The kernels read through raw pointers, so a slice shorter than the shape
+    /// says must stop them before the first load, in release builds too (the
+    /// test profile here is release). Each case below would otherwise read past
+    /// the end of the weights or the input.
+    #[test]
+    fn affine_kernels_refuse_inconsistent_lengths() {
+        require_avx2!();
+        let (rows, in_dims, padded_in) = (8usize, 64usize, 64usize);
+        let weights = vec![1i8; rows * padded_in];
+        let input = vec![1u8; in_dims];
+        let biases = vec![0i32; rows];
+
+        type Kernel = unsafe fn(&mut [i32], &[i32], &[i8], &[u8], usize, usize);
+        let mut kernels: Vec<(&str, Kernel)> =
+            vec![("affine_u7", affine_u7), ("affine_u7_wide", affine_u7_wide)];
+        if std::arch::is_x86_feature_detected!("avxvnni") {
+            kernels.push(("affine_u7_vnni", affine_u7_vnni));
+        }
+
+        for (name, kernel) in kernels {
+            // Each closure is a malformed call; none may return.
+            let cases: [(&str, Box<dyn Fn()>); 4] = [
+                ("short weights", {
+                    let (b, i) = (biases.clone(), input.clone());
+                    let w = weights[..weights.len() - 1].to_vec();
+                    Box::new(move || {
+                        let mut out = vec![0i32; rows];
+                        // SAFETY: avx2 checked above; the kernel must reject the call.
+                        unsafe { kernel(&mut out, &b, &w, &i, in_dims, padded_in) };
+                    })
+                }),
+                ("short input", {
+                    let (b, w) = (biases.clone(), weights.clone());
+                    let i = input[..in_dims - 1].to_vec();
+                    Box::new(move || {
+                        let mut out = vec![0i32; rows];
+                        // SAFETY: as above.
+                        unsafe { kernel(&mut out, &b, &w, &i, in_dims, padded_in) };
+                    })
+                }),
+                ("short biases", {
+                    let (w, i) = (weights.clone(), input.clone());
+                    let b = biases[..rows - 1].to_vec();
+                    Box::new(move || {
+                        let mut out = vec![0i32; rows];
+                        // SAFETY: as above.
+                        unsafe { kernel(&mut out, &b, &w, &i, in_dims, padded_in) };
+                    })
+                }),
+                ("in_dims past padded_in", {
+                    let (b, w, i) = (biases.clone(), weights.clone(), input.clone());
+                    Box::new(move || {
+                        let mut out = vec![0i32; rows];
+                        // SAFETY: as above.
+                        unsafe { kernel(&mut out, &b, &w, &i, in_dims + 32, padded_in) };
+                    })
+                }),
+            ];
+            for (what, call) in cases {
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(call));
+                assert!(outcome.is_err(), "{name} accepted {what}");
+            }
+        }
     }
 }
