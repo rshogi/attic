@@ -103,11 +103,16 @@ enum Target {
 /// every mask.
 fn reachable(board: &Board, from: Square, piece: Piece, target: Target) -> Bitboard {
     let occ = board.occupied();
-    let attacks = attacks_bb(from, piece, occ);
+    attacks_bb(from, piece, occ) & target_mask(board, piece.color, target)
+}
+
+/// The destination squares `target` keeps for a mover of colour `stm`.
+#[inline(always)]
+fn target_mask(board: &Board, stm: Color, target: Target) -> Bitboard {
     match target {
-        Target::Captures => attacks & board.pieces_color(piece.color.flip()),
-        Target::Quiets => attacks & !occ,
-        Target::BlockOrCapture => attacks & !board.pieces_color(piece.color),
+        Target::Captures => board.pieces_color(stm.flip()),
+        Target::Quiets => !board.occupied(),
+        Target::BlockOrCapture => !board.pieces_color(stm),
     }
 }
 
@@ -391,6 +396,23 @@ trait GroupSpec {
     /// by `Group::contains`.
     fn pieces(board: &Board, stm: Color) -> Bitboard;
 
+    /// The piece of this group standing on `from`. A group of a single
+    /// unpromoted kind names it without reading the board.
+    #[inline(always)]
+    fn piece(board: &Board, _stm: Color, from: Square) -> Piece {
+        board
+            .get(from)
+            .expect("group_pieces bit implies a piece stands on the square")
+    }
+
+    /// The squares `piece`, standing on `from`, attacks under occupancy `occ`
+    /// — [`attacks_bb`] with the kind dispatch resolved at compile time where
+    /// the group fixes it.
+    #[inline(always)]
+    fn attacks(from: Square, piece: Piece, occ: Bitboard) -> Bitboard {
+        attacks_bb(from, piece, occ)
+    }
+
     /// The static counterpart of `Group::emit`.
     fn emit(from: Square, targets: Bitboard, piece: Piece, all: bool, out: &mut Vec<ExtMove>);
 }
@@ -409,6 +431,14 @@ impl GroupSpec for PawnG {
     fn pieces(board: &Board, stm: Color) -> Bitboard {
         board.pieces_pattern(stm, pat::PAWN)
     }
+    #[inline(always)]
+    fn piece(_board: &Board, stm: Color, _from: Square) -> Piece {
+        Piece::new(PieceKind::Pawn, stm)
+    }
+    #[inline(always)]
+    fn attacks(from: Square, piece: Piece, _occ: Bitboard) -> Bitboard {
+        crate::bitboard::pawn_attacks(piece.color, from)
+    }
     fn emit(from: Square, targets: Bitboard, piece: Piece, all: bool, out: &mut Vec<ExtMove>) {
         emit_pawn(from, targets, piece, all, out);
     }
@@ -417,6 +447,14 @@ impl GroupSpec for PawnG {
 impl GroupSpec for LanceG {
     fn pieces(board: &Board, stm: Color) -> Bitboard {
         board.pieces_pattern(stm, pat::LANCE)
+    }
+    #[inline(always)]
+    fn piece(_board: &Board, stm: Color, _from: Square) -> Piece {
+        Piece::new(PieceKind::Lance, stm)
+    }
+    #[inline(always)]
+    fn attacks(from: Square, piece: Piece, occ: Bitboard) -> Bitboard {
+        crate::bitboard::lance_attacks(piece.color, from, occ)
     }
     fn emit(from: Square, targets: Bitboard, piece: Piece, all: bool, out: &mut Vec<ExtMove>) {
         emit_lance(from, targets, piece, all, out);
@@ -427,6 +465,14 @@ impl GroupSpec for KnightG {
     fn pieces(board: &Board, stm: Color) -> Bitboard {
         board.pieces_pattern(stm, pat::KNIGHT)
     }
+    #[inline(always)]
+    fn piece(_board: &Board, stm: Color, _from: Square) -> Piece {
+        Piece::new(PieceKind::Knight, stm)
+    }
+    #[inline(always)]
+    fn attacks(from: Square, piece: Piece, _occ: Bitboard) -> Bitboard {
+        crate::bitboard::knight_attacks(piece.color, from)
+    }
     fn emit(from: Square, targets: Bitboard, piece: Piece, _all: bool, out: &mut Vec<ExtMove>) {
         emit_knight(from, targets, piece, out);
     }
@@ -436,6 +482,14 @@ impl GroupSpec for SilverG {
     fn pieces(board: &Board, stm: Color) -> Bitboard {
         board.pieces_pattern(stm, pat::SILVER)
     }
+    #[inline(always)]
+    fn piece(_board: &Board, stm: Color, _from: Square) -> Piece {
+        Piece::new(PieceKind::Silver, stm)
+    }
+    #[inline(always)]
+    fn attacks(from: Square, piece: Piece, _occ: Bitboard) -> Bitboard {
+        crate::bitboard::silver_attacks(piece.color, from)
+    }
     fn emit(from: Square, targets: Bitboard, piece: Piece, _all: bool, out: &mut Vec<ExtMove>) {
         emit_silver(from, targets, piece, out);
     }
@@ -444,6 +498,15 @@ impl GroupSpec for SilverG {
 impl GroupSpec for BishopRookG {
     fn pieces(board: &Board, stm: Color) -> Bitboard {
         board.pieces_pattern(stm, pat::BISHOP) | board.pieces_pattern(stm, pat::ROOK)
+    }
+    #[inline(always)]
+    fn attacks(from: Square, piece: Piece, occ: Bitboard) -> Bitboard {
+        // The group holds only unpromoted bishops and rooks.
+        if piece.kind == PieceKind::Bishop {
+            crate::bitboard::bishop_attacks(from, occ)
+        } else {
+            crate::bitboard::rook_attacks(from, occ)
+        }
     }
     fn emit(from: Square, targets: Bitboard, piece: Piece, all: bool, out: &mut Vec<ExtMove>) {
         emit_bishop_rook(from, targets, piece, all, out);
@@ -468,6 +531,7 @@ impl<const KING: bool> GroupSpec for GoldHdkG<KING> {
 /// Iterate the side-to-move's group-`G` pieces by ascending square and emit
 /// their pseudo-moves onto the `target` squares. `all` is the
 /// `GenerateAllLegalMoves` flag, which widens the suppressed non-promotions.
+#[inline(always)]
 fn emit_group<G: GroupSpec>(
     board: &Board,
     stm: Color,
@@ -482,6 +546,7 @@ fn emit_group<G: GroupSpec>(
 /// `restrict` — the reference `target2` mask, interpose-or-capture-the-checker.
 /// Because `restrict` only removes destinations, the emitted moves stay a
 /// subsequence of the unrestricted emission.
+#[inline(always)]
 fn emit_group_masked<G: GroupSpec>(
     board: &Board,
     stm: Color,
@@ -490,11 +555,12 @@ fn emit_group_masked<G: GroupSpec>(
     all: bool,
     out: &mut Vec<ExtMove>,
 ) {
+    let occ = board.occupied();
+    // The destination mask is the same for every piece of the group.
+    let mask = target_mask(board, stm, target) & restrict;
     for from in G::pieces(board, stm).squares() {
-        let piece = board
-            .get(from)
-            .expect("group_pieces bit implies a piece stands on the square");
-        let targets = reachable(board, from, piece, target) & restrict;
+        let piece = G::piece(board, stm, from);
+        let targets = G::attacks(from, piece, occ) & mask;
         G::emit(from, targets, piece, all, out);
     }
 }
@@ -737,7 +803,7 @@ impl CheckSquares {
     /// True iff `m` gives a **direct** check by the moved piece — as
     /// [`Position::gives_direct_check`], but read off the snapshot.
     pub fn gives_direct_check(&self, m: Move) -> bool {
-        self.table[check_pattern(m.moved_piece_after())].test(m.to_sq())
+        self.table[m.moved_pattern()].test(m.to_sq())
     }
 }
 
@@ -771,6 +837,31 @@ impl Position {
         injected_in_check: Option<bool>,
         injected_checkers: Option<Bitboard>,
     ) -> CheckInfo {
+        let mut out = core::mem::MaybeUninit::<CheckInfo>::uninit();
+        // SAFETY: `out` is valid for one `CheckInfo` write and does not alias
+        // `self`; the callee fully initialises it.
+        unsafe {
+            self.compute_check_info_into(out.as_mut_ptr(), injected_in_check, injected_checkers);
+            out.assume_init()
+        }
+    }
+
+    /// [`Self::compute_check_info_impl`] written straight into `out`, so that
+    /// `do_move` can build the child's info in its final slot instead of on the
+    /// stack followed by a 256-byte copy.
+    ///
+    /// # Safety
+    ///
+    /// `out` must be valid for writing one `CheckInfo`. It may point into
+    /// storage owned by `self` provided that storage is not the data this
+    /// function reads (the board, hands and side to move).
+    #[inline(always)]
+    pub(crate) unsafe fn compute_check_info_into(
+        &self,
+        out: *mut CheckInfo,
+        injected_in_check: Option<bool>,
+        injected_checkers: Option<Bitboard>,
+    ) {
         let board = self.board();
         let stm = self.side_to_move();
         let enemy = stm.flip();
@@ -799,35 +890,28 @@ impl Position {
             let bishop = bishop_attacks(eks, occ);
             let rook = rook_attacks(eks, occ);
             let king_ring = king_attacks(enemy, eks);
-            check_squares[check_pattern(Piece::new(PieceKind::Pawn, enemy))] =
-                pawn_attacks(enemy, eks);
-            check_squares[check_pattern(Piece::new(PieceKind::Lance, enemy))] =
-                lance_attacks(enemy, eks, occ);
-            check_squares[check_pattern(Piece::new(PieceKind::Knight, enemy))] =
-                knight_attacks(enemy, eks);
-            check_squares[check_pattern(Piece::new(PieceKind::Silver, enemy))] =
-                silver_attacks(enemy, eks);
-            check_squares[check_pattern(Piece::new(PieceKind::Gold, enemy))] =
-                gold_attacks(enemy, eks);
-            check_squares[check_pattern(Piece::new(PieceKind::Bishop, enemy))] = bishop;
-            check_squares[check_pattern(Piece::new(PieceKind::Rook, enemy))] = rook;
-            check_squares[check_pattern(Piece::promoted(PieceKind::Bishop, enemy).unwrap())] =
-                bishop | king_ring;
-            check_squares[check_pattern(Piece::promoted(PieceKind::Rook, enemy).unwrap())] =
-                rook | king_ring;
-            check_squares[check_pattern(Piece::new(PieceKind::King, enemy))] = Bitboard::EMPTY;
+            check_squares[pat::PAWN] = pawn_attacks(enemy, eks);
+            check_squares[pat::LANCE] = lance_attacks(enemy, eks, occ);
+            check_squares[pat::KNIGHT] = knight_attacks(enemy, eks);
+            check_squares[pat::SILVER] = silver_attacks(enemy, eks);
+            check_squares[pat::GOLD] = gold_attacks(enemy, eks);
+            check_squares[pat::BISHOP] = bishop;
+            check_squares[pat::ROOK] = rook;
+            check_squares[pat::HORSE] = bishop | king_ring;
+            check_squares[pat::DRAGON] = rook | king_ring;
+            check_squares[pat::KING] = Bitboard::EMPTY;
         }
 
         // `slider_blockers(c)` returns `(blockersForKing[c], pinners[~c])`, so
         // the pinners half from `slider_blockers(Black)` is `pinners[White]`.
-        let (blk_black, pin_white) = crate::see::slider_blockers(board, Color::Black);
-        let (blk_white, pin_black) = crate::see::slider_blockers(board, Color::White);
-        let mut blockers = [Bitboard::EMPTY; Color::COUNT];
-        blockers[Color::Black.index()] = blk_black;
-        blockers[Color::White.index()] = blk_white;
-        let mut pinners = [Bitboard::EMPTY; Color::COUNT];
-        pinners[Color::Black.index()] = pin_black;
-        pinners[Color::White.index()] = pin_white;
+        let (black_king, white_king) = match stm {
+            Color::Black => (own_king, enemy_king),
+            Color::White => (enemy_king, own_king),
+        };
+        let (blk_black, pin_white) =
+            crate::see::slider_blockers_at(board, Color::Black, black_king);
+        let (blk_white, pin_black) =
+            crate::see::slider_blockers_at(board, Color::White, white_king);
 
         // The injected flag equals this probe in legal play, a move giving check
         // iff the resulting side to move is in check. The oracle is
@@ -864,15 +948,19 @@ impl Position {
             }
         };
 
-        CheckInfo {
-            board_key: self.board_key(),
-            enemy_king,
-            own_king,
-            in_check,
-            check_squares,
-            blockers,
-            pinners,
-            checkers,
+        // SAFETY: the caller guarantees `out` is valid for this write.
+        unsafe {
+            out.write(CheckInfo {
+                board_key: self.board_key(),
+                enemy_king,
+                own_king,
+                in_check,
+                check_squares,
+                // Indexed by [`Color::index`], Black first.
+                blockers: [blk_black, blk_white],
+                pinners: [pin_black, pin_white],
+                checkers,
+            });
         }
     }
 
@@ -892,7 +980,7 @@ impl Position {
         let board = self.board();
         let to = m.to_sq();
 
-        let mut checkers = if parent.check_squares[check_pattern(m.moved_piece_after())].test(to) {
+        let mut checkers = if parent.check_squares[m.moved_pattern()].test(to) {
             Bitboard::from_square(to)
         } else {
             Bitboard::EMPTY
@@ -934,9 +1022,7 @@ impl Position {
     /// it was blocking. `discount == sq` is harmless: a piece already on the try
     /// square is a capture target, not a defender.
     pub fn is_attacked_discounting(&self, sq: Square, attacker: Color, discount: Square) -> bool {
-        let mut board = *self.board();
-        board.set(discount, None);
-        is_attacked_by(&board, sq, attacker)
+        crate::movegen::is_attacked_by_discounting(self.board(), sq, attacker, discount)
     }
 
     /// True iff playing `m` would leave the opponent's king in check —
@@ -953,7 +1039,7 @@ impl Position {
             return false;
         }
 
-        if ci.check_squares[check_pattern(m.moved_piece_after())].test(to) {
+        if ci.check_squares[m.moved_pattern()].test(to) {
             return true;
         }
 
@@ -980,7 +1066,7 @@ impl Position {
     /// approximation.
     pub fn gives_direct_check(&self, m: Move) -> bool {
         let ci = self.check_info();
-        ci.check_squares[check_pattern(m.moved_piece_after())].test(m.to_sq())
+        ci.check_squares[m.moved_pattern()].test(m.to_sq())
     }
 
     /// Snapshot the cached `checkSquares` table by value, so that the per-quiet

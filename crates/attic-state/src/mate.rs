@@ -240,13 +240,13 @@ fn between_bb(a: Square, b: Square) -> Bb {
 
 /// Enemy sliders aimed at `ksq` along their step lines, optionally excluding
 /// `avoid` — the sniper set of both `update_slider_blockers` and
-/// `pinned_pieces(avoid)`. The `*_attacks(.., EMPTY)` queries give the full ray
-/// to the edge.
+/// `pinned_pieces(avoid)`. The step-effect tables give the full ray to the
+/// edge.
 fn snipers_to_king(board: &Board, ksq: Square, king_color: Color, avoid: Option<Square>) -> Bb {
     let enemy = king_color.flip();
-    let rook_line = bitboard::rook_attacks(ksq, Bitboard::EMPTY);
-    let bishop_line = bitboard::bishop_attacks(ksq, Bitboard::EMPTY);
-    let lance_line = bitboard::lance_attacks(king_color, ksq, Bitboard::EMPTY);
+    let rook_line = bitboard::rook_step_effect(ksq);
+    let bishop_line = bitboard::bishop_step_effect(ksq);
+    let lance_line = bitboard::lance_step_effect(king_color, ksq);
     let rook_dragon =
         board.pieces_pattern(enemy, pat::ROOK) | board.pieces_pattern(enemy, pat::DRAGON);
     let bishop_horse =
@@ -525,11 +525,21 @@ fn mate_dragon(ctx: &Ctx) -> Option<Move> {
     let board = ctx.board;
     let (us, them) = (ctx.us, ctx.them);
     let them_pieces = ctx.occ_them_pieces();
+    // The squares next to Them's king that a move can land on.
+    let ring = ctx.bb_move.and(king_effect(ctx.sq_king));
     for from in pieces_bucket(board, us, pat::DRAGON).iter() {
+        // The occupancy-limited effect lies inside the step effect, so a
+        // piece whose step effect misses the ring cannot check from here.
+        if rook_step_effect(from).or(king_effect(from)).and(ring).is_empty() {
+            continue;
+        }
         let slide = ctx.occ_all.without(from);
         let bb_check = dragon_effect(from, slide)
             .and(ctx.bb_move)
             .and(king_effect(ctx.sq_king));
+        if bb_check.is_empty() {
+            continue;
+        }
         let new_pin = pinned_pieces_avoid(board, them, Some(from));
         for to in bb_check.iter() {
             if attackers_of_color(board, to, slide, us).is_empty() {
@@ -559,11 +569,21 @@ fn mate_rook(ctx: &Ctx) -> Option<Move> {
     let board = ctx.board;
     let (us, them) = (ctx.us, ctx.them);
     let them_pieces = ctx.occ_them_pieces();
+    // The squares next to Them's king that a move can land on.
+    let ring = ctx.bb_move.and(king_effect(ctx.sq_king));
     for from in pieces_bucket(board, us, pat::ROOK).iter() {
+        // The occupancy-limited effect lies inside the step effect, so a
+        // piece whose step effect misses the ring cannot check from here.
+        if rook_step_effect(from).and(ring).is_empty() {
+            continue;
+        }
         let slide = ctx.occ_all.without(from);
         let bb_check = rook_effect(from, slide)
             .and(ctx.bb_move)
             .and(king_effect(ctx.sq_king));
+        if bb_check.is_empty() {
+            continue;
+        }
         let new_pin = pinned_pieces_avoid(board, them, Some(from));
         for to in bb_check.iter() {
             if attackers_of_color(board, to, slide, us).is_empty() {
@@ -607,11 +627,21 @@ fn mate_horse(ctx: &Ctx) -> Option<Move> {
     let board = ctx.board;
     let (us, them) = (ctx.us, ctx.them);
     let them_pieces = ctx.occ_them_pieces();
+    // The squares next to Them's king that a move can land on.
+    let ring = ctx.bb_move.and(king_effect(ctx.sq_king));
     for from in pieces_bucket(board, us, pat::HORSE).iter() {
+        // The occupancy-limited effect lies inside the step effect, so a
+        // piece whose step effect misses the ring cannot check from here.
+        if bishop_step_effect(from).or(king_effect(from)).and(ring).is_empty() {
+            continue;
+        }
         let slide = ctx.occ_all.without(from);
         let bb_check = horse_effect(from, slide)
             .and(ctx.bb_move)
             .and(king_effect(ctx.sq_king));
+        if bb_check.is_empty() {
+            continue;
+        }
         let new_pin = pinned_pieces_avoid(board, them, Some(from));
         for to in bb_check.iter() {
             if attackers_of_color(board, to, slide, us).is_empty() {
@@ -638,11 +668,21 @@ fn mate_bishop(ctx: &Ctx) -> Option<Move> {
     let board = ctx.board;
     let (us, them) = (ctx.us, ctx.them);
     let them_pieces = ctx.occ_them_pieces();
+    // The squares next to Them's king that a move can land on.
+    let ring = ctx.bb_move.and(king_effect(ctx.sq_king));
     for from in pieces_bucket(board, us, pat::BISHOP).iter() {
+        // The occupancy-limited effect lies inside the step effect, so a
+        // piece whose step effect misses the ring cannot check from here.
+        if bishop_step_effect(from).and(ring).is_empty() {
+            continue;
+        }
         let slide = ctx.occ_all.without(from);
         let bb_check = bishop_effect(from, slide)
             .and(ctx.bb_move)
             .and(king_effect(ctx.sq_king));
+        if bb_check.is_empty() {
+            continue;
+        }
         let new_pin = pinned_pieces_avoid(board, them, Some(from));
         for to in bb_check.iter() {
             if attackers_of_color(board, to, slide, us).is_empty() {

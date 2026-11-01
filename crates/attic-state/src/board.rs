@@ -23,8 +23,8 @@ pub(crate) mod pat {
     pub const KING: usize = 9;
 }
 
-/// Map a concrete piece to its [`pat`] attack-pattern slot.
-pub(crate) const fn pattern_of(piece: Piece) -> usize {
+/// The match form of [`pattern_of`], for the `const` table builders.
+pub(crate) const fn pattern_of_const(piece: Piece) -> usize {
     match (piece.kind, piece.promoted) {
         (PieceKind::Pawn, false) => pat::PAWN,
         (PieceKind::Lance, false) => pat::LANCE,
@@ -40,6 +40,24 @@ pub(crate) const fn pattern_of(piece: Piece) -> usize {
         (PieceKind::Rook, true) => pat::DRAGON,
         (PieceKind::King, _) => pat::KING,
     }
+}
+
+/// [`pattern_of`] for every [`Piece::code`], so the lookup is one load rather
+/// than a two-level `match`.
+static PATTERN_OF_CODE: [u8; Piece::CODES] = {
+    let mut t = [0u8; Piece::CODES];
+    let mut code = 0;
+    while code < Piece::CODES {
+        t[code] = pattern_of_const(Piece::from_code(code)) as u8;
+        code += 1;
+    }
+    t
+};
+
+/// Map a concrete piece to its [`pat`] attack-pattern slot.
+#[inline(always)]
+pub(crate) fn pattern_of(piece: Piece) -> usize {
+    PATTERN_OF_CODE[piece.code()] as usize
 }
 
 /// The 81-square board and the piece-set bitboards maintained incrementally

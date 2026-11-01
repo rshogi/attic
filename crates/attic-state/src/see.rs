@@ -15,7 +15,10 @@
 //!   GOLDS, BISHOP, ROOK, HORSE, DRAGON, KING — ROOK before HORSE, even though
 //!   `HorseValue < RookValue`. Node-count parity depends on it.
 
-use crate::bitboard::{Bitboard, between, bishop_attacks, lance_attacks, ray_dir, rook_attacks};
+use crate::bitboard::{
+    Bitboard, between, bishop_attacks, bishop_step_effect, lance_attacks, lance_step_effect, ray_dir,
+    rook_attacks, rook_step_effect,
+};
 use crate::board::pat;
 use crate::color::Color;
 use crate::move_::Move;
@@ -41,9 +44,8 @@ const HORSE_VALUE: i32 = 945;
 const DRAGON_VALUE: i32 = 1395;
 const KING_VALUE: i32 = 15000;
 
-/// `Eval::PieceValue[piece]` — the value of a concrete board piece, with
-/// promoted pieces returning their promoted value.
-pub fn piece_value(p: Piece) -> i32 {
+/// The match form of [`piece_value`], used once to build [`PIECE_VALUE_OF_CODE`].
+const fn piece_value_match(p: Piece) -> i32 {
     use crate::piece::PieceKind;
     match (p.kind, p.promoted) {
         (PieceKind::Pawn, false) => PAWN_VALUE,
@@ -61,6 +63,25 @@ pub fn piece_value(p: Piece) -> i32 {
         (PieceKind::Rook, true) => DRAGON_VALUE,
         (PieceKind::King, _) => KING_VALUE,
     }
+}
+
+/// [`piece_value`] for every [`Piece::code`], so the lookup is one load rather
+/// than a two-level `match`.
+static PIECE_VALUE_OF_CODE: [i32; Piece::CODES] = {
+    let mut t = [0i32; Piece::CODES];
+    let mut code = 0;
+    while code < Piece::CODES {
+        t[code] = piece_value_match(Piece::from_code(code));
+        code += 1;
+    }
+    t
+};
+
+/// `Eval::PieceValue[piece]` — the value of a concrete board piece, with
+/// promoted pieces returning their promoted value.
+#[inline(always)]
+pub fn piece_value(p: Piece) -> i32 {
+    PIECE_VALUE_OF_CODE[p.code()]
 }
 
 /// The reference's `pieces(<TYPE>)` least-valuable-attacker buckets. `Golds`
@@ -174,18 +195,31 @@ fn reveal_sliders(
 /// `pinners[~c]` is the set of enemy snipers whose single blocker is one of
 /// `c`'s own pieces. Both are computed over the full pre-move board.
 pub(crate) fn slider_blockers(board: &crate::board::Board, c: Color) -> (Bitboard, Bitboard) {
-    let ksq = match try_find_king(board, c) {
+    slider_blockers_at(board, c, try_find_king(board, c))
+}
+
+/// [`slider_blockers`] with `c`'s king square (`None` if the board has no `c`
+/// king) already known, so a caller that located both kings does not search
+/// the piece sets again.
+#[inline]
+pub(crate) fn slider_blockers_at(
+    board: &crate::board::Board,
+    c: Color,
+    king: Option<Square>,
+) -> (Bitboard, Bitboard) {
+    let ksq = match king {
         Some(s) => s,
         None => return (Bitboard::EMPTY, Bitboard::EMPTY),
     };
+    debug_assert_eq!(king, try_find_king(board, c));
     let enemy = c.flip();
 
-    // `*_attacks(.., EMPTY)` is the full ray to the edge — the reference's
-    // occupancy-independent `rookStepEffect` / `bishopStepEffect` /
-    // `lanceStepEffect`.
-    let rook_line = rook_attacks(ksq, Bitboard::EMPTY);
-    let bishop_line = bishop_attacks(ksq, Bitboard::EMPTY);
-    let lance_line = lance_attacks(c, ksq, Bitboard::EMPTY);
+    // The occupancy-independent full rays to the edge — the reference's
+    // `rookStepEffect` / `bishopStepEffect` / `lanceStepEffect`, each a single
+    // table load (equal to the occupancy-limited query under an empty board).
+    let rook_line = rook_step_effect(ksq);
+    let bishop_line = bishop_step_effect(ksq);
+    let lance_line = lance_step_effect(c, ksq);
     let rook_dragon =
         board.pieces_pattern(enemy, pat::ROOK) | board.pieces_pattern(enemy, pat::DRAGON);
     let bishop_horse =
