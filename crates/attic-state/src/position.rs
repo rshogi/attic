@@ -426,6 +426,7 @@ impl Position {
 
         let mover = self.side_to_move;
         let to = m.to_sq();
+        let keys_before = self.keys();
 
         // Whether the side about to be checked was *already* in check before the
         // move — impossible in legal play, but reachable from contrived fixtures
@@ -446,7 +447,10 @@ impl Position {
             // The copy that left the hand contributed to no partial key, so the
             // drop is a plain entry into the board's.
             self.xor_piece_partial(piece, to);
-            Undo { captured: None }
+            Undo {
+                captured: None,
+                keys_before,
+            }
         } else {
             let from = m.from_sq();
             let captured = self.board.get(to);
@@ -470,7 +474,10 @@ impl Position {
             // its post-move one, so a promoting pawn leaves `pawn_key`.
             self.xor_piece_partial(piece_before, from);
             self.xor_piece_partial(piece_after, to);
-            Undo { captured }
+            Undo {
+                captured,
+                keys_before,
+            }
         };
 
         self.side_to_move = mover.flip();
@@ -622,20 +629,18 @@ impl Position {
         self.pop_check_info();
         self.side_to_move = self.side_to_move.flip();
         self.ply = self.ply.wrapping_sub(1);
-        self.board_key ^= crate::key::side();
         let mover = self.side_to_move;
         let to = m.to_sq();
 
+        // The keys are a function of the position being restored, so they are
+        // put back from the copy `do_move` took rather than re-derived by
+        // reversing each XOR and addition.
+        self.set_keys(undo.keys_before);
+
         if m.is_drop() {
             let kind = m.dropped_piece_kind();
-            let piece = Piece::new(kind, mover);
             self.board.set(to, None);
             self.hands[mover.index()].increment(kind);
-            self.board_key ^= crate::key::psq(piece, to);
-            self.hand_key = self
-                .hand_key
-                .wrapping_add(crate::key::hand_step(mover, kind));
-            self.xor_piece_partial(piece, to);
             return;
         }
 
@@ -644,18 +649,31 @@ impl Position {
         let piece_before = piece_before_move(m, after);
         self.board.set(from, Some(piece_before));
         self.board.set(to, undo.captured);
-        self.board_key ^= crate::key::psq(after, to);
-        self.board_key ^= crate::key::psq(piece_before, from);
-        self.xor_piece_partial(after, to);
-        self.xor_piece_partial(piece_before, from);
         if let Some(cap) = undo.captured {
             self.hands[mover.index()].decrement(cap.kind);
-            self.board_key ^= crate::key::psq(cap, to);
-            self.hand_key = self
-                .hand_key
-                .wrapping_sub(crate::key::hand_step(mover, cap.kind));
-            self.xor_piece_partial(cap, to);
         }
+    }
+
+    /// The six incrementally maintained keys, to be put back by
+    /// [`Self::set_keys`].
+    #[inline(always)]
+    fn keys(&self) -> SavedKeys {
+        SavedKeys {
+            board_key: self.board_key,
+            hand_key: self.hand_key,
+            pawn_key: self.pawn_key,
+            minor_piece_key: self.minor_piece_key,
+            non_pawn_key: self.non_pawn_key,
+        }
+    }
+
+    #[inline(always)]
+    fn set_keys(&mut self, k: SavedKeys) {
+        self.board_key = k.board_key;
+        self.hand_key = k.hand_key;
+        self.pawn_key = k.pawn_key;
+        self.minor_piece_key = k.minor_piece_key;
+        self.non_pawn_key = k.non_pawn_key;
     }
 
     /// Play a null move: pass the turn without touching the board or hands
@@ -959,6 +977,18 @@ impl Drop for BoardMut<'_> {
 #[derive(Debug, Clone, Copy)]
 pub struct Undo {
     pub(crate) captured: Option<Piece>,
+    /// The position's keys before the move, which `undo_move` puts back.
+    keys_before: SavedKeys,
+}
+
+/// A copy of the keys [`Position`] maintains incrementally.
+#[derive(Debug, Clone, Copy)]
+struct SavedKeys {
+    board_key: u64,
+    hand_key: u64,
+    pawn_key: u64,
+    minor_piece_key: u64,
+    non_pawn_key: [u64; Color::COUNT],
 }
 
 impl Undo {
