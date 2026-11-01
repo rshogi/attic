@@ -29,7 +29,6 @@ use crate::types::{
     HIDDEN1_DIMS, LAYER_STACKS, NetworkStack, NnueNetwork,
 };
 
-
 /// `k*ToIndex` tables from `stack_index_for_nnue`: the own-king rank contributes
 /// the coarse third `{0,3,6}`, the enemy-king rank the fine third `{0,1,2}`.
 const F_RANK_TO_INDEX: [usize; 9] = [0, 0, 0, 3, 3, 3, 6, 6, 6];
@@ -123,7 +122,10 @@ pub fn evaluate_with(net: &NnueNetwork, acc: &Accumulator, pos: &Position) -> i3
 /// kernel; otherwise the per-layer flow below runs. The two are byte-for-byte
 /// equivalent.
 #[cfg(all(
-    any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"),
+    any(
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+    ),
     target_arch = "x86_64",
     target_feature = "avx512f",
     target_feature = "avx512bw",
@@ -153,7 +155,10 @@ fn per_layer_flow(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> 
 
 /// Layer-stack forward pass, non-VNNI arm.
 #[cfg(all(
-    any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"),
+    any(
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+    ),
     not(all(
         target_arch = "x86_64",
         target_feature = "avx512f",
@@ -209,7 +214,10 @@ fn clipped_relu(src: &[i32], dst: &mut [u8]) {
         *slot = (sum >> 6).clamp(0, 127) as u8;
     }
 }
-#[cfg(any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
+#[cfg(any(
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+))]
 #[allow(dead_code)]
 fn per_layer_flow_unfused(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> i32 {
     let mut fc_0_out = [0i32; FC_0_OUTPUT_DIMS];
@@ -336,6 +344,10 @@ mod tests {
         assert_eq!(per_layer_flow(&transformed, &net.stacks[0]), 0);
     }
 
+    #[cfg(any(
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+    ))]
     #[test]
     fn forward_wires_shortcut_and_chain() {
         // The reference's `classic_chain_with_ewm_and_shortcut` wiring:
@@ -365,7 +377,10 @@ mod tests {
         );
     }
 
-    #[cfg(any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
+    #[cfg(any(
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+    ))]
     #[test]
     fn selected_forward_path_matches_the_unfused_reference() {
         // Whichever path this build compiled must agree bit-for-bit with the

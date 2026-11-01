@@ -23,13 +23,25 @@ use crate::types::{NetDims, NetHeader, NnueError, NnueNetwork, NnueNetworkBuilde
 // and never the shape — which is why the hashes below have to.
 const NNUE_VERSION: u32 = 0x7AF3_2F16;
 
-#[cfg(any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
+#[cfg(any(
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+))]
 const NNUE_HASH_VALUE: u32 = 0x3C20_3B32;
-#[cfg(any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
+#[cfg(any(
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+))]
 const FT_HASH: u32 = 0x5F13_4AB8;
-#[cfg(any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
+#[cfg(any(
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+))]
 const NET_HASH: u32 = 0x6333_718A;
-#[cfg(any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
+#[cfg(any(
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+))]
 const ARCH_STRING: &str = "ModelType=SFNNWithoutPsqt;Features=HalfKA_hm(Friend)[73305->1536x2],Network=AffineTransform[1<-32](ClippedReLU[32](AffineTransform[32<-15](ClippedReLU[15](AffineTransform[15<-3072](InputSlice[3072(0:3072)]))))){LayerStack=9}";
 
 // The standard shapes' hashes were read out of files YaneuraOu itself wrote —
@@ -213,6 +225,36 @@ fn read_leb128_i16_into(reader: &mut ByteReader, out: &mut [i16]) -> Result<(), 
     Ok(())
 }
 
+/// No-op for the shapes whose `ReadParameters` takes the plain `#else` arm.
+#[cfg(not(any(
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+)))]
+fn scale_ft_i16_x2_in_place(_values: &mut [i16]) -> Result<(), NnueError> {
+    Ok(())
+}
+
+/// The `scale_weights(true)` pass `ReadParameters` runs on a freshly-read
+/// feature transformer: every bias and weight doubled.
+///
+/// **It belongs to the element-wise-multiply transformer and to nothing else.**
+/// In `nnue_feature_transformer.h` it sits inside
+/// `#if defined(USE_ELEMENT_WISE_MULTIPLY)`, next to the LEB128 read and the
+/// `permute_weights` call, because that transformer clamps each half to
+/// `127 * 2` and shifts by 9 — the doubled parameters are what those two
+/// constants are scaled against. The `#else` arm, which is the one the
+/// `256x2-32-32` shapes compile, reads the block plainly and leaves it alone:
+/// its output transform clamps to `[0, 127]`, so a doubled accumulator
+/// saturates where the real one does not.
+///
+/// This used to run for every shape. The KP256 build then evaluated the start
+/// position at 90 where YaneuraOu says 125, and each of the four bench
+/// positions off by more — every accumulator lane exactly twice the reference
+/// value, which is the shape of the bug rather than a rounding difference.
+#[cfg(any(
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+))]
 fn scale_ft_i16_x2_in_place(values: &mut [i16]) -> Result<(), NnueError> {
     for slot in values.iter_mut() {
         let scaled = (*slot as i32) * 2;
@@ -790,6 +832,10 @@ mod tests {
         assert_eq!(net.stacks.len(), TEST_DIMS.layer_stacks);
     }
 
+    #[cfg(any(
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+    ))]
     #[test]
     fn corrupted_leb128_magic_is_rejected() {
         let mut bytes = build_valid_bytes(&TEST_DIMS, ARCH_STRING);
@@ -803,6 +849,10 @@ mod tests {
         );
     }
 
+    #[cfg(any(
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+    ))]
     #[test]
     fn ft_scale_doubles_biases_and_weights() {
         let biases: [i16; 5] = [0, 1, -1, 16_383, -16_384];
@@ -824,6 +874,10 @@ mod tests {
         }
     }
 
+    #[cfg(any(
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+    ))]
     #[test]
     fn ft_scale_rejects_overflow_bias() {
         let biases: [i16; 5] = [16_384, 0, 0, 0, 0];
@@ -847,6 +901,27 @@ mod tests {
             }
             other => panic!("expected InvalidFormat, got {:?}", other),
         }
+    }
+
+    /// The mirror of `ft_scale_doubles_biases_and_weights`, and the reason
+    /// that one is gated. YaneuraOu runs `scale_weights(true)` over the
+    /// freshly-read transformer only inside
+    /// `#if defined(USE_ELEMENT_WISE_MULTIPLY)`: the doubled parameters are
+    /// what that transformer's `127 * 2` clamp and 9-bit shift are scaled
+    /// against. The `#else` arm, which is what the `256x2-32-32` shapes
+    /// compile, reads the block plainly and clamps to `[0, 127]`. Attic
+    /// doubled every shape, so a KP256 accumulator saturated where the
+    /// reference's did not and the start position evaluated to 90 where
+    /// YaneuraOu says 125.
+    #[cfg(not(any(
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+    )))]
+    #[test]
+    fn ft_scale_is_a_no_op_for_the_standard_shapes() {
+        let mut values: [i16; 5] = [0, 1, -1, 16_383, -16_384];
+        scale_ft_i16_x2_in_place(&mut values).expect("nothing is scaled, so nothing overflows");
+        assert_eq!(values, [0, 1, -1, 16_383, -16_384]);
     }
 
     #[test]

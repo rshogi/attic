@@ -225,7 +225,10 @@ impl Accumulator {
 
     /// Pack the accumulator into `out`, the byte input buffer for L1, as the
     /// module head describes.
-    #[cfg(any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
+    #[cfg(any(
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+    ))]
     pub fn output_transform(&self, stm: Color, out: &mut [u8; FT_OUTPUT_DIMS]) {
         const HALF: usize = HIDDEN_SIZE / 2;
         let stm_half = &self.perspectives[stm.index()];
@@ -1027,6 +1030,10 @@ mod tests {
         assert!(warm_hits > 0, "playout never hit a warm cache entry");
     }
 
+    #[cfg(any(
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+    ))]
     #[test]
     fn output_transform_lays_out_stm_then_other() {
         let mut acc = Accumulator::new();
@@ -1048,6 +1055,10 @@ mod tests {
         assert_eq!(out_w[HALF], 39);
     }
 
+    #[cfg(any(
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+    ))]
     #[test]
     fn output_transform_clamps_min_zero_and_max() {
         let mut acc = Accumulator::new();
@@ -1072,6 +1083,10 @@ mod tests {
         assert_eq!(out[4], 9, "mid-range pair");
     }
 
+    #[cfg(any(
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+    ))]
     #[test]
     fn output_transform_full_row_matches_scalar_formula() {
         // Cross-checked against a direct transcription of the reference formula.

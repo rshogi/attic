@@ -676,41 +676,82 @@ mod tests {
         assert_eq!(size_of::<i16>(), 2);
     }
 
-    /// The transformed width, per shape. Both arms are asserted so the feature
+    /// The transformed width, per shape. Every arm is asserted so the feature
     /// cannot silently select the wrong one.
     #[test]
     fn hidden_size_matches_shape() {
-        #[cfg(not(feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
+        #[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
         assert_eq!(HIDDEN_SIZE, 1536);
         #[cfg(feature = "sfnn_halfkahm2_2304_15_64_progress8ek")]
         assert_eq!(HIDDEN_SIZE, 2304);
+        #[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
+        assert_eq!(HIDDEN_SIZE, 256);
     }
 
-    /// Unchanged between shapes: both are `HalfKA_hm2`.
+    /// The feature space, per shape. `HalfKA_hm2` crosses every piece with the
+    /// canonicalized king square; KP appends one king plane to BonaPiece's
+    /// 1548 and crosses nothing; HalfKP crosses with all 81 king squares.
     #[test]
-    fn num_features_matches_half_ka_hm() {
+    fn num_features_matches_shape() {
+        #[cfg(any(
+            feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+            feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+        ))]
         assert_eq!(NUM_FEATURES, 5 * 9 * 1629);
+        #[cfg(feature = "nnue_kp_256x2_32_32")]
+        assert_eq!(NUM_FEATURES, 1_710);
+        #[cfg(feature = "nnue_halfkp_256x2_32_32")]
+        assert_eq!(NUM_FEATURES, 125_388);
     }
 
+    /// Bucketing is an SFNN thing. YaneuraOu's standard shapes have one dense
+    /// stack and pick nothing at run time.
     #[test]
-    fn layer_stacks_is_nine() {
+    fn layer_stacks_matches_shape() {
+        #[cfg(any(
+            feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+            feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+        ))]
         assert_eq!(LAYER_STACKS, 9);
+        #[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
+        assert_eq!(LAYER_STACKS, 1);
     }
 
+    /// L1 takes the transformer's output. SFNN multiplies the two perspectives
+    /// element-wise, so its input is one width; the standard shapes concatenate
+    /// them, so theirs is two. SFNN's extra output is the shortcut.
     #[test]
     fn fc_0_shapes_match_spec() {
-        assert_eq!(FC_0_OUTPUT_DIMS, 16);
-        assert_eq!(FC_0_INPUT_DIMS, HIDDEN_SIZE);
-        assert_eq!(FC_0_PADDED_INPUT_DIMS, HIDDEN_SIZE);
+        assert_eq!(FC_0_PADDED_INPUT_DIMS, FC_0_INPUT_DIMS);
+        #[cfg(any(
+            feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+            feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+        ))]
+        {
+            assert_eq!(FC_0_OUTPUT_DIMS, 16);
+            assert_eq!(FC_0_INPUT_DIMS, HIDDEN_SIZE);
+        }
+        #[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
+        {
+            assert_eq!(FC_0_OUTPUT_DIMS, 32);
+            assert_eq!(FC_0_INPUT_DIMS, 2 * HIDDEN_SIZE);
+        }
     }
 
-    /// L2's input is L1's 15 outputs per perspective, padded to 32 — the same
-    /// in both shapes. Only its *output* width moves.
+    /// L2's input is L1's 15 outputs per perspective, padded to 32, in both
+    /// SFNN shapes; only its *output* width moves. The standard shapes carry
+    /// L1's 32 outputs straight across.
     #[test]
     fn fc_1_shapes_match_spec() {
         assert_eq!(FC_1_OUTPUT_DIMS, HIDDEN2_DIMS);
-        assert_eq!(FC_1_INPUT_DIMS, 30);
         assert_eq!(FC_1_PADDED_INPUT_DIMS, 32);
+        #[cfg(any(
+            feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+            feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+        ))]
+        assert_eq!(FC_1_INPUT_DIMS, 30);
+        #[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
+        assert_eq!(FC_1_INPUT_DIMS, 32);
 
         #[cfg(not(feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
         assert_eq!(HIDDEN2_DIMS, 32);
