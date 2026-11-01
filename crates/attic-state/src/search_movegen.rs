@@ -1022,9 +1022,7 @@ impl Position {
     /// it was blocking. `discount == sq` is harmless: a piece already on the try
     /// square is a capture target, not a defender.
     pub fn is_attacked_discounting(&self, sq: Square, attacker: Color, discount: Square) -> bool {
-        let mut board = *self.board();
-        board.set(discount, None);
-        is_attacked_by(&board, sq, attacker)
+        crate::movegen::is_attacked_by_discounting(self.board(), sq, attacker, discount)
     }
 
     /// True iff playing `m` would leave the opponent's king in check —
