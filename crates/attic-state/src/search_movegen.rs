@@ -17,12 +17,13 @@
 //!
 //! Evasions are target-restricted at generation, which is safe because every
 //! emitted move is a subsequence of what an unrestricted emission would produce.
-//! One deviation from the reference is deliberate and output-preserving: the
-//! checkers' attack rays are accumulated under the *current* occupancy rather
-//! than its king-removed `occ = pieces() ^ ksq`. With the king still in the
-//! occupancy a slider's ray stops at it, so the square directly behind the king
-//! survives the king-step mask instead of being pruned; it is a suicide step,
-//! which `is_legal` rejects anyway.
+//! The checkers' attack rays are accumulated under the king-removed occupancy
+//! `occ = pieces() ^ ksq`, as the reference does. A slider's ray then runs
+//! through the king, so the square directly behind it is pruned from the
+//! king-step mask. Keeping the king in the occupancy would leave that suicide
+//! step in the list: `is_legal` rejects it, but the root's legal-move list is
+//! built by swapping each illegal move with the last element, so an extra
+//! pseudo-legal move changes the order of the legal ones, and with it the search.
 
 use crate::bitboard::Bitboard;
 use crate::board::Board;
@@ -780,11 +781,11 @@ impl Position {
         // enemy king attacks exactly the squares from which a side-to-move `pt`
         // piece checks that king.
         //
-        // Slot 9 (KING) holds the actual king ring rather than the reference's
-        // hard `0`. A king move can never be a *legal* check, so the reference
-        // never reaches this slot; the ring keeps the predicates byte-identical
-        // to the scratch-scan oracle on the pseudo-legal-but-illegal king steps
-        // the generators do emit.
+        // Slot 9 (KING) is empty, as the reference's `checkSquares[KING] = 0`:
+        // a king step is never a legal check. The pseudo-legal-but-illegal king
+        // steps the generators emit still reach the move picker, where "gives
+        // check" earns a quiet move a bonus, so the slot has to read as the
+        // reference's does or the picker orders those steps differently.
         let occ = board.occupied();
         let mut check_squares = [Bitboard::EMPTY; CHECK_PATTERN_COUNT];
         if let Some(eks) = enemy_king {
@@ -814,7 +815,7 @@ impl Position {
                 bishop | king_ring;
             check_squares[check_pattern(Piece::promoted(PieceKind::Rook, enemy).unwrap())] =
                 rook | king_ring;
-            check_squares[check_pattern(Piece::new(PieceKind::King, enemy))] = king_ring;
+            check_squares[check_pattern(Piece::new(PieceKind::King, enemy))] = Bitboard::EMPTY;
         }
 
         // `slider_blockers(c)` returns `(blockersForKing[c], pinners[~c])`, so
@@ -1309,9 +1310,9 @@ impl Position {
         let king = board.get(ksq).unwrap();
 
         // The union of every checker's attack rays, so the king cannot step onto
-        // a still-attacked square. Accumulated under the current occupancy; see
-        // the module head for why that is equivalent.
-        let occ = board.occupied();
+        // a still-attacked square. Accumulated under the occupancy without the
+        // king, so that a slider's ray also covers the square behind it.
+        let occ = board.occupied() & !Bitboard::from_square(ksq);
         let mut slider_attacks = Bitboard::empty();
         for checksq in checkers.squares() {
             let cp = board
