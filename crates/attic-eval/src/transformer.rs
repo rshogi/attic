@@ -163,15 +163,13 @@ impl Accumulator {
         for color in [Color::Black, Color::White] {
             let i = color.index();
             match delta.half(color) {
-                Some(pd) => {
-                    dst.perspectives[i].copy_from_slice(&src.perspectives[i]);
-                    apply_diff(
-                        &mut dst.perspectives[i],
-                        &net.ft_weights,
-                        pd.added(),
-                        pd.removed(),
-                    );
-                }
+                Some(pd) => transformer_kernel::derive_features(
+                    &mut dst.perspectives[i],
+                    &src.perspectives[i],
+                    &net.ft_weights,
+                    pd.added(),
+                    pd.removed(),
+                ),
                 None => {
                     refresh_perspective(
                         &mut dst.perspectives[i],
@@ -209,15 +207,13 @@ impl Accumulator {
         for color in [Color::Black, Color::White] {
             let i = color.index();
             match delta.half(color) {
-                Some(pd) => {
-                    dst.perspectives[i].copy_from_slice(&src.perspectives[i]);
-                    apply_diff(
-                        &mut dst.perspectives[i],
-                        &net.ft_weights,
-                        pd.added(),
-                        pd.removed(),
-                    );
-                }
+                Some(pd) => transformer_kernel::derive_features(
+                    &mut dst.perspectives[i],
+                    &src.perspectives[i],
+                    &net.ft_weights,
+                    pd.added(),
+                    pd.removed(),
+                ),
                 None => cache.refresh_into(net, post_pos, color, &mut dst.perspectives[i]),
             }
         }

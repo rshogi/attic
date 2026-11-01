@@ -139,6 +139,21 @@ pub mod transformer_kernel {
         // SAFETY: see `add_features`.
         unsafe { avx512::add_sub_sub_features(out, weights, added, removed_a, removed_b) }
     }
+
+    /// `dst = src + sum(added) - sum(removed)`. Copy then apply; the one-pass
+    /// AVX2 form is not ported to 512 bits.
+    #[inline]
+    pub fn derive_features(
+        dst: &mut [i16],
+        src: &[i16],
+        weights: &[i16],
+        added: &[FeatureIndex],
+        removed: &[FeatureIndex],
+    ) {
+        dst.copy_from_slice(src);
+        sub_features(dst, weights, removed);
+        add_features(dst, weights, added);
+    }
 }
 
 /// Feature-transformer accumulate/update kernels — scalar arm (the AVX-512 arm
@@ -196,6 +211,20 @@ pub mod transformer_kernel {
         // SAFETY: see `add_features`.
         unsafe { avx2::add_sub_sub_features(out, weights, added, removed_a, removed_b) }
     }
+
+    /// `dst = src + sum(added) - sum(removed)` in one pass over the accumulator
+    /// half: the child-from-parent derive, without the copy.
+    #[inline]
+    pub fn derive_features(
+        dst: &mut [i16],
+        src: &[i16],
+        weights: &[i16],
+        added: &[FeatureIndex],
+        removed: &[FeatureIndex],
+    ) {
+        // SAFETY: see `add_features`.
+        unsafe { avx2::derive_features(dst, src, weights, added, removed) }
+    }
 }
 
 /// The portable arm: neither AVX-512 nor AVX2.
@@ -207,7 +236,9 @@ pub mod transformer_kernel {
     )
 )))]
 pub mod transformer_kernel {
-    pub use super::scalar::{add_features, add_sub_features, add_sub_sub_features, sub_features};
+    pub use super::scalar::{
+        add_features, add_sub_features, add_sub_sub_features, derive_features, sub_features,
+    };
 }
 
 /// Output-transform and layer element-wise kernels, selected at compile time on
