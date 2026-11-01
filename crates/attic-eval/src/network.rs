@@ -23,6 +23,8 @@ use crate::features::king_square;
 use crate::scale::fv_scale;
 use crate::simd::{self, post_ft_kernel};
 use crate::transformer::{Accumulator, FT_OUTPUT_DIMS};
+#[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
+use crate::types::FcKernels;
 use crate::types::{
     FC_0_INPUT_DIMS, FC_0_OUTPUT_DIMS, FC_0_PADDED_INPUT_DIMS, FC_1_INPUT_DIMS, FC_1_OUTPUT_DIMS,
     FC_1_PADDED_INPUT_DIMS, FC_2_INPUT_DIMS, FC_2_OUTPUT_DIMS, FC_2_PADDED_INPUT_DIMS,
@@ -176,14 +178,31 @@ fn per_layer_flow(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> 
 #[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
 fn per_layer_flow(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> i32 {
     let mut fc_0_out = [0i32; FC_0_OUTPUT_DIMS];
-    post_ft_kernel::affine_u7(
-        &mut fc_0_out,
-        &stack.fc_0_biases,
-        &stack.fc_0_weights,
-        transformed,
-        FC_0_INPUT_DIMS,
-        FC_0_PADDED_INPUT_DIMS,
-    );
+    // The kernels below load by pointer and trust the layer sizes, which
+    // `NetworkStack` proved once when it was built. The widest layer, fc_0,
+    // adds eight chunks of `maddubs` results in `i16` when its weights were
+    // also proven to keep every such sum inside it for any 7-bit input.
+    match stack.fc_kernels {
+        FcKernels::WideFc0 => post_ft_kernel::affine_u7_wide(
+            &mut fc_0_out,
+            &stack.fc_0_biases,
+            &stack.fc_0_weights,
+            transformed,
+            FC_0_INPUT_DIMS,
+            FC_0_PADDED_INPUT_DIMS,
+        ),
+        FcKernels::Plain => post_ft_kernel::affine_u7(
+            &mut fc_0_out,
+            &stack.fc_0_biases,
+            &stack.fc_0_weights,
+            transformed,
+            FC_0_INPUT_DIMS,
+            FC_0_PADDED_INPUT_DIMS,
+        ),
+        FcKernels::Mismatched => {
+            panic!("the network's dense layers are not the sizes this build's shape needs")
+        }
+    }
     let mut act_0 = [0u8; FC_1_INPUT_DIMS];
     post_ft_kernel::clipped_relu(&fc_0_out, &mut act_0);
     let mut fc_1_out = [0i32; FC_1_OUTPUT_DIMS];
@@ -413,6 +432,132 @@ mod tests {
                 "selected path disagrees with the unfused reference (seed {seed})",
             );
         }
+    }
+
+    /// The layer chain written out with the always-scalar kernels, as a
+    /// reference for whichever kernels `per_layer_flow` selects.
+    #[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
+    fn scalar_reference_flow(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> i32 {
+        use crate::simd::scalar_post_ft as sc;
+        let mut fc_0_out = [0i32; FC_0_OUTPUT_DIMS];
+        sc::affine(
+            &mut fc_0_out,
+            &stack.fc_0_biases,
+            &stack.fc_0_weights,
+            transformed,
+            FC_0_INPUT_DIMS,
+            FC_0_PADDED_INPUT_DIMS,
+        );
+        let mut act_0 = [0u8; FC_1_INPUT_DIMS];
+        sc::clipped_relu(&fc_0_out, &mut act_0);
+        let mut fc_1_out = [0i32; FC_1_OUTPUT_DIMS];
+        sc::affine(
+            &mut fc_1_out,
+            &stack.fc_1_biases,
+            &stack.fc_1_weights,
+            &act_0,
+            FC_1_INPUT_DIMS,
+            FC_1_PADDED_INPUT_DIMS,
+        );
+        let mut act_1 = [0u8; FC_2_INPUT_DIMS];
+        sc::clipped_relu(&fc_1_out, &mut act_1);
+        let mut fc_2_out = [0i32; FC_2_OUTPUT_DIMS];
+        sc::affine(
+            &mut fc_2_out,
+            &stack.fc_2_biases,
+            &stack.fc_2_weights,
+            &act_1,
+            FC_2_INPUT_DIMS,
+            FC_2_PADDED_INPUT_DIMS,
+        );
+        fc_2_out[0]
+    }
+
+    /// Both fc_0 paths -- the `i16`-accumulating one that small weights qualify
+    /// for and the plain one that large weights fall back to -- agree with the
+    /// scalar chain, on random inputs and on the extreme all-127 / all-0 ones.
+    #[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
+    #[test]
+    fn standard_flow_matches_the_scalar_chain_on_both_fc_0_paths() {
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move || {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            state.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11
+        };
+
+        for (magnitude, expect_wide) in [(6i64, true), (127, false)] {
+            let mut b = builder_1stack_std();
+            let mut fill_i8 = |w: &mut [i8], m: i64| {
+                for x in w.iter_mut() {
+                    *x = ((next() % (2 * m as u64 + 1)) as i64 - m) as i8;
+                }
+            };
+            fill_i8(b.fc_0_weights_mut(0), magnitude);
+            fill_i8(b.fc_1_weights_mut(0), 127);
+            fill_i8(b.fc_2_weights_mut(0), 127);
+            for bias in b.fc_0_biases_mut(0).iter_mut() {
+                *bias = (next() as i64 - (1 << 52)) as i32;
+            }
+            for bias in b.fc_1_biases_mut(0).iter_mut() {
+                *bias = (next() as i64 - (1 << 52)) as i32;
+            }
+            for bias in b.fc_2_biases_mut(0).iter_mut() {
+                *bias = (next() as i64 - (1 << 52)) as i32;
+            }
+            let net = b.build();
+            let stack = &net.stacks[0];
+            let want_kernels = if expect_wide {
+                FcKernels::WideFc0
+            } else {
+                FcKernels::Plain
+            };
+            assert_eq!(
+                stack.fc_kernels, want_kernels,
+                "magnitude {magnitude}: the build-time check decided differently"
+            );
+
+            let mut inputs: Vec<[u8; FC_0_INPUT_DIMS]> =
+                vec![[0u8; FC_0_INPUT_DIMS], [127u8; FC_0_INPUT_DIMS]];
+            for _ in 0..200 {
+                let mut t = [0u8; FC_0_INPUT_DIMS];
+                for x in t.iter_mut() {
+                    *x = match next() % 4 {
+                        0 => 0,
+                        1 => 127,
+                        _ => (next() % 128) as u8,
+                    };
+                }
+                inputs.push(t);
+            }
+            for t in &inputs {
+                assert_eq!(
+                    per_layer_flow(t, stack),
+                    scalar_reference_flow(t, stack),
+                    "magnitude {magnitude}"
+                );
+            }
+        }
+    }
+
+    /// A network whose dense layers are not the build's sizes (the loader tests
+    /// build such networks, which is legitimate) must refuse to evaluate: the
+    /// AVX2 kernels load by pointer and trust the sizes `NetworkStack` proved.
+    #[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
+    #[test]
+    #[should_panic(expected = "not the sizes")]
+    fn a_network_with_other_dense_sizes_refuses_to_evaluate() {
+        let dims = NetDims {
+            layer_stacks: 1,
+            num_features: 1,
+            fc_0_output: 2,
+            fc_1_output: 2,
+            ..NetDims::STANDARD
+        };
+        let net = NnueNetworkBuilder::with_dims(synthetic_header(), [0u8; 32], &dims).build();
+        assert_eq!(net.stacks[0].fc_kernels, FcKernels::Mismatched);
+        per_layer_flow(&[0u8; FC_0_INPUT_DIMS], &net.stacks[0]);
     }
 
     #[test]

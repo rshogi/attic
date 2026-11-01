@@ -336,6 +336,159 @@ pub unsafe fn affine_u7(
     }
 }
 
+/// [`affine_u7`] for weights that passed
+/// `scalar_post_ft::pair_sums_fit_i16`: 8 chunks of `maddubs` results are
+/// added as `i16` before one widening `madd`, instead of widening each.
+///
+/// Per 4 rows and 8 chunks that is 32 `maddubs` + 32 `add_epi16` + 4 `madd` + 4
+/// `add_epi32`, against `affine_u7`'s 32 + 32 + 32 -- about a quarter fewer
+/// vector ops on the layer that dominates an evaluation (fc_0, 512 inputs).
+///
+/// ## Why it is still exact
+///
+/// `add_epi16` wraps, so the sum is right only if no lane leaves `i16`.
+/// `pair_sums_fit_i16` proves that for every input in `0..=127` (it bounds the
+/// positive and the negative weight mass of each row, lane and group), and the
+/// caller must have run it on exactly these `weights`. Given that, every
+/// `maddubs` pair sum, every partial `i16` sum and the group total equal the
+/// true integers, so the result is the scalar one. If the check is skipped or
+/// the weights changed, the memory accesses are unchanged but the numbers can
+/// be wrong -- hence the `debug_assert!`.
+///
+/// # Safety
+/// The running CPU must support `avx2`. `in_dims` must be a multiple of 32, and
+/// every `input[..in_dims]` byte at most 127.
+#[inline]
+#[target_feature(enable = "avx2")]
+pub unsafe fn affine_u7_wide(
+    output: &mut [i32],
+    biases: &[i32],
+    weights: &[i8],
+    input: &[u8],
+    in_dims: usize,
+    padded_in: usize,
+) {
+    debug_assert_eq!(output.len(), biases.len());
+    debug_assert_eq!(weights.len(), output.len() * padded_in);
+    debug_assert!(in_dims <= padded_in);
+    debug_assert!(input.len() >= in_dims);
+    debug_assert!(
+        input[..in_dims].iter().all(|&x| x <= 127),
+        "affine_u7_wide needs 7-bit inputs: maddubs saturates above 127"
+    );
+    debug_assert!(
+        scalar_post_ft::pair_sums_fit_i16(weights, output.len(), in_dims, padded_in),
+        "affine_u7_wide called on weights whose i16 pair sums can overflow"
+    );
+    assert!(
+        in_dims % U8_LANES == 0 && in_dims <= padded_in && input.len() >= in_dims,
+        "affine_u7_wide shape"
+    );
+    assert_eq!(weights.len(), output.len() * padded_in);
+    assert_eq!(output.len(), biases.len());
+
+    let chunks = in_dims / U8_LANES;
+    let rows = output.len();
+    let group = scalar_post_ft::U7_WIDE_GROUP_CHUNKS;
+    let ones = _mm256_set1_epi16(1);
+    let in_ptr = input.as_ptr();
+    let w_ptr = weights.as_ptr();
+    let b_ptr = biases.as_ptr();
+    let out_ptr = output.as_mut_ptr();
+
+    let mut j = 0;
+    while j + 4 <= rows {
+        // SAFETY: j + 4 <= rows and weights.len() == rows * padded_in (asserted).
+        let (r0, r1, r2, r3) = unsafe {
+            (
+                w_ptr.add(j * padded_in),
+                w_ptr.add((j + 1) * padded_in),
+                w_ptr.add((j + 2) * padded_in),
+                w_ptr.add((j + 3) * padded_in),
+            )
+        };
+        let mut a0 = _mm256_setzero_si256();
+        let mut a1 = _mm256_setzero_si256();
+        let mut a2 = _mm256_setzero_si256();
+        let mut a3 = _mm256_setzero_si256();
+        let mut first = 0;
+        while first < chunks {
+            let last = (first + group).min(chunks);
+            let mut s0 = _mm256_setzero_si256();
+            let mut s1 = _mm256_setzero_si256();
+            let mut s2 = _mm256_setzero_si256();
+            let mut s3 = _mm256_setzero_si256();
+            for c in first..last {
+                let off = c * U8_LANES;
+                // SAFETY: off + 32 <= in_dims <= padded_in (asserted), so each
+                // 32-byte load is inside the input and inside its weight row.
+                unsafe {
+                    let x = _mm256_loadu_si256(in_ptr.add(off).cast::<__m256i>());
+                    s0 = _mm256_add_epi16(
+                        s0,
+                        _mm256_maddubs_epi16(x, _mm256_loadu_si256(r0.add(off).cast::<__m256i>())),
+                    );
+                    s1 = _mm256_add_epi16(
+                        s1,
+                        _mm256_maddubs_epi16(x, _mm256_loadu_si256(r1.add(off).cast::<__m256i>())),
+                    );
+                    s2 = _mm256_add_epi16(
+                        s2,
+                        _mm256_maddubs_epi16(x, _mm256_loadu_si256(r2.add(off).cast::<__m256i>())),
+                    );
+                    s3 = _mm256_add_epi16(
+                        s3,
+                        _mm256_maddubs_epi16(x, _mm256_loadu_si256(r3.add(off).cast::<__m256i>())),
+                    );
+                }
+            }
+            a0 = _mm256_add_epi32(a0, _mm256_madd_epi16(s0, ones));
+            a1 = _mm256_add_epi32(a1, _mm256_madd_epi16(s1, ones));
+            a2 = _mm256_add_epi32(a2, _mm256_madd_epi16(s2, ones));
+            a3 = _mm256_add_epi32(a3, _mm256_madd_epi16(s3, ones));
+            first = last;
+        }
+        // Same reduction as `affine_u7`: [sum0, sum1, sum2, sum3] + biases.
+        let s01 = _mm256_hadd_epi32(a0, a1);
+        let s23 = _mm256_hadd_epi32(a2, a3);
+        let s = _mm256_hadd_epi32(s01, s23);
+        let sums = _mm_add_epi32(_mm256_castsi256_si128(s), _mm256_extracti128_si256::<1>(s));
+        // SAFETY: j + 4 <= rows == biases.len() == output.len().
+        unsafe {
+            let bias = _mm_loadu_si128(b_ptr.add(j).cast::<__m128i>());
+            _mm_storeu_si128(out_ptr.add(j).cast::<__m128i>(), _mm_add_epi32(sums, bias));
+        }
+        j += 4;
+    }
+
+    while j < rows {
+        // SAFETY: j < rows and weights.len() == rows * padded_in.
+        let r = unsafe { w_ptr.add(j * padded_in) };
+        let mut acc = _mm256_setzero_si256();
+        let mut first = 0;
+        while first < chunks {
+            let last = (first + group).min(chunks);
+            let mut s = _mm256_setzero_si256();
+            for c in first..last {
+                let off = c * U8_LANES;
+                // SAFETY: off + 32 <= in_dims <= padded_in.
+                unsafe {
+                    let x = _mm256_loadu_si256(in_ptr.add(off).cast::<__m256i>());
+                    let w = _mm256_loadu_si256(r.add(off).cast::<__m256i>());
+                    s = _mm256_add_epi16(s, _mm256_maddubs_epi16(x, w));
+                }
+            }
+            acc = _mm256_add_epi32(acc, _mm256_madd_epi16(s, ones));
+            first = last;
+        }
+        // SAFETY: guarded by this function's own target_feature.
+        let sum = unsafe { hsum_epi32(acc) };
+        // SAFETY: j < rows == biases.len() == output.len().
+        unsafe { *out_ptr.add(j) = (*b_ptr.add(j)).wrapping_add(sum) };
+        j += 1;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -575,5 +728,105 @@ mod tests {
                 assert_eq!(want, got, "len {len} round {round}");
             }
         }
+    }
+    /// Weights small enough that `pair_sums_fit_i16` holds for a 512-input
+    /// row (which `affine_u7_wide` requires), still hitting the extremes of the
+    /// range the check allows.
+    fn random_small_weights(rng: &mut Rng, n: usize, magnitude: u64) -> Vec<i8> {
+        (0..n)
+            .map(|_| (rng.below(2 * magnitude + 1) as i64 - magnitude as i64) as i8)
+            .collect()
+    }
+
+    #[test]
+    fn affine_u7_wide_matches_scalar_when_the_weights_qualify() {
+        require_avx2!();
+        let mut rng = Rng(0x0DDB_1A5E_5BAD_5EED);
+        let shapes: [(usize, usize, usize); 6] = [
+            (32, 512, 512),
+            (32, 256, 256),
+            (6, 288, 320),
+            (5, 32, 32),
+            (4, 64, 64),
+            (1, 512, 512),
+        ];
+        let mut accepted = 0;
+        for &(rows, in_dims, padded_in) in &shapes {
+            for magnitude in [3u64, 10, 20, 40] {
+                for _ in 0..100 {
+                    let weights = random_small_weights(&mut rng, rows * padded_in, magnitude);
+                    if !scalar_post_ft::pair_sums_fit_i16(&weights, rows, in_dims, padded_in) {
+                        continue;
+                    }
+                    accepted += 1;
+                    let input = random_inputs(&mut rng, in_dims);
+                    let biases = random_biases(&mut rng, rows);
+                    let mut want = vec![0i32; rows];
+                    let mut got = vec![0i32; rows];
+                    scalar_post_ft::affine(
+                        &mut want, &biases, &weights, &input, in_dims, padded_in,
+                    );
+                    // SAFETY: guarded by `require_avx2!`; inputs <= 127 and the
+                    // weights passed `pair_sums_fit_i16` just above.
+                    unsafe {
+                        affine_u7_wide(&mut got, &biases, &weights, &input, in_dims, padded_in)
+                    };
+                    assert_eq!(want, got, "rows {rows} in {in_dims} magnitude {magnitude}");
+                }
+            }
+        }
+        assert!(accepted > 500, "the generator rarely met the precondition");
+    }
+
+    /// The worst input for the weights the check admits: 127 where the weight is
+    /// positive and 0 where it is negative drives the `i16` sum to its maximum
+    /// (and the reverse to its minimum), so a lane sitting exactly at the limit
+    /// must still come out exact.
+    #[test]
+    fn affine_u7_wide_is_exact_at_the_i16_limit() {
+        require_avx2!();
+        let (rows, in_dims, padded_in) = (4usize, 512usize, 512usize);
+        // Lane 0 of every chunk of a group carries 16 weights; 258 in total
+        // (the largest sum 127 * w can hold) is 16 weights of 16 plus 2.
+        for sign in [1i32, -1] {
+            let mut weights = vec![0i8; rows * padded_in];
+            for r in 0..rows {
+                for chunk in 0..16 {
+                    for k in 0..2 {
+                        weights[r * padded_in + chunk * 32 + k] = (sign * 16) as i8;
+                    }
+                }
+                // Two chunk groups of 16 weights each; add 2 to the first.
+                weights[r * padded_in] = (sign * 18) as i8;
+            }
+            assert!(scalar_post_ft::pair_sums_fit_i16(
+                &weights, rows, in_dims, padded_in
+            ));
+            for adversarial in [true, false] {
+                let input: Vec<u8> = weights_row_input(&weights[..padded_in], sign, adversarial);
+                let biases = vec![0, i32::MAX, i32::MIN, 7];
+                let mut want = vec![0i32; rows];
+                let mut got = vec![0i32; rows];
+                scalar_post_ft::affine(&mut want, &biases, &weights, &input, in_dims, padded_in);
+                // SAFETY: guarded by `require_avx2!`; inputs <= 127 and the
+                // weights passed `pair_sums_fit_i16` above.
+                unsafe { affine_u7_wide(&mut got, &biases, &weights, &input, in_dims, padded_in) };
+                assert_eq!(want, got, "sign {sign} adversarial {adversarial}");
+            }
+        }
+    }
+
+    /// 127 on the bytes whose weight pushes the sum toward its extreme, 0
+    /// elsewhere (`adversarial`), or the plain all-127 vector.
+    fn weights_row_input(row: &[i8], sign: i32, adversarial: bool) -> Vec<u8> {
+        row.iter()
+            .map(|&w| {
+                if !adversarial || (w as i32) * sign > 0 {
+                    127u8
+                } else {
+                    0u8
+                }
+            })
+            .collect()
     }
 }
