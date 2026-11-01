@@ -327,19 +327,82 @@ pub struct NetworkStack {
     pub fc_1_weights: ArenaSlice<i8>,
     pub fc_2_biases: ArenaSlice<i32>,
     pub fc_2_weights: ArenaSlice<i8>,
+    /// Which kernels the standard shapes' dense chain may use on this stack,
+    /// decided once, when the network is built. See [`FcKernels`].
+    ///
+    /// A cache of properties of the arrays, so it is only valid while they are
+    /// unchanged. Their lengths cannot change, and every write to their values
+    /// goes through [`NnueNetworkBuilder`], which `build()` consumes -- the one
+    /// place this is computed. The AVX2 kernels re-check what they rely on in
+    /// debug builds.
+    #[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
+    pub(crate) fc_kernels: FcKernels,
+}
+
+/// Which kernels the standard shapes' dense chain (`network::per_layer_flow`)
+/// may run on a [`NetworkStack`].
+///
+/// The AVX2 kernels load by pointer and trust the layer sizes, so the sizes are
+/// proven once at build time instead of on every evaluation.
+#[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FcKernels {
+    /// An array of the stack is not the size this build's shape needs (only a
+    /// hand-built network with other dimensions can be). Nothing may evaluate
+    /// with it.
+    Mismatched,
+    /// The sizes are right: the AVX2 kernels apply, with fc_0 widening every
+    /// `maddubs` result to `i32` before adding.
+    Plain,
+    /// As [`Plain`](FcKernels::Plain), and fc_0's weights also pass
+    /// `scalar_post_ft::pair_sums_fit_i16`, so fc_0 may add eight `maddubs`
+    /// results in `i16` before widening.
+    WideFc0,
 }
 
 #[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
 impl NetworkStack {
     /// Build the six views for stack `sections` against `arena`.
     fn from_sections(arena: &LargePageArena, sections: &StackSections) -> Self {
+        let fc_0_biases = arena.view(sections.fc_0_biases);
+        let fc_0_weights = arena.view(sections.fc_0_weights);
+        let fc_1_biases = arena.view(sections.fc_1_biases);
+        let fc_1_weights = arena.view(sections.fc_1_weights);
+        let fc_2_biases = arena.view(sections.fc_2_biases);
+        let fc_2_weights = arena.view(sections.fc_2_weights);
+        // Only the standard shapes feed their layers 7-bit inputs and have the
+        // kernels that need the sizes proven; the SFNN chains keep the general
+        // `affine`.
+        #[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
+        let fc_kernels = {
+            let sizes_match = fc_0_biases.len() == FC_0_OUTPUT_DIMS
+                && fc_0_weights.len() == FC_0_OUTPUT_DIMS * FC_0_PADDED_INPUT_DIMS
+                && fc_1_biases.len() == FC_1_OUTPUT_DIMS
+                && fc_1_weights.len() == FC_1_OUTPUT_DIMS * FC_1_PADDED_INPUT_DIMS
+                && fc_2_biases.len() == FC_2_OUTPUT_DIMS
+                && fc_2_weights.len() == FC_2_OUTPUT_DIMS * FC_2_PADDED_INPUT_DIMS;
+            if !sizes_match {
+                FcKernels::Mismatched
+            } else if crate::simd::scalar_post_ft::pair_sums_fit_i16(
+                &fc_0_weights,
+                FC_0_OUTPUT_DIMS,
+                FC_0_INPUT_DIMS,
+                FC_0_PADDED_INPUT_DIMS,
+            ) {
+                FcKernels::WideFc0
+            } else {
+                FcKernels::Plain
+            }
+        };
         Self {
-            fc_0_biases: arena.view(sections.fc_0_biases),
-            fc_0_weights: arena.view(sections.fc_0_weights),
-            fc_1_biases: arena.view(sections.fc_1_biases),
-            fc_1_weights: arena.view(sections.fc_1_weights),
-            fc_2_biases: arena.view(sections.fc_2_biases),
-            fc_2_weights: arena.view(sections.fc_2_weights),
+            fc_0_biases,
+            fc_0_weights,
+            fc_1_biases,
+            fc_1_weights,
+            fc_2_biases,
+            fc_2_weights,
+            #[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
+            fc_kernels,
         }
     }
 }

@@ -292,6 +292,7 @@ pub mod post_ft_kernel {
     /// [`affine`] for inputs of at most 127, which the KP/HalfKP chain
     /// guarantees: the AVX2 kernel, since `avx512bw` implies `avx2`.
     #[inline]
+    #[allow(dead_code)]
     pub fn affine_u7(
         output: &mut [i32],
         biases: &[i32],
@@ -304,6 +305,24 @@ pub mod post_ft_kernel {
         // on a host providing both.
         unsafe {
             super::avx2_post_ft::affine_u7(output, biases, weights, input, in_dims, padded_in)
+        }
+    }
+
+    /// [`affine_u7`] with `i16` accumulation across eight chunks, for weights
+    /// that passed `scalar_post_ft::pair_sums_fit_i16`.
+    #[inline]
+    #[allow(dead_code)]
+    pub fn affine_u7_wide(
+        output: &mut [i32],
+        biases: &[i32],
+        weights: &[i8],
+        input: &[u8],
+        in_dims: usize,
+        padded_in: usize,
+    ) {
+        // SAFETY: see `affine_u7`.
+        unsafe {
+            super::avx2_post_ft::affine_u7_wide(output, biases, weights, input, in_dims, padded_in)
         }
     }
 }
@@ -323,12 +342,15 @@ pub mod post_ft_kernel {
     not(all(target_feature = "avx512f", target_feature = "avx512bw"))
 ))]
 pub mod post_ft_kernel {
+    // Used by the SFNN chains only.
+    #[allow(unused_imports)]
     pub use super::scalar_post_ft::{affine, sqr_clipped_relu};
 
     /// [`affine`] for inputs of at most 127 (`maddubs` saturates above that).
     /// Every layer of the KP/HalfKP chain is fed `clamp(0, 127)` bytes; the SFNN
     /// chains are not and keep the general kernel.
     #[inline]
+    #[allow(dead_code)]
     pub fn affine_u7(
         output: &mut [i32],
         biases: &[i32],
@@ -343,6 +365,24 @@ pub mod post_ft_kernel {
         // input.
         unsafe {
             super::avx2_post_ft::affine_u7(output, biases, weights, input, in_dims, padded_in)
+        }
+    }
+
+    /// [`affine_u7`] with `i16` accumulation across eight chunks, for weights
+    /// that passed `scalar_post_ft::pair_sums_fit_i16`.
+    #[inline]
+    #[allow(dead_code)]
+    pub fn affine_u7_wide(
+        output: &mut [i32],
+        biases: &[i32],
+        weights: &[i8],
+        input: &[u8],
+        in_dims: usize,
+        padded_in: usize,
+    ) {
+        // SAFETY: see `affine_u7`.
+        unsafe {
+            super::avx2_post_ft::affine_u7_wide(output, biases, weights, input, in_dims, padded_in)
         }
     }
 
@@ -373,7 +413,7 @@ pub mod post_ft_kernel {
 )))]
 pub mod post_ft_kernel {
     pub use super::scalar_post_ft::{
-        affine, affine_u7, clipped_relu, ewm_one_perspective, sqr_clipped_relu,
+        affine, affine_u7, affine_u7_wide, clipped_relu, ewm_one_perspective, sqr_clipped_relu,
     };
 }
 
