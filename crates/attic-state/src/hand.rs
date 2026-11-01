@@ -1,51 +1,37 @@
 use crate::piece::PieceKind;
 
-const HAND_KINDS: usize = 7;
+/// The most copies of each kind that can be held, indexed by
+/// [`PieceKind::index`]. A king is never held, so its cap is zero.
+const MAX_BY_KIND: [u8; PieceKind::COUNT] = [18, 4, 4, 4, 4, 2, 2, 0];
 
-const MAX_BY_KIND: [u8; HAND_KINDS] = [18, 4, 4, 4, 4, 2, 2];
-
+/// The pieces a side holds, one count per kind.
+///
+/// The counts are the bytes of one `u64`, kind `k` in bits `8k..8k + 8`, so that
+/// copying a hand is a register move and changing one count is a single
+/// read-modify-write of the whole word. (Byte fields would make every copy of
+/// the hand right after a capture or drop a store-forwarding stall.) The king
+/// byte is always zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Hand([u8; HAND_KINDS]);
+pub struct Hand(u64);
 
 impl Hand {
     pub const fn empty() -> Self {
-        Self([0; HAND_KINDS])
+        Self(0)
     }
 
     pub const fn count(&self, kind: PieceKind) -> u8 {
-        match Self::slot(kind) {
-            Some(idx) => self.0[idx],
-            None => 0,
-        }
+        (self.0 >> (8 * kind.index())) as u8
     }
 
     pub fn increment(&mut self, kind: PieceKind) {
-        if let Some(idx) = Self::slot(kind) {
-            let cap = MAX_BY_KIND[idx];
-            if self.0[idx] < cap {
-                self.0[idx] += 1;
-            }
+        if self.count(kind) < MAX_BY_KIND[kind.index()] {
+            self.0 += 1 << (8 * kind.index());
         }
     }
 
     pub fn decrement(&mut self, kind: PieceKind) {
-        if let Some(idx) = Self::slot(kind)
-            && self.0[idx] > 0
-        {
-            self.0[idx] -= 1;
-        }
-    }
-
-    const fn slot(kind: PieceKind) -> Option<usize> {
-        match kind {
-            PieceKind::Pawn => Some(0),
-            PieceKind::Lance => Some(1),
-            PieceKind::Knight => Some(2),
-            PieceKind::Silver => Some(3),
-            PieceKind::Gold => Some(4),
-            PieceKind::Bishop => Some(5),
-            PieceKind::Rook => Some(6),
-            PieceKind::King => None,
+        if self.count(kind) > 0 {
+            self.0 -= 1 << (8 * kind.index());
         }
     }
 }
