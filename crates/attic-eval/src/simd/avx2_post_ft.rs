@@ -287,7 +287,7 @@ pub unsafe fn affine_u7(
         "affine_u7 needs 7-bit inputs: maddubs saturates above 127"
     );
 
-    if in_dims % U8_LANES != 0 {
+    if !in_dims.is_multiple_of(U8_LANES) {
         scalar_post_ft::affine(output, biases, weights, input, in_dims, padded_in);
         return;
     }
@@ -410,7 +410,10 @@ pub unsafe fn affine_u7_wide(
         in_dims,
         padded_in,
     );
-    assert!(in_dims % U8_LANES == 0, "affine_u7_wide needs whole chunks");
+    assert!(
+        in_dims.is_multiple_of(U8_LANES),
+        "affine_u7_wide needs whole chunks"
+    );
     // Value properties would cost a pass over the data, so they are checked in
     // debug builds only; `NetworkStack` proves the weights' once, at build.
     debug_assert!(
@@ -601,7 +604,7 @@ pub unsafe fn affine_u7_vnni(
         padded_in,
     );
 
-    if in_dims % U8_LANES != 0 {
+    if !in_dims.is_multiple_of(U8_LANES) {
         scalar_post_ft::affine(output, biases, weights, input, in_dims, padded_in);
         return;
     }
@@ -1154,6 +1157,7 @@ mod tests {
         let biases = vec![0i32; rows];
 
         type Kernel = unsafe fn(&mut [i32], &[i32], &[i8], &[u8], usize, usize);
+        type Case = (&'static str, Box<dyn Fn()>);
         let mut kernels: Vec<(&str, Kernel)> =
             vec![("affine_u7", affine_u7), ("affine_u7_wide", affine_u7_wide)];
         if std::arch::is_x86_feature_detected!("avxvnni") {
@@ -1162,7 +1166,7 @@ mod tests {
 
         for (name, kernel) in kernels {
             // Each closure is a malformed call; none may return.
-            let cases: [(&str, Box<dyn Fn()>); 4] = [
+            let cases: [Case; 4] = [
                 ("short weights", {
                     let (b, i) = (biases.clone(), input.clone());
                     let w = weights[..weights.len() - 1].to_vec();

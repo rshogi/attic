@@ -89,13 +89,27 @@ pub(crate) const FE_END: usize = E_DRAGON + 81;
 const SQ_NB: usize = Square::COUNT;
 /// Size of one king-plane block. Both kings share the `[FE_END, E_KING)` span,
 /// so a king-plane is `FE_END + 81` wide.
+// Manaka's shapes cross nothing on a king plane, so outside the tests they
+// never read it.
+#[cfg(any(
+    test,
+    not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512"))
+))]
 const E_KING: usize = FE_END + SQ_NB;
 
 /// Number of distinct mirrored king squares (files 1–5 × 9 ranks).
+#[cfg(any(
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+))]
 const SQ_K_COUNT: usize = 5 * 9;
 
 /// Total `HalfKA_hm2` feature dimension, kept equal to
 /// [`crate::types::NUM_FEATURES`].
+#[cfg(any(
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+))]
 pub const FEATURE_DIMENSION: usize = SQ_K_COUNT * E_KING;
 
 /// Maximum number of simultaneously active features (`PIECE_NUMBER_NB`). Every
@@ -143,6 +157,10 @@ pub(crate) fn from_persp(sq: Square, persp: Color) -> Square {
 
 /// The `hm` trigger: mirror when the (perspective-relative) king sits on files
 /// 6–9, i.e. file index `>= 5`. Matches the C++ `sq_k >= SQ_61` test.
+#[cfg(any(
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+))]
 #[inline]
 fn needs_mirror(king_sq_persp: Square) -> bool {
     king_sq_persp.file() >= 5
@@ -298,10 +316,17 @@ fn king_feature(_is_friend: bool, _sq_code: usize, _sq_k_code: usize) -> Option<
 fn king_feature(_is_friend: bool, _sq_code: usize, _sq_k_code: usize) -> Option<FeatureIndex> {
     Some((NUM_FEATURES - 1) as FeatureIndex)
 }
+
+// The KP shapes cross pieces on no king at all (`king_code` ignores the
+// position), so only the tests read the king's square there.
 ///
 /// # Panics
 /// Panics if `color` has no king: every position fed to the evaluator must have
 /// both, as the reference's `pos.king_square` contract requires.
+#[cfg(any(
+    test,
+    not(any(feature = "nnue_kp_256x2_32_32", feature = "sym_kp_128x2_512"))
+))]
 pub(crate) fn king_square(pos: &Position, color: Color) -> Square {
     pos.king_square(color)
         .unwrap_or_else(|| panic!("position has no {color:?} king"))
@@ -587,6 +612,10 @@ pub(crate) fn diff_feature_sets(
 /// The inputs carry their `BONA_PIECE_ZERO` padding, but a legal move conserves
 /// total piece count, so for any perspective updated incrementally the padding
 /// multiplicity is equal on both sides and cancels.
+#[cfg(any(
+    test,
+    not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512"))
+))]
 pub(crate) fn changed_indices(
     before: &[FeatureIndex],
     after: &[FeatureIndex],

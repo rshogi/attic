@@ -173,8 +173,9 @@ fn read_i16_block_into(reader: &mut ByteReader, out: &mut [i16]) -> Result<(), N
         return read_leb128_i16_into(reader, out);
     }
     let raw = reader.read_slice(out.len() * 2)?;
-    for (slot, bytes) in out.iter_mut().zip(raw.chunks_exact(2)) {
-        *slot = i16::from_le_bytes([bytes[0], bytes[1]]);
+    let (pairs, _) = raw.as_chunks::<2>();
+    for (slot, bytes) in out.iter_mut().zip(pairs) {
+        *slot = i16::from_le_bytes(*bytes);
     }
     Ok(())
 }
@@ -607,6 +608,12 @@ mod tests {
         out.resize(out.len() + n, 0);
     }
 
+    // The four helpers below only feed the FT-scale tests, and the standard
+    // shapes scale nothing (`ft_scale_is_a_no_op_for_the_standard_shapes`).
+    #[cfg(any(
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+    ))]
     fn append_signed_leb128_block(out: &mut Vec<u8>, values: &[i16]) {
         out.extend_from_slice(LEB128_MAGIC);
         let len_pos = out.len();
@@ -619,6 +626,10 @@ mod tests {
         out[len_pos..len_pos + 4].copy_from_slice(&bytes_left.to_le_bytes());
     }
 
+    #[cfg(any(
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+    ))]
     fn encode_signed_leb128(out: &mut Vec<u8>, mut value: i64) {
         loop {
             let byte = (value as u8) & 0x7F;
@@ -634,6 +645,10 @@ mod tests {
         }
     }
 
+    #[cfg(any(
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+    ))]
     fn build_bytes_with_ft(dims: &NetDims, arch: &str, biases: &[i16], weights: &[i16]) -> Vec<u8> {
         assert_eq!(biases.len(), dims.hidden_size);
         assert_eq!(weights.len(), dims.hidden_size * dims.num_features);
@@ -657,6 +672,10 @@ mod tests {
         out
     }
 
+    #[cfg(any(
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+    ))]
     const SCALE_DIMS: NetDims = NetDims {
         hidden_size: 5,
         num_features: 2,

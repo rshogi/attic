@@ -91,7 +91,10 @@ pub const U7_WIDE_GROUP_CHUNKS: usize = 8;
 /// Only the first `in_dims` bytes of each `padded_in`-byte row are read, as in
 /// [`affine`]; `in_dims` must be a multiple of [`U7_CHUNK_BYTES`].
 pub fn pair_sums_fit_i16(weights: &[i8], rows: usize, in_dims: usize, padded_in: usize) -> bool {
-    if in_dims % U7_CHUNK_BYTES != 0 || in_dims > padded_in || weights.len() != rows * padded_in {
+    if !in_dims.is_multiple_of(U7_CHUNK_BYTES)
+        || in_dims > padded_in
+        || weights.len() != rows * padded_in
+    {
         return false;
     }
     let chunks = in_dims / U7_CHUNK_BYTES;

@@ -9,6 +9,8 @@
 
 use std::fmt;
 
+// Only the quantised shapes lay their weights out in an arena.
+#[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
 use attic_storage::{ArenaLayout, ArenaSlice, LargePageArena, Section};
 
 // Exactly one shape is selected at build time. `cfg` cannot count, so the
@@ -182,6 +184,7 @@ pub const FC_2_INPUT_DIMS: usize = HIDDEN2_DIMS;
 #[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
 pub const FC_2_PADDED_INPUT_DIMS: usize = HIDDEN2_DIMS;
 
+#[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
 #[derive(Clone, Debug)]
 pub struct NetHeader {
     pub version: u32,
@@ -191,6 +194,7 @@ pub struct NetHeader {
 
 /// The dimensions of one SFNN network, driving both the arena layout and the
 /// loader's read sizes.
+#[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
 #[derive(Clone, Copy, Debug)]
 pub struct NetDims {
     pub hidden_size: usize,

@@ -17,23 +17,35 @@
 //! output is raw, pre-ReLU, and is added to L3's output as the shortcut term.
 //! The result is divided by the live [`fv_scale`] to produce the score.
 
-use attic_state::{Color, Position, Square};
+use attic_state::Position;
+#[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
+use attic_state::{Color, Square};
 
+#[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
 use crate::features::king_square;
 use crate::scale::fv_scale;
-use crate::simd::{self, post_ft_kernel};
+use crate::simd::post_ft_kernel;
 use crate::transformer::{Accumulator, FT_OUTPUT_DIMS};
 #[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
 use crate::types::FcKernels;
+#[cfg(any(
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+))]
+use crate::types::HIDDEN1_DIMS;
+#[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
+use crate::types::LAYER_STACKS;
 use crate::types::{
     FC_0_INPUT_DIMS, FC_0_OUTPUT_DIMS, FC_0_PADDED_INPUT_DIMS, FC_1_INPUT_DIMS, FC_1_OUTPUT_DIMS,
     FC_1_PADDED_INPUT_DIMS, FC_2_INPUT_DIMS, FC_2_OUTPUT_DIMS, FC_2_PADDED_INPUT_DIMS,
-    HIDDEN1_DIMS, LAYER_STACKS, NetworkStack, NnueNetwork,
+    NetworkStack, NnueNetwork,
 };
 
 /// `k*ToIndex` tables from `stack_index_for_nnue`: the own-king rank contributes
 /// the coarse third `{0,3,6}`, the enemy-king rank the fine third `{0,1,2}`.
+#[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
 const F_RANK_TO_INDEX: [usize; 9] = [0, 0, 0, 3, 3, 3, 6, 6, 6];
+#[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
 const E_RANK_TO_INDEX: [usize; 9] = [0, 0, 0, 1, 1, 1, 2, 2, 2];
 
 /// Select the layer-stack (bucket) index for `pos`.
@@ -285,7 +297,7 @@ fn per_layer_flow_unfused(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkSt
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{NetDims, NetHeader, NnueNetworkBuilder};
+    use crate::types::{LAYER_STACKS, NetDims, NetHeader, NnueNetworkBuilder};
     use attic_state::parse_sfen;
 
     fn synthetic_header() -> NetHeader {
@@ -574,6 +586,7 @@ mod tests {
 
     /// An SFEN-parsing oracle for the bucket index, sharing no code with
     /// [`layer_stack_index`].
+    #[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
     fn oracle_bucket(sfen: &str) -> usize {
         let mut parts = sfen.split_whitespace();
         let board = parts.next().unwrap();

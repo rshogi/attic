@@ -32,7 +32,12 @@ use crate::features::{
     FeatureIndex, MoveDelta, active_features, changed_indices, requires_full_refresh,
 };
 use crate::finny::FinnyCache;
-use crate::simd::{post_ft_kernel, transformer_kernel};
+#[cfg(any(
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+))]
+use crate::simd::post_ft_kernel;
+use crate::simd::transformer_kernel;
 use crate::types::{FC_0_INPUT_DIMS, HIDDEN_SIZE, NnueNetwork};
 
 /// Width of the byte buffer the output transform fills: one lane per fc_0
@@ -246,7 +251,8 @@ impl Accumulator {
             &self.perspectives[stm.index()],
             &self.perspectives[stm.flip().index()],
         ];
-        for (half, chunk) in halves.iter().zip(out.chunks_exact_mut(HIDDEN_SIZE)) {
+        let (chunks, _) = out.as_chunks_mut::<HIDDEN_SIZE>();
+        for (half, chunk) in halves.iter().zip(chunks) {
             for (slot, &sum) in chunk.iter_mut().zip(half.iter()) {
                 *slot = sum.clamp(0, 127) as u8;
             }
@@ -308,11 +314,23 @@ mod tests {
     use attic_state::{Move, PieceKind, format_usi_move, parse_sfen, parse_usi_move};
 
     const STARTPOS: &str = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1";
+    #[cfg(any(
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+    ))]
     const HALF: usize = HIDDEN_SIZE / 2;
 
     // Mirrored from the scalar kernel, so that these tests can transcribe the
     // reference formula independently.
+    #[cfg(any(
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+    ))]
     const EWM_CLAMP: i32 = 127 * 2;
+    #[cfg(any(
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+    ))]
     const EWM_SHIFT: i32 = 9;
 
     #[test]

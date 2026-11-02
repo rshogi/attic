@@ -51,7 +51,7 @@ fn every_array_is_aligned() {
         return;
     };
     let (net, _) = load_network_with_warnings(&path).expect("the file loads");
-    let aligned = |ptr: *const u8| ptr as usize % 64 == 0;
+    let aligned = |ptr: *const u8| (ptr as usize).is_multiple_of(64);
     assert!(aligned(net.ft_biases.as_ptr() as *const u8));
     assert!(aligned(net.ft_weights.as_ptr() as *const u8));
     for stack in &net.stacks {

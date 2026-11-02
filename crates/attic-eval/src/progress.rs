@@ -76,8 +76,9 @@ impl ProgressParameters {
         }
 
         let mut weights = Vec::with_capacity(Self::WEIGHT_COUNT);
-        for chunk in bytes.chunks_exact(8) {
-            let raw = f64::from_le_bytes(chunk.try_into().expect("chunks_exact(8) yields 8 bytes"));
+        let (chunks, _) = bytes.as_chunks::<8>();
+        for chunk in chunks {
+            let raw = f64::from_le_bytes(*chunk);
             let scaled = (raw * 65536.0).round();
             weights.push(scaled.clamp(i32::MIN as f64, i32::MAX as f64) as i32);
         }

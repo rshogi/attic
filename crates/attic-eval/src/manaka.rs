@@ -142,9 +142,8 @@ impl<'a> Reader<'a> {
 
     fn f32s(&mut self, n: usize) -> Result<Vec<f32>, NnueError> {
         let s = self.take(n * 4)?;
-        Ok(s.chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-            .collect())
+        let (words, _) = s.as_chunks::<4>();
+        Ok(words.iter().map(|c| f32::from_le_bytes(*c)).collect())
     }
 
     /// Read a quantised block back onto the scale it was trained at.
@@ -153,8 +152,10 @@ impl<'a> Reader<'a> {
     /// the module docs on why the power sums need no per-order correction.
     fn i16s_scaled(&mut self, n: usize, scale: f32) -> Result<Vec<f32>, NnueError> {
         let s = self.take(n * 2)?;
-        Ok(s.chunks_exact(2)
-            .map(|c| f32::from(i16::from_le_bytes([c[0], c[1]])) / scale)
+        let (pairs, _) = s.as_chunks::<2>();
+        Ok(pairs
+            .iter()
+            .map(|c| f32::from(i16::from_le_bytes(*c)) / scale)
             .collect())
     }
 
@@ -165,8 +166,10 @@ impl<'a> Reader<'a> {
 
     fn i32s_scaled(&mut self, n: usize, scale: f32) -> Result<Vec<f32>, NnueError> {
         let s = self.take(n * 4)?;
-        Ok(s.chunks_exact(4)
-            .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f32 / scale)
+        let (words, _) = s.as_chunks::<4>();
+        Ok(words
+            .iter()
+            .map(|c| i32::from_le_bytes(*c) as f32 / scale)
             .collect())
     }
 
@@ -215,15 +218,6 @@ fn arch_hash(arch: &str) -> u32 {
         hash = hash.wrapping_mul(0x0100_0193);
     }
     hash
-}
-
-fn expect(field: &str, got: usize, want: usize) -> Result<(), NnueError> {
-    if got == want {
-        return Ok(());
-    }
-    Err(NnueError::InvalidFormat {
-        reason: format!("{field} is {got}, and this build reads {want}"),
-    })
 }
 
 /// Read a network from the `nn.bin` container, checking the architecture

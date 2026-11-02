@@ -404,8 +404,10 @@ pub mod post_ft_kernel {
         }
     }
 
-    /// Pairwise element-wise multiply for one perspective half.
+    /// Pairwise element-wise multiply for one perspective half. Used by the SFNN
+    /// output transform only.
     #[inline]
+    #[allow(dead_code)]
     pub fn ewm_one_perspective(half: &[i16], out: &mut [u8]) {
         // SAFETY: this module is compiled only into a build that enables avx2 —
         // exactly what the callee's `#[target_feature]` names — and such a build
