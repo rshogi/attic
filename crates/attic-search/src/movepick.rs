@@ -691,6 +691,40 @@ impl MovePicker {
         }
     }
 
+    /// `QUIET_INIT` body for a picker that is not skipping quiets: generate,
+    /// score and partially sort the quiets.
+    ///
+    /// Kept out of line. Inlined, the optimiser hoists the quiet generator's and
+    /// the scorer's node-constant setup into [`Self::next_move`]'s entry, where
+    /// every call pays for it and spills it — including the calls that never
+    /// reach the quiet stage.
+    #[inline(never)]
+    fn generate_and_sort_quiets(&mut self, pos: &Position, hist: &WorkerHistories) {
+        // The **raw** generated buffer is scored and sorted, with the TT move
+        // and the pseudo-legal-but-illegal quiets still in it, as the reference
+        // does; both are dropped at yield time instead.
+        //
+        // Their presence is load-bearing. Each promotion in
+        // `partial_insertion_sort` swaps a tail element into the promoted
+        // slot's old place, so *which* elements sit in the buffer changes the
+        // unsorted tail's final order — a high-scoring TT move or illegal quiet
+        // reshapes the emitted order of the legal ones even though it is never
+        // yielded. Dropping either here would silently reorder the survivors.
+        pos.generate_quiets(self.all, &mut self.scratch.buf);
+        debug_assert!(
+            self.scratch.buf.len() <= MAX_MOVES,
+            "move buffer overflow: {} > {MAX_MOVES}",
+            self.scratch.buf.len()
+        );
+        self.end_generated = self.scratch.buf.len();
+
+        self.score_quiets_in_place(pos, hist);
+        partial_insertion_sort(
+            &mut self.scratch.buf[self.end_captures..self.end_generated],
+            -3560 * self.depth,
+        );
+    }
+
     /// Score the quiets region in place against the *live* `hist`.
     fn score_quiets_in_place(&mut self, pos: &Position, hist: &WorkerHistories) {
         // The board is fixed for the picker's lifetime, so one snapshot serves
@@ -758,32 +792,7 @@ impl MovePicker {
                 // empty when nothing was generated.
                 Stage::QuietInit => {
                     if !self.skip_quiets {
-                        // The **raw** generated buffer is scored and sorted, with
-                        // the TT move and the pseudo-legal-but-illegal quiets
-                        // still in it, as the reference does; both are dropped at
-                        // yield time instead.
-                        //
-                        // Their presence is load-bearing. Each promotion in
-                        // `partial_insertion_sort` swaps a tail element into
-                        // the promoted slot's old place, so *which* elements
-                        // sit in the buffer changes the unsorted tail's final
-                        // order — a high-scoring TT move or illegal quiet
-                        // reshapes the emitted order of the legal ones even
-                        // though it is never yielded. Dropping either here
-                        // would silently reorder the survivors.
-                        pos.generate_quiets(self.all, &mut self.scratch.buf);
-                        debug_assert!(
-                            self.scratch.buf.len() <= MAX_MOVES,
-                            "move buffer overflow: {} > {MAX_MOVES}",
-                            self.scratch.buf.len()
-                        );
-                        self.end_generated = self.scratch.buf.len();
-
-                        self.score_quiets_in_place(pos, hist);
-                        partial_insertion_sort(
-                            &mut self.scratch.buf[self.end_captures..self.end_generated],
-                            -3560 * self.depth,
-                        );
+                        self.generate_and_sort_quiets(pos, hist);
                     }
                     self.cur = self.end_captures;
                     self.end_cur = self.end_generated;
