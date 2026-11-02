@@ -555,6 +555,20 @@ impl GroupSpec for BishopRookG {
 }
 
 impl<const KING: bool> GroupSpec for GoldHdkG<KING> {
+    #[inline(always)]
+    fn attacks(from: Square, piece: Piece, occ: Bitboard) -> Bitboard {
+        use crate::bitboard::{dragon_attacks, gold_attacks, horse_attacks, king_attacks};
+        // The group holds the golds and the promoted minors (all of which move
+        // as a gold), the horses, the dragons and, for `KING`, the king. Its
+        // bishops and rooks are therefore promoted, which spares the dispatch
+        // on the promotion flag that `attacks_bb` makes.
+        match piece.kind {
+            PieceKind::Bishop => horse_attacks(from, occ),
+            PieceKind::Rook => dragon_attacks(from, occ),
+            PieceKind::King => king_attacks(piece.color, from),
+            _ => gold_attacks(piece.color, from),
+        }
+    }
     fn pieces(board: &Board, stm: Color) -> Bitboard {
         let mut bb = board.pieces_pattern(stm, pat::GOLD)
             | board.pieces_pattern(stm, pat::HORSE)
