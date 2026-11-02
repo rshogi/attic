@@ -1,11 +1,9 @@
 //! Playing one game and recording what each position taught.
 
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
-use attic_search::{PvInfo, PvOutputConfig, PvSink, QSearch};
-use attic_state::{Move, Position, format_sfen, format_usi_move};
-use attic_storage::TranspositionTable;
+use attic_search::{PvInfo, PvSink, QSearch};
+use attic_state::{Position, format_sfen, format_usi_move};
 
 use crate::options::Options;
 
@@ -138,10 +136,10 @@ pub fn play_game(
 
         let candidates: Vec<(String, i32)> = lines
             .iter()
-            .map(|info| (format_usi_move(info.pv[0]), i32::from(info.score)))
+            .map(|info| (format_usi_move(info.pv[0]), info.score))
             .collect();
 
-        let root_cp = i32::from(outcome.score);
+        let root_cp = outcome.score;
 
         // Resignation is judged from the side to move, so a streak only counts
         // when the same side keeps seeing a lost position.

@@ -86,7 +86,7 @@ pub fn run(
         mine += 1;
         positions_written.fetch_add(game.records.len() as u64, Ordering::Relaxed);
         let total = games_played.fetch_add(1, Ordering::Relaxed) + 1;
-        if mine % 10 == 0 {
+        if mine.is_multiple_of(10) {
             let elapsed = started.elapsed().as_secs_f64();
             eprintln!(
                 "worker {index}: {mine} games, {:.1} s/game (fleet {total})",
