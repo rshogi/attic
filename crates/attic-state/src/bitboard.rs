@@ -989,6 +989,35 @@ impl Bitboard {
         bb
     }
 }
+
+impl Bitboard {
+    /// Every member moved one rank forward for `color` (Black toward rank 0,
+    /// White toward rank 8). A member on its last rank has no forward square
+    /// and contributes nothing, so the result is the union of
+    /// [`pawn_attacks`]`(color, sq)` over the members, computed without
+    /// visiting them.
+    pub fn pawn_advance(self, color: Color) -> Bitboard {
+        // A square's index is `file * 9 + rank`, so one rank forward is a step
+        // of one index. The lane gap sits between indices 62 and 63, hence the
+        // carry between the lanes; a step off a file's last rank lands on the
+        // next file's first, and is masked off.
+        let [p0, p1] = self.p;
+        let bb = match color {
+            Color::Black => Bitboard {
+                p: [(p0 >> 1) | ((p1 & 1) << (LANE0_SPAN - 1)), p1 >> 1],
+            } & !RANK_MASKS[RANKS - 1],
+            Color::White => Bitboard {
+                p: [
+                    (p0 << 1) & P0_MASK,
+                    ((p1 << 1) | (p0 >> (LANE0_SPAN - 1))) & P1_MASK,
+                ],
+            } & !RANK_MASKS[0],
+        };
+        debug_assert_canonical(bb);
+        bb
+    }
+}
+
 /// Per-color promotion zone, matching
 /// [`crate::movegen::is_in_promotion_zone`].
 const fn build_promo_zones() -> [Bitboard; Color::COUNT] {
@@ -1925,6 +1954,24 @@ mod tests {
                 expected |= file_mask(sq.file());
             }
             assert_eq!(set.fill_files(), expected, "set {:#x}", set.raw());
+        }
+    }
+
+    #[test]
+    fn pawn_advance_equals_union_of_member_pawn_attacks() {
+        for color in [Color::Black, Color::White] {
+            for set in arbitrary_sets() {
+                let mut expected = Bitboard::EMPTY;
+                for sq in set.squares() {
+                    expected |= pawn_attacks(color, sq);
+                }
+                assert_eq!(
+                    set.pawn_advance(color),
+                    expected,
+                    "{color:?} set {:#x}",
+                    set.raw()
+                );
+            }
         }
     }
 

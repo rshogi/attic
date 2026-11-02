@@ -179,6 +179,47 @@ fn push_plain(from: Square, to: Square, piece: Piece, out: &mut Vec<ExtMove>) {
     });
 }
 
+/// Append `mv` (score `0`) at `dst` and return the next slot.
+///
+/// # Safety
+/// `dst` must point at writable storage for one [`ExtMove`], inside an
+/// allocation that outlives the write.
+#[inline(always)]
+unsafe fn put(dst: *mut ExtMove, mv: Move) -> *mut ExtMove {
+    // SAFETY: the caller guarantees `dst` is valid for one `ExtMove` write.
+    unsafe {
+        dst.write(ExtMove { mv, value: 0 });
+        dst.add(1)
+    }
+}
+
+/// Append the moves `f` writes to `out`, having made room for `room` of them.
+/// `f` receives the first free slot and returns the slot after its last move.
+///
+/// This is how the bulk emitters (the pawns and the drops, which write many
+/// moves per piece) avoid a capacity test and a `Vec` header update per move:
+/// they size their output exactly once, up front.
+#[inline(always)]
+fn append_with(
+    out: &mut Vec<ExtMove>,
+    room: usize,
+    f: impl FnOnce(*mut ExtMove) -> *mut ExtMove,
+) {
+    out.reserve(room);
+    let len = out.len();
+    // SAFETY: `reserve` left at least `room` slots of spare capacity past `len`.
+    // `f` writes at most `room` moves there (each caller derives `room` as an
+    // upper bound on its writes), so the `written` slots are initialised and
+    // within the allocation.
+    unsafe {
+        let start = out.as_mut_ptr().add(len);
+        let end = f(start);
+        let written = end.offset_from(start) as usize;
+        debug_assert!(written <= room);
+        out.set_len(len + written);
+    }
+}
+
 /// The last rank a piece of `color` can reach — where a pawn / lance
 /// non-promotion is always illegal (Black rank 0, White rank 8).
 fn last_rank(color: Color) -> u8 {
@@ -215,6 +256,10 @@ fn lance_nonpromote_rank_ok(to: Square, color: Color, all: bool) -> bool {
 /// Emit a pawn's move to its single forward `to`. With `All == true` a pawn
 /// pushing into the promotion zone additionally emits its non-promotion, except
 /// on the last rank where it would be stuck.
+///
+/// The production generators emit pawns in bulk ([`emit_pawns`]); this
+/// per-pawn form is the scanning oracle's.
+#[cfg(test)]
 fn emit_pawn(from: Square, targets: Bitboard, piece: Piece, all: bool, out: &mut Vec<ExtMove>) {
     for to in targets.squares() {
         if is_in_promotion_zone(to, piece.color) {
@@ -420,29 +465,11 @@ trait GroupSpec {
 /// Zero-sized group markers, one per emission group. `GoldHdk` is const-generic
 /// over whether the group carries the king; it does not for `EVASIONS`, where
 /// the king was emitted first.
-enum PawnG {}
 enum LanceG {}
 enum KnightG {}
 enum SilverG {}
 enum BishopRookG {}
 enum GoldHdkG<const KING: bool> {}
-
-impl GroupSpec for PawnG {
-    fn pieces(board: &Board, stm: Color) -> Bitboard {
-        board.pieces_pattern(stm, pat::PAWN)
-    }
-    #[inline(always)]
-    fn piece(_board: &Board, stm: Color, _from: Square) -> Piece {
-        Piece::new(PieceKind::Pawn, stm)
-    }
-    #[inline(always)]
-    fn attacks(from: Square, piece: Piece, _occ: Bitboard) -> Bitboard {
-        crate::bitboard::pawn_attacks(piece.color, from)
-    }
-    fn emit(from: Square, targets: Bitboard, piece: Piece, all: bool, out: &mut Vec<ExtMove>) {
-        emit_pawn(from, targets, piece, all, out);
-    }
-}
 
 impl GroupSpec for LanceG {
     fn pieces(board: &Board, stm: Color) -> Bitboard {
@@ -567,6 +594,54 @@ fn emit_group_masked<G: GroupSpec>(
         }
         G::emit(from, targets, piece, all, out);
     }
+}
+
+/// The pawn group of [`emit_group_masked`], generated in bulk: every pawn steps
+/// exactly one square, so all the destinations come out of one shift of the pawn
+/// set instead of one table lookup per pawn.
+///
+/// The emission is the same list: a pawn's destination is the only square it
+/// attacks, so the destinations and the pawns correspond one to one, and both
+/// ascend together (the pawn's index is its destination's, plus or minus one).
+#[inline(always)]
+fn emit_pawns(
+    board: &Board,
+    stm: Color,
+    target: Target,
+    restrict: Bitboard,
+    all: bool,
+    out: &mut Vec<ExtMove>,
+) {
+    let mask = target_mask(board, stm, target) & restrict;
+    let targets = board.pieces_pattern(stm, pat::PAWN).pawn_advance(stm) & mask;
+    // Most positions have no pawn capture, or pawn move, to make here.
+    if targets.is_empty() {
+        return;
+    }
+    let piece = Piece::new(PieceKind::Pawn, stm);
+    // A destination yields a promotion and, under `All`, a non-promotion.
+    append_with(out, 2 * targets.popcount() as usize, |mut dst| {
+        for to in targets.squares() {
+            // The pawn stands one rank behind its destination.
+            let behind = match stm {
+                Color::Black => to.index() + 1,
+                Color::White => to.index() - 1,
+            };
+            let from = Square::from_index(behind).expect("a pawn destination has a square behind");
+            // SAFETY: at most two moves per destination, within the room above.
+            unsafe {
+                if is_in_promotion_zone(to, stm) {
+                    dst = put(dst, Move::make_promote(from, to, piece));
+                    if all && to.rank() != last_rank(stm) {
+                        dst = put(dst, Move::make(from, to, piece));
+                    }
+                } else {
+                    dst = put(dst, Move::make(from, to, piece));
+                }
+            }
+        }
+        dst
+    });
 }
 
 /// A 0..81 scan form of [`emit_group`], sharing no code with the production
@@ -1347,7 +1422,7 @@ impl Position {
     pub fn generate_captures(&self, all: bool, out: &mut Vec<ExtMove>) {
         let board = self.board();
         let stm = self.side_to_move();
-        emit_group::<PawnG>(board, stm, Target::Captures, all, out);
+        emit_pawns(board, stm, Target::Captures, ALL_SQUARES, all, out);
         emit_group::<LanceG>(board, stm, Target::Captures, all, out);
         emit_group::<KnightG>(board, stm, Target::Captures, all, out);
         emit_group::<SilverG>(board, stm, Target::Captures, all, out);
@@ -1365,7 +1440,7 @@ impl Position {
     pub fn generate_quiets(&self, all: bool, out: &mut Vec<ExtMove>) {
         let board = self.board();
         let stm = self.side_to_move();
-        emit_group::<PawnG>(board, stm, Target::Quiets, all, out);
+        emit_pawns(board, stm, Target::Quiets, ALL_SQUARES, all, out);
         emit_group::<LanceG>(board, stm, Target::Quiets, all, out);
         emit_group::<KnightG>(board, stm, Target::Quiets, all, out);
         emit_group::<SilverG>(board, stm, Target::Quiets, all, out);
@@ -1431,7 +1506,7 @@ impl Position {
         let target2 = target1 | Bitboard::from_square(checksq); // + capture the checker
 
         // The gold-group excludes the king, already emitted above.
-        emit_group_masked::<PawnG>(board, stm, Target::BlockOrCapture, target2, all, out);
+        emit_pawns(board, stm, Target::BlockOrCapture, target2, all, out);
         emit_group_masked::<LanceG>(board, stm, Target::BlockOrCapture, target2, all, out);
         emit_group_masked::<KnightG>(board, stm, Target::BlockOrCapture, target2, all, out);
         emit_group_masked::<SilverG>(board, stm, Target::BlockOrCapture, target2, all, out);
@@ -1452,7 +1527,7 @@ impl Position {
     pub fn generate_non_evasions(&self, all: bool, out: &mut Vec<ExtMove>) {
         let board = self.board();
         let stm = self.side_to_move();
-        emit_group::<PawnG>(board, stm, Target::BlockOrCapture, all, out);
+        emit_pawns(board, stm, Target::BlockOrCapture, ALL_SQUARES, all, out);
         emit_group::<LanceG>(board, stm, Target::BlockOrCapture, all, out);
         emit_group::<KnightG>(board, stm, Target::BlockOrCapture, all, out);
         emit_group::<SilverG>(board, stm, Target::BlockOrCapture, all, out);
