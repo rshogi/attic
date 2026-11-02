@@ -1560,16 +1560,66 @@ fn emit_info_string<W: Write>(writer: &Arc<Mutex<W>>, msg: &str) {
     let _ = Formatter::new(&mut *guard).info_string(msg);
 }
 
+/// The keep-alive helper's stop request: a flag behind a mutex plus the condvar
+/// the helper sleeps on between polls, so that setting the flag wakes it at once
+/// instead of leaving it to finish out the poll it is in.
+#[derive(Default)]
+struct KeepAliveStop {
+    stopped: Mutex<bool>,
+    wake: Condvar,
+}
+
+impl KeepAliveStop {
+    fn lock(&self) -> MutexGuard<'_, bool> {
+        self.stopped.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Ask the helper to stop, and wake it if it is waiting out a poll.
+    fn request(&self) {
+        *self.lock() = true;
+        self.wake.notify_all();
+    }
+
+    /// Wait out one `poll` interval, or until a stop is requested. Returns
+    /// `true` if the full interval elapsed and `false` if it was cut short by a
+    /// stop. The interval is measured from this call, like a `sleep(poll)`, so a
+    /// loaded machine stretches it rather than making the next one shorter.
+    fn wait_one_poll(&self, poll: Duration) -> bool {
+        let deadline = Instant::now() + poll;
+        let mut stopped = self.lock();
+        while !*stopped {
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                return true;
+            };
+            if left.is_zero() {
+                return true;
+            }
+            // A spurious wakeup just loops back to the deadline check.
+            stopped = self
+                .wake
+                .wait_timeout(stopped, left)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+        false
+    }
+}
+
 /// A running keep-alive: a helper thread emitting a bare newline every
 /// [`KEEP_ALIVE_TICKS_PER_NEWLINE`] polls so a GUI does not time out while the
 /// heavy `isready` initialisation runs. Dropping the guard stops and joins the
 /// thread, so the join runs whether the wrapped work returns normally or bails
 /// out early via `?` — the reference's `SCOPE_EXIT`.
 ///
+/// The reference's helper sleeps a flat 100 ms per poll and the join waits that
+/// out, so even a no-op `isready` takes about 100 ms to answer. Here the stop
+/// wakes the helper at once; while the heavy work runs on, the newline cadence
+/// is the same as the reference's.
+///
 /// Reference: `Engine::run_heavy_job`.
 struct KeepAlive {
     /// Set on drop to stop the helper (`thread_end`).
-    stop: Arc<AtomicBool>,
+    stop: Arc<KeepAliveStop>,
     /// `Some` until the guard is dropped; taken to join exactly once.
     handle: Option<JoinHandle<()>>,
 }
@@ -1580,7 +1630,7 @@ impl KeepAlive {
     /// the helper's first tick; the reference spins on a `thread_started` flag
     /// for the same reason.
     fn spawn<W: Write + Send + 'static>(writer: Arc<Mutex<W>>, poll: Duration) -> Self {
-        let stop = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(KeepAliveStop::default());
         let started = Arc::new(AtomicBool::new(false));
         let handle = thread::spawn({
             let stop = Arc::clone(&stop);
@@ -1588,8 +1638,8 @@ impl KeepAlive {
             move || {
                 started.store(true, Ordering::Release);
                 let mut count: u32 = 0;
-                while !stop.load(Ordering::Acquire) {
-                    thread::sleep(poll);
+                // A stop during a poll ends the helper without a last tick.
+                while stop.wait_one_poll(poll) {
                     count += 1;
                     if count >= KEEP_ALIVE_TICKS_PER_NEWLINE {
                         count = 0;
@@ -1616,7 +1666,7 @@ impl KeepAlive {
 
 impl Drop for KeepAlive {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
+        self.stop.request();
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
@@ -2741,8 +2791,8 @@ mod tests {
             // There is nothing to wait for here — the claim is that the helper
             // has *not* ticked — so the window before its first tick has to be
             // wide enough to survive the main thread being descheduled. The
-            // default cadence puts that tick 5 s out while `Drop`'s join still
-            // waits out at most one poll.
+            // default cadence puts that tick 5 s out, and `Drop` wakes the
+            // helper at once rather than waiting out the poll.
             let _keep_alive = KeepAlive::spawn(Arc::clone(&writer), KEEP_ALIVE_POLL_INTERVAL);
         }
         let out = shared_output(&writer);
@@ -2751,6 +2801,55 @@ mod tests {
             0,
             "a job that finishes before the first tick emits no newline: {out:?}"
         );
+    }
+
+    #[test]
+    fn keep_alive_drop_does_not_wait_out_the_poll() {
+        // A job that finishes at once must not pay for the poll interval: the
+        // stop wakes the helper. The poll is far longer than the bound, so only
+        // a drop that waits it out can trip the assertion.
+        let writer = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let keep_alive = KeepAlive::spawn(Arc::clone(&writer), Duration::from_secs(30));
+        let t0 = Instant::now();
+        drop(keep_alive);
+        let took = t0.elapsed();
+        assert!(
+            took < Duration::from_secs(5),
+            "dropping the keep-alive waited {took:?} on a 30 s poll"
+        );
+        assert_eq!(bare_newline_count(&shared_output(&writer)), 0);
+    }
+
+    #[test]
+    fn keep_alive_emits_nothing_after_it_is_dropped() {
+        let writer = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let keep_alive = KeepAlive::spawn(Arc::clone(&writer), Duration::from_millis(1));
+        wait_for_bare_newlines(&writer, 1);
+        drop(keep_alive);
+        let at_drop = bare_newline_count(&shared_output(&writer));
+        // Many polls' worth of time: a helper that outlived the guard would tick.
+        thread::sleep(Duration::from_millis(200));
+        assert_eq!(
+            bare_newline_count(&shared_output(&writer)),
+            at_drop,
+            "the helper kept writing after the guard was dropped"
+        );
+    }
+
+    #[test]
+    fn keep_alive_wait_counts_whole_polls_and_stops_early() {
+        let stop = KeepAliveStop::default();
+        assert!(
+            stop.wait_one_poll(Duration::from_millis(5)),
+            "an uninterrupted poll runs its full interval"
+        );
+        stop.request();
+        let t0 = Instant::now();
+        assert!(
+            !stop.wait_one_poll(Duration::from_secs(30)),
+            "a requested stop ends the wait"
+        );
+        assert!(t0.elapsed() < Duration::from_secs(5));
     }
 
     #[test]
