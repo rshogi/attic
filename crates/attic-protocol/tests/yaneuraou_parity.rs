@@ -173,7 +173,9 @@ fn comparison_detects_a_one_node_difference() {
 
     // time / nps / hashfull are the only things allowed to differ.
     assert_eq!(
-        normalise("info depth 3 seldepth 4 multipv 1 score cp 5 nodes 99 nps 1500000 hashfull 3 time 61 pv 7g7f"),
+        normalise(
+            "info depth 3 seldepth 4 multipv 1 score cp 5 nodes 99 nps 1500000 hashfull 3 time 61 pv 7g7f"
+        ),
         "info depth 3 seldepth 4 multipv 1 score cp 5 nodes 99 pv 7g7f"
     );
 }

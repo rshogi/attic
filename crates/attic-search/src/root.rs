@@ -582,7 +582,13 @@ mod tests {
 
     #[test]
     fn find_king_agrees_with_the_square_scan() {
-        for sfen in [STARTPOS, IN_CHECK, CHECKMATE, NYUGYOKU, "9/9/9/9/9/9/9/9/9 b - 1"] {
+        for sfen in [
+            STARTPOS,
+            IN_CHECK,
+            CHECKMATE,
+            NYUGYOKU,
+            "9/9/9/9/9/9/9/9/9 b - 1",
+        ] {
             let p = pos(sfen);
             for c in [Color::Black, Color::White] {
                 assert_eq!(find_king(&p, c), find_king_scan(&p, c), "{sfen} {c:?}");

@@ -1178,7 +1178,9 @@ impl<'a> QSearch<'a> {
         let side = us.index() as u8;
         // Captured once, as the reference's `ttWriter` is; every write below
         // targets this exact slot.
-        let (found, tt_data, tt_slot) = self.tt.locate_checked(pos_key, side, |m16| pos.to_move(m16).is_some());
+        let (found, tt_data, tt_slot) = self
+            .tt
+            .locate_checked(pos_key, side, |m16| pos.to_move(m16).is_some());
         // `if constexpr (!ReadTT) ttHit = false;`.
         let tt_hit = found && self.read_tt;
         // `ttData.move = ttHit ? to_move(ttData.move) : Move::none();`. The
@@ -2134,7 +2136,9 @@ impl QSearch<'_> {
             } else {
                 let key = pos.key();
                 let side = pos.side_to_move().index() as u8;
-                let (found, data, _writer) = self.tt.probe_checked(key, side, |m16| pos.to_move(m16).is_some());
+                let (found, data, _writer) = self
+                    .tt
+                    .probe_checked(key, side, |m16| pos.to_move(m16).is_some());
                 if !found {
                     break;
                 }
@@ -2188,7 +2192,9 @@ impl QSearch<'_> {
         let undo = pos.do_move(pv0);
         let key = pos.key();
         let side = pos.side_to_move().index() as u8;
-        let (found, data, _writer) = self.tt.probe_checked(key, side, |m16| pos.to_move(m16).is_some());
+        let (found, data, _writer) = self
+            .tt
+            .probe_checked(key, side, |m16| pos.to_move(m16).is_some());
         if found {
             // Push the child TT move only if it is playable here.
             if let Some(m) = pos.to_move(data.move16)
@@ -2492,7 +2498,9 @@ impl QSearch<'_> {
         let side = us.index() as u8;
         // Captured once, as the reference's `ttWriter` is; every write in this
         // node targets this exact slot.
-        let (tt_hit, tt_data, tt_slot) = self.tt.locate_checked(pos_key, side, |m16| pos.to_move(m16).is_some());
+        let (tt_hit, tt_data, tt_slot) = self
+            .tt
+            .locate_checked(pos_key, side, |m16| pos.to_move(m16).is_some());
         self.stack[s].tt_hit = tt_hit;
         // At the root the current PV line's move is treated as the TT move
         // whatever the probe returned, while `tt_data`'s other fields are still

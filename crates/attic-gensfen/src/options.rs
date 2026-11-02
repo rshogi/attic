@@ -63,10 +63,7 @@ usage: attic-gensfen --eval-dir DIR --out FILE
 
         let mut args = args.peekable();
         while let Some(flag) = args.next() {
-            let mut value = || {
-                args.next()
-                    .ok_or_else(|| format!("{flag} needs a value"))
-            };
+            let mut value = || args.next().ok_or_else(|| format!("{flag} needs a value"));
             match flag.as_str() {
                 "--eval-dir" => eval_dir = Some(PathBuf::from(value()?)),
                 "--out" => out = Some(PathBuf::from(value()?)),

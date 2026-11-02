@@ -191,9 +191,7 @@ pub unsafe fn derive_features(
             ([a], [r]) => derive_fixed::<1, 1>(dst, src, weights, [*a], [*r]),
             ([a0, a1], [r]) => derive_fixed::<2, 1>(dst, src, weights, [*a0, *a1], [*r]),
             ([a], [r0, r1]) => derive_fixed::<1, 2>(dst, src, weights, [*a], [*r0, *r1]),
-            ([a0, a1], [r0, r1]) => {
-                derive_fixed::<2, 2>(dst, src, weights, [*a0, *a1], [*r0, *r1])
-            }
+            ([a0, a1], [r0, r1]) => derive_fixed::<2, 2>(dst, src, weights, [*a0, *a1], [*r0, *r1]),
             _ => {
                 dst.copy_from_slice(src);
                 sub_features(dst, weights, removed);
@@ -217,9 +215,8 @@ unsafe fn derive_fixed<const A: usize, const R: usize>(
     removed: [FeatureIndex; R],
 ) {
     // Slicing checks each column against `weights` once, here, not per chunk.
-    let a_cols: [*const i16; A] = std::array::from_fn(|k| {
-        weights[added[k] as usize * HIDDEN_SIZE..][..HIDDEN_SIZE].as_ptr()
-    });
+    let a_cols: [*const i16; A] =
+        std::array::from_fn(|k| weights[added[k] as usize * HIDDEN_SIZE..][..HIDDEN_SIZE].as_ptr());
     let r_cols: [*const i16; R] = std::array::from_fn(|k| {
         weights[removed[k] as usize * HIDDEN_SIZE..][..HIDDEN_SIZE].as_ptr()
     });
@@ -232,16 +229,10 @@ unsafe fn derive_fixed<const A: usize, const R: usize>(
         unsafe {
             let mut acc = _mm256_loadu_si256(src_ptr.add(offset).cast::<__m256i>());
             for col in a_cols {
-                acc = _mm256_add_epi16(
-                    acc,
-                    _mm256_loadu_si256(col.add(offset).cast::<__m256i>()),
-                );
+                acc = _mm256_add_epi16(acc, _mm256_loadu_si256(col.add(offset).cast::<__m256i>()));
             }
             for col in r_cols {
-                acc = _mm256_sub_epi16(
-                    acc,
-                    _mm256_loadu_si256(col.add(offset).cast::<__m256i>()),
-                );
+                acc = _mm256_sub_epi16(acc, _mm256_loadu_si256(col.add(offset).cast::<__m256i>()));
             }
             _mm256_storeu_si256(dst_ptr.add(offset).cast::<__m256i>(), acc);
         }
@@ -269,7 +260,10 @@ mod tests {
     fn fill_weights(weights: &mut [i16], seed: i16) {
         for (i, slot) in weights.iter_mut().enumerate() {
             // Spread across the i16 range so wrapping is actually exercised.
-            *slot = (i as i16).wrapping_mul(31).wrapping_add(seed).wrapping_mul(7);
+            *slot = (i as i16)
+                .wrapping_mul(31)
+                .wrapping_add(seed)
+                .wrapping_mul(7);
         }
     }
 

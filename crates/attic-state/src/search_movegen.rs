@@ -200,11 +200,7 @@ unsafe fn put(dst: *mut ExtMove, mv: Move) -> *mut ExtMove {
 /// moves per piece) avoid a capacity test and a `Vec` header update per move:
 /// they size their output exactly once, up front.
 #[inline(always)]
-fn append_with(
-    out: &mut Vec<ExtMove>,
-    room: usize,
-    f: impl FnOnce(*mut ExtMove) -> *mut ExtMove,
-) {
+fn append_with(out: &mut Vec<ExtMove>, room: usize, f: impl FnOnce(*mut ExtMove) -> *mut ExtMove) {
     out.reserve(room);
     let len = out.len();
     // SAFETY: `reserve` left at least `room` slots of spare capacity past `len`.
@@ -1612,7 +1608,9 @@ impl Position {
         if hand.count(PieceKind::Pawn) > 0 {
             // A tokin lives in the GOLD pattern slot, so it does not block a
             // file for nifu (二歩) purposes.
-            let nifu_files = board.pieces_pattern(stm, crate::board::pat::PAWN).fill_files();
+            let nifu_files = board
+                .pieces_pattern(stm, crate::board::pat::PAWN)
+                .fill_files();
             // A pawn dropped on the last rank could never move again.
             let mut pawn_target = base & !rank_mask(back_rank) & !nifu_files;
 

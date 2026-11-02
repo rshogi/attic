@@ -530,7 +530,11 @@ fn mate_dragon(ctx: &Ctx) -> Option<Move> {
     for from in pieces_bucket(board, us, pat::DRAGON).iter() {
         // The occupancy-limited effect lies inside the step effect, so a
         // piece whose step effect misses the ring cannot check from here.
-        if rook_step_effect(from).or(king_effect(from)).and(ring).is_empty() {
+        if rook_step_effect(from)
+            .or(king_effect(from))
+            .and(ring)
+            .is_empty()
+        {
             continue;
         }
         let slide = ctx.occ_all.without(from);
@@ -632,7 +636,11 @@ fn mate_horse(ctx: &Ctx) -> Option<Move> {
     for from in pieces_bucket(board, us, pat::HORSE).iter() {
         // The occupancy-limited effect lies inside the step effect, so a
         // piece whose step effect misses the ring cannot check from here.
-        if bishop_step_effect(from).or(king_effect(from)).and(ring).is_empty() {
+        if bishop_step_effect(from)
+            .or(king_effect(from))
+            .and(ring)
+            .is_empty()
+        {
             continue;
         }
         let slide = ctx.occ_all.without(from);

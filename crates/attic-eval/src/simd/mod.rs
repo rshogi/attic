@@ -167,8 +167,8 @@ pub mod transformer_kernel {
     not(all(target_feature = "avx512f", target_feature = "avx512bw"))
 ))]
 pub mod transformer_kernel {
-    use crate::features::FeatureIndex;
     use super::avx2;
+    use crate::features::FeatureIndex;
 
     /// Add each active feature's FT weight column into `out`.
     #[inline]

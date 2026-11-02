@@ -37,8 +37,7 @@ pub use manaka::{
 
 pub use aligned::Aligned64;
 pub use features::{
-    FeatureIndex, MAX_ACTIVE_FEATURES, active_features, active_features_both,
-    requires_full_refresh,
+    FeatureIndex, MAX_ACTIVE_FEATURES, active_features, active_features_both, requires_full_refresh,
 };
 // The scale is shared: both evaluators divide their output by it, and the
 // USI layer drives it from the `FV_SCALE` option whichever shape is loaded.

@@ -689,7 +689,7 @@ impl Dirty {
                 }
                 let p_adj = board_plane(piece.kind, piece.promoted, piece.color == persp) + sq_code;
                 Some(encode_feature(sq_k_code, p_adj))
-            },
+            }
             Dirty::Hand { color, kind, count } => Some(encode_feature(
                 sq_k_code,
                 hand_plane(kind, color == persp) + count,
@@ -842,7 +842,7 @@ impl MoveDelta {
                         },
                     ],
                 )
-            },
+            }
         }
     }
 

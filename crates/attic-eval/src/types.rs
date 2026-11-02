@@ -48,7 +48,9 @@ compile_error!("sfnn_halfkahm2_1536_15_32_k3k3 is a different network from the r
         feature = "sym_halfkp_128x2_512"
     )
 ))]
-compile_error!("sfnn_halfkahm2_2304_15_64_progress8ek is a different network from the rest; select one");
+compile_error!(
+    "sfnn_halfkahm2_2304_15_64_progress8ek is a different network from the rest; select one"
+);
 
 #[cfg(all(
     feature = "nnue_kp_256x2_32_32",
@@ -62,17 +64,11 @@ compile_error!("nnue_kp_256x2_32_32 is a different network from the rest; select
 
 #[cfg(all(
     feature = "nnue_halfkp_256x2_32_32",
-    any(
-        feature = "sym_kp_128x2_512",
-        feature = "sym_halfkp_128x2_512"
-    )
+    any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")
 ))]
 compile_error!("nnue_halfkp_256x2_32_32 is a different network from the rest; select one");
 
-#[cfg(all(
-    feature = "sym_kp_128x2_512",
-    feature = "sym_halfkp_128x2_512"
-))]
+#[cfg(all(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512"))]
 compile_error!("the two Manaka shapes differ in their feature space; select one");
 
 // Manaka's own shapes carry `MNW1` files — f32 weights, power sums to the
@@ -99,7 +95,10 @@ pub const HIDDEN_SIZE: usize = 256;
 /// `HalfKP<Side::kFriend>`. HalfKP is 125,388 here and not the 125,389 Manaka
 /// trains against: Manaka appends a padding row and points both kings at it so
 /// that every position keeps forty tokens, and YaneuraOu never numbered one.
-#[cfg(any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
+#[cfg(any(
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+))]
 pub const NUM_FEATURES: usize = 73_305;
 #[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "sym_kp_128x2_512"))]
 pub const NUM_FEATURES: usize = 1_710;
@@ -111,26 +110,39 @@ pub const NUM_FEATURES: usize = 125_389;
 
 /// Dense stacks in the file. The SFNN shapes bucket — by king rank at 1536, by
 /// game progress at 2304 — and the standard ones have one stack and no bucket.
-#[cfg(any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
+#[cfg(any(
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+))]
 pub const LAYER_STACKS: usize = 9;
 #[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
 pub const LAYER_STACKS: usize = 1;
 
 // fc_0 has 16 outputs: the 16th feeds only the post-fc_2 shortcut, while the
 // first 15 feed both activations.
-#[cfg(any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
+#[cfg(any(
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+))]
 pub const HIDDEN1_DIMS: usize = 15;
 // The standard shapes have no shortcut, so all thirty-two of fc_0's outputs go
 // on to the next layer and there is no split for this to be one side of.
 #[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
 pub const HIDDEN1_DIMS: usize = 32;
 
-#[cfg(any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
+#[cfg(any(
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+    feature = "nnue_kp_256x2_32_32",
+    feature = "nnue_halfkp_256x2_32_32"
+))]
 pub const HIDDEN2_DIMS: usize = 32;
 #[cfg(feature = "sfnn_halfkahm2_2304_15_64_progress8ek")]
 pub const HIDDEN2_DIMS: usize = 64;
 
-#[cfg(any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
+#[cfg(any(
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+))]
 pub const FC_0_OUTPUT_DIMS: usize = HIDDEN1_DIMS + 1;
 #[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
 pub const FC_0_OUTPUT_DIMS: usize = HIDDEN1_DIMS;
@@ -139,7 +151,10 @@ pub const FC_0_OUTPUT_DIMS: usize = HIDDEN1_DIMS;
 ///
 /// The SFNN shapes multiply the two perspectives element-wise and hand on a
 /// single width; the standard ones lay them side by side, so fc_0 sees both.
-#[cfg(any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
+#[cfg(any(
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+))]
 pub const FC_0_INPUT_DIMS: usize = HIDDEN_SIZE;
 #[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
 pub const FC_0_INPUT_DIMS: usize = 2 * HIDDEN_SIZE;
@@ -148,7 +163,10 @@ pub const FC_0_PADDED_INPUT_DIMS: usize = FC_0_INPUT_DIMS;
 
 #[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
 pub const FC_1_OUTPUT_DIMS: usize = HIDDEN2_DIMS;
-#[cfg(any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_halfkahm2_2304_15_64_progress8ek"))]
+#[cfg(any(
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+))]
 pub const FC_1_INPUT_DIMS: usize = HIDDEN1_DIMS * 2;
 #[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
 pub const FC_1_INPUT_DIMS: usize = HIDDEN1_DIMS;
@@ -668,7 +686,10 @@ impl std::error::Error for NnueError {
     }
 }
 
-#[cfg(all(test, not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512"))))]
+#[cfg(all(
+    test,
+    not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512"))
+))]
 mod tests {
     use super::*;
     use std::mem::size_of;

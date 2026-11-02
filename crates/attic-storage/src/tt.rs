@@ -603,7 +603,14 @@ impl TranspositionTable {
                 if data.move16 != 0 && !accept(data.move16) {
                     continue;
                 }
-                return (found, data, TtSlot { cluster: ci, entry: i });
+                return (
+                    found,
+                    data,
+                    TtSlot {
+                        cluster: ci,
+                        entry: i,
+                    },
+                );
             }
         }
 
@@ -615,7 +622,14 @@ impl TranspositionTable {
                 replace = i;
             }
         }
-        (false, TTData::none(), TtSlot { cluster: ci, entry: replace })
+        (
+            false,
+            TTData::none(),
+            TtSlot {
+                cluster: ci,
+                entry: replace,
+            },
+        )
     }
 
     /// [`Self::probe`] with the same skip rule as [`Self::locate_checked`].
@@ -626,7 +640,11 @@ impl TranspositionTable {
         accept: impl Fn(u16) -> bool,
     ) -> (bool, TTData, TTWriter<'_>) {
         let (found, data, slot) = self.locate_checked(key, side_to_move, accept);
-        (found, data, TTWriter::new(&self.table[slot.cluster].entry[slot.entry]))
+        (
+            found,
+            data,
+            TTWriter::new(&self.table[slot.cluster].entry[slot.entry]),
+        )
     }
 
     /// Like [`Self::probe`] but returning the chosen entry's *location* rather
