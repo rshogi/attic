@@ -1509,11 +1509,7 @@ impl Position {
         if hand.count(PieceKind::Pawn) > 0 {
             // A tokin lives in the GOLD pattern slot, so it does not block a
             // file for nifu (二歩) purposes.
-            let own_pawns = board.pieces_pattern(stm, crate::board::pat::PAWN);
-            let mut nifu_files = Bitboard::empty();
-            for psq in own_pawns.squares() {
-                nifu_files |= crate::bitboard::file_mask(psq.file());
-            }
+            let nifu_files = board.pieces_pattern(stm, crate::board::pat::PAWN).fill_files();
             // A pawn dropped on the last rank could never move again.
             let mut pawn_target = base & !rank_mask(back_rank) & !nifu_files;
 

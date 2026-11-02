@@ -943,6 +943,52 @@ pub fn rank_mask(rank: u8) -> Bitboard {
     RANK_MASKS[rank as usize]
 }
 
+/// The least-significant bit of every file group in each lane: lane 0 holds
+/// files 0..=6 (nine bits apiece, `p[0]` bits 0..=62), lane 1 files 7 and 8.
+const FILE_LSB: [u64; 2] = {
+    let mut lsb = [0u64; 2];
+    let mut file = 0;
+    while file < FILES {
+        let base = file * RANKS;
+        if base < LANE0_SPAN as usize {
+            lsb[0] |= 1u64 << base;
+        } else {
+            lsb[1] |= 1u64 << (base - LANE0_SPAN as usize);
+        }
+        file += 1;
+    }
+    lsb
+};
+
+/// Fold each nine-bit file group of `lane` into its least-significant bit
+/// (set iff the group has any bit set), then spread that bit back over the
+/// whole group. The file groups are nine bits wide and never straddle the lane,
+/// so the fold's shifts cannot carry one file's squares into another's result,
+/// and the `* 0x1FF` spread cannot carry either, as the groups are disjoint.
+#[inline(always)]
+fn fill_file_groups(lane: u64, lsb: u64) -> u64 {
+    let mut t = lane | (lane >> 1);
+    t |= t >> 2;
+    t |= t >> 4;
+    t |= lane >> 8;
+    (t & lsb) * 0x1FF
+}
+
+impl Bitboard {
+    /// Every square of every file that holds at least one member of `self` —
+    /// the union of [`file_mask`] over the members' files, without visiting the
+    /// members.
+    pub fn fill_files(self) -> Bitboard {
+        let bb = Bitboard {
+            p: [
+                fill_file_groups(self.p[0], FILE_LSB[0]),
+                fill_file_groups(self.p[1], FILE_LSB[1]),
+            ],
+        };
+        debug_assert_canonical(bb);
+        bb
+    }
+}
 /// Per-color promotion zone, matching
 /// [`crate::movegen::is_in_promotion_zone`].
 const fn build_promo_zones() -> [Bitboard; Color::COUNT] {
@@ -1841,6 +1887,44 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// A xorshift stream of arbitrary board occupancies, thinned in density so
+    /// both sparse and crowded sets (and every single-square set) show up.
+    fn arbitrary_sets() -> Vec<Bitboard> {
+        let mut x: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let mut sets: Vec<Bitboard> = all_squares().map(Bitboard::from_square).collect();
+        sets.push(Bitboard::EMPTY);
+        sets.push(Bitboard::FULL);
+        for i in 0..4000 {
+            let a = (u128::from(next()) << 64) | u128::from(next());
+            let b = (u128::from(next()) << 64) | u128::from(next());
+            let c = (u128::from(next()) << 64) | u128::from(next());
+            let bits = match i % 3 {
+                0 => a,
+                1 => a & b,
+                _ => a & b & c,
+            };
+            sets.push(Bitboard::from_raw(bits));
+        }
+        sets
+    }
+
+    #[test]
+    fn fill_files_equals_union_of_member_file_masks() {
+        for set in arbitrary_sets() {
+            let mut expected = Bitboard::EMPTY;
+            for sq in set.squares() {
+                expected |= file_mask(sq.file());
+            }
+            assert_eq!(set.fill_files(), expected, "set {:#x}", set.raw());
         }
     }
 
