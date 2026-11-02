@@ -60,10 +60,11 @@
 
 use std::cell::RefCell;
 use std::hint::select_unpredictable;
+use std::sync::atomic::{AtomicI16, Ordering};
 
 use attic_state::{CheckSquares, ExtMove, Move, Position, piece_value};
 
-use crate::history::LOW_PLY_HISTORY_SIZE;
+use crate::history::{LOW_PLY_HISTORY_SIZE, MOVE16_NB, PIECE_TO_LEN, move16_index, piece_to_index};
 use crate::update::WorkerHistories;
 
 /// `goodQuietThreshold`: quiets scoring above this go to `GOOD_QUIET`, the rest
@@ -325,9 +326,83 @@ fn score_evasion(pos: &Position, m: Move, hist: &WorkerHistories, cont_plane0: u
     }
 }
 
-/// `score<QUIETS>` for a single quiet move. It reads continuation planes
-/// `[0][1][2][3][5]`, index `4` being deliberately absent. The Stockfish
-/// "threat by a lesser piece" term is `#if STOCKFISH`-only, so it is omitted.
+/// `score<QUIETS>`, with every table it reads resolved once per node.
+///
+/// It reads continuation planes `[0][1][2][3][5]`, index `4` being
+/// deliberately absent. The Stockfish "threat by a lesser piece" term is
+/// `#if STOCKFISH`-only, so it is omitted.
+///
+/// The side to move, the pawn key, the continuation planes and the ply are
+/// fixed for a node, so the rows and planes they select are bounds-checked
+/// here, once, and held as fixed-length arrays. A move's two indices are
+/// then a `move.raw()` that fits its row by construction and a `[pc][to]`
+/// that [`piece_to_index`] has already checked, which leaves the per-move
+/// reads with no check of their own. The terms and their sum are the
+/// reference's, in the reference's order.
+struct QuietScorer<'a> {
+    /// `mainHistory[us]`.
+    main: &'a [i16; MOVE16_NB],
+    /// `pawnHistory` slot for this position's pawn key.
+    pawn: &'a [AtomicI16; PIECE_TO_LEN],
+    /// `continuationHistory[0]`, `[1]`, `[2]`, `[3]` and `[5]`.
+    cont: [&'a [i16; PIECE_TO_LEN]; 5],
+    /// `lowPlyHistory[ply]` when `ply < LOW_PLY_HISTORY_SIZE`.
+    low_ply: Option<&'a [i16; MOVE16_NB]>,
+    /// `ss->ply`, the `lowPlyHistory` divisor's term.
+    ply: i32,
+}
+
+impl<'a> QuietScorer<'a> {
+    fn new(pos: &Position, ply: i32, hist: &'a WorkerHistories, cont_planes: [usize; 6]) -> Self {
+        let cont = &hist.continuation;
+        QuietScorer {
+            main: hist.main.row(pos.side_to_move()),
+            pawn: hist.shared.pawn_plane(pos.pawn_key()),
+            cont: [
+                cont.plane(cont_planes[0]),
+                cont.plane(cont_planes[1]),
+                cont.plane(cont_planes[2]),
+                cont.plane(cont_planes[3]),
+                cont.plane(cont_planes[5]),
+            ],
+            low_ply: ((ply as usize) < LOW_PLY_HISTORY_SIZE)
+                .then(|| hist.low_ply.row(ply as usize)),
+            ply,
+        }
+    }
+
+    #[inline(always)]
+    fn score(&self, pos: &Position, m: Move, check_squares: &CheckSquares) -> i32 {
+        let raw = move16_index(m);
+        let pc_to = piece_to_index(m);
+
+        let mut value = 2 * self.main[raw] as i32;
+        value += 2 * self.pawn[pc_to].load(Ordering::Relaxed) as i32;
+        value += self.cont[0][pc_to] as i32;
+        value += self.cont[1][pc_to] as i32;
+        value += self.cont[2][pc_to] as i32;
+        value += self.cont[3][pc_to] as i32;
+        value += self.cont[4][pc_to] as i32;
+
+        // A bonus for a direct check that is not a losing sacrifice, read off the
+        // `checkSquares` snapshot taken once at `QUIET_INIT` entry.
+        if check_squares.gives_direct_check(m) && pos.see_ge(m, -75) {
+            value += 16384;
+        }
+
+        // `lowPlyHistory` near the root.
+        if let Some(low_ply) = self.low_ply {
+            value += 8 * low_ply[raw] as i32 / (1 + self.ply);
+        }
+
+        value
+    }
+}
+
+/// `score<QUIETS>` for a single quiet move, one table lookup at a time: the
+/// form [`QuietScorer`] replaced, kept as the twin picker's independent
+/// oracle.
+#[cfg(test)]
 fn score_quiet(
     pos: &Position,
     m: Move,
@@ -616,15 +691,48 @@ impl MovePicker {
         }
     }
 
+    /// `QUIET_INIT` body for a picker that is not skipping quiets: generate,
+    /// score and partially sort the quiets.
+    ///
+    /// Kept out of line. Inlined, the optimiser hoists the quiet generator's and
+    /// the scorer's node-constant setup into [`Self::next_move`]'s entry, where
+    /// every call pays for it and spills it — including the calls that never
+    /// reach the quiet stage.
+    #[inline(never)]
+    fn generate_and_sort_quiets(&mut self, pos: &Position, hist: &WorkerHistories) {
+        // The **raw** generated buffer is scored and sorted, with the TT move
+        // and the pseudo-legal-but-illegal quiets still in it, as the reference
+        // does; both are dropped at yield time instead.
+        //
+        // Their presence is load-bearing. Each promotion in
+        // `partial_insertion_sort` swaps a tail element into the promoted
+        // slot's old place, so *which* elements sit in the buffer changes the
+        // unsorted tail's final order — a high-scoring TT move or illegal quiet
+        // reshapes the emitted order of the legal ones even though it is never
+        // yielded. Dropping either here would silently reorder the survivors.
+        pos.generate_quiets(self.all, &mut self.scratch.buf);
+        debug_assert!(
+            self.scratch.buf.len() <= MAX_MOVES,
+            "move buffer overflow: {} > {MAX_MOVES}",
+            self.scratch.buf.len()
+        );
+        self.end_generated = self.scratch.buf.len();
+
+        self.score_quiets_in_place(pos, hist);
+        partial_insertion_sort(
+            &mut self.scratch.buf[self.end_captures..self.end_generated],
+            -3560 * self.depth,
+        );
+    }
+
     /// Score the quiets region in place against the *live* `hist`.
     fn score_quiets_in_place(&mut self, pos: &Position, hist: &WorkerHistories) {
         // The board is fixed for the picker's lifetime, so one snapshot serves
         // the whole quiet region.
         let check_squares = pos.check_squares();
-        for i in self.end_captures..self.end_generated {
-            let m = self.scratch.buf[i].mv;
-            self.scratch.buf[i].value =
-                score_quiet(pos, m, self.ply, hist, self.cont_planes, &check_squares);
+        let scorer = QuietScorer::new(pos, self.ply, hist, self.cont_planes);
+        for e in &mut self.scratch.buf[self.end_captures..self.end_generated] {
+            e.value = scorer.score(pos, e.mv, &check_squares);
         }
     }
 
@@ -684,32 +792,7 @@ impl MovePicker {
                 // empty when nothing was generated.
                 Stage::QuietInit => {
                     if !self.skip_quiets {
-                        // The **raw** generated buffer is scored and sorted, with
-                        // the TT move and the pseudo-legal-but-illegal quiets
-                        // still in it, as the reference does; both are dropped at
-                        // yield time instead.
-                        //
-                        // Their presence is load-bearing. Each promotion in
-                        // `partial_insertion_sort` swaps a tail element into
-                        // the promoted slot's old place, so *which* elements
-                        // sit in the buffer changes the unsorted tail's final
-                        // order — a high-scoring TT move or illegal quiet
-                        // reshapes the emitted order of the legal ones even
-                        // though it is never yielded. Dropping either here
-                        // would silently reorder the survivors.
-                        pos.generate_quiets(self.all, &mut self.scratch.buf);
-                        debug_assert!(
-                            self.scratch.buf.len() <= MAX_MOVES,
-                            "move buffer overflow: {} > {MAX_MOVES}",
-                            self.scratch.buf.len()
-                        );
-                        self.end_generated = self.scratch.buf.len();
-
-                        self.score_quiets_in_place(pos, hist);
-                        partial_insertion_sort(
-                            &mut self.scratch.buf[self.end_captures..self.end_generated],
-                            -3560 * self.depth,
-                        );
+                        self.generate_and_sort_quiets(pos, hist);
                     }
                     self.cur = self.end_captures;
                     self.end_cur = self.end_generated;
@@ -1206,6 +1289,73 @@ mod tests {
                 actual, expected,
                 "len {len} span {span} limit {limit} diverged"
             );
+        }
+    }
+
+    /// [`QuietScorer`] must score every quiet exactly as the per-lookup
+    /// [`score_quiet`] does. Each cell a quiet reads is given its own random
+    /// value first, so that a wrong row, plane or index shows up as a
+    /// different sum rather than hiding behind a uniform fill.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn quiet_scorer_matches_per_lookup_scoring() {
+        let sfens = [
+            "l7l/1r1sg2k1/2nppgsp1/p1p3p1p/1p2N4/2P1P1P2/PPSP1PB1P/3GG1SR1/LN2K3L b BNPp 1",
+            "l7l/1r1sg2k1/2nppgsp1/p1p3p1p/1p2N4/2P1P1P2/PPSP1PB1P/3GG1SR1/LN2K3L w BNPp 1",
+            "4k4/9/R8/9/9/9/9/9/8K b - 1",
+            "8l/9/6k2/9/9/PPP6/8N/9/8K b - 1",
+            "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+            "ln1g3+Rl/2s1k1s2/p1ppppn1p/9/1p5P1/9/PPPPPPP1P/1B5+b1/LNSGKGSNL w GPp 1",
+        ];
+        let mut rng = Xorshift(0x2545_F491_4F6C_DD1D);
+        for sfen in sfens {
+            let p = pos(sfen);
+            let us = p.side_to_move();
+            let mut quiets: Vec<ExtMove> = Vec::new();
+            p.generate_quiets(true, &mut quiets);
+            assert!(!quiets.is_empty(), "{sfen} has quiets");
+            for round in 0..8 {
+                let mut h = init_histories();
+                // Real planes keyed off moves of this position, plus the
+                // sentinel, so the five read planes are mostly distinct.
+                let mut cont_planes = [0usize; 6];
+                for slot in cont_planes.iter_mut() {
+                    let e = quiets[rng.below(quiets.len() as u64) as usize];
+                    *slot = ContinuationHistory::plane_index(
+                        rng.below(2) == 1,
+                        rng.below(2) == 1,
+                        e.mv.moved_piece_after(),
+                        e.mv.to_sq(),
+                    );
+                }
+                if round == 0 {
+                    cont_planes = SENTINEL_PLANES;
+                }
+                let mut bonus = || rng.below(60_001) as i32 - 30_000;
+                for e in &quiets {
+                    let (pc, to) = (e.mv.moved_piece_after(), e.mv.to_sq());
+                    h.main.update(us, e.mv, bonus());
+                    h.shared.pawn_update(p.pawn_key(), pc, to, bonus());
+                    for ply in 0..LOW_PLY_HISTORY_SIZE {
+                        h.low_ply.update(ply, e.mv, bonus());
+                    }
+                    for &plane in &cont_planes {
+                        h.continuation.update_at(plane, pc, to, bonus());
+                    }
+                }
+                let check_squares = p.check_squares();
+                for ply in [0, 1, 2, 3, 4, 5, 7, 40] {
+                    let scorer = QuietScorer::new(&p, ply, &h, cont_planes);
+                    for e in &quiets {
+                        assert_eq!(
+                            scorer.score(&p, e.mv, &check_squares),
+                            score_quiet(&p, e.mv, ply, &h, cont_planes, &check_squares),
+                            "{sfen} round {round} ply {ply} move {}",
+                            format_usi_move(e.mv)
+                        );
+                    }
+                }
+            }
         }
     }
 
