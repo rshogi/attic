@@ -220,6 +220,20 @@ fn append_with(
     }
 }
 
+/// The drop of `kind` by `color` with its destination still zero: OR-ing a
+/// square index into it completes the move ([`drop_move`]).
+#[inline(always)]
+fn drop_template(kind: PieceKind, color: Color) -> u32 {
+    let sq0 = Square::from_index(0).expect("square 0 exists");
+    Move::make_drop(kind, color, sq0).to_bits()
+}
+
+/// Complete a [`drop_template`] with its destination.
+#[inline(always)]
+fn drop_move(template: u32, to: Square) -> Move {
+    Move::from_bits(template | u32::from(to.index()))
+}
+
 /// The last rank a piece of `color` can reach — where a pawn / lance
 /// non-promotion is always illegal (Black rank 0, White rank 8).
 fn last_rank(color: Color) -> u8 {
@@ -1607,77 +1621,79 @@ impl Position {
                 pawn_target.clear(c);
             }
 
-            for sq in pawn_target.squares() {
-                out.push(ExtMove {
-                    mv: Move::make_drop(PieceKind::Pawn, stm, sq),
-                    value: 0,
-                });
-            }
+            let pawn = drop_template(PieceKind::Pawn, stm);
+            append_with(out, pawn_target.popcount() as usize, |mut dst| {
+                for sq in pawn_target.squares() {
+                    // SAFETY: one move per square of `pawn_target`, the room
+                    // reserved above.
+                    dst = unsafe { put(dst, drop_move(pawn, sq)) };
+                }
+                dst
+            });
         }
 
         // The other kinds are emitted in rank bands, so that lance and knight
         // are excluded from the ranks on which they would be stuck. The scratch
-        // is fixed-capacity to keep the node allocation-free.
-        let mut drops_buf = [PieceKind::Knight; DROP_ORDER.len()];
+        // is fixed-capacity to keep the node allocation-free. Each entry is the
+        // kind's drop with the destination still zero; OR-ing in a square index
+        // completes the move, as the reference's `drops[]` array does.
+        let mut drops = [0u32; DROP_ORDER.len()];
         let mut drops_len = 0usize;
         for &kind in &DROP_ORDER {
             if hand.count(kind) > 0 {
-                drops_buf[drops_len] = kind;
+                drops[drops_len] = drop_template(kind, stm);
                 drops_len += 1;
             }
         }
-        let drops = &drops_buf[..drops_len];
-        if drops.is_empty() {
+        if drops_len == 0 {
             return;
         }
+        let drops = &drops[..drops_len];
         // Knight and lance lead `DROP_ORDER`, so a band that excludes them is a
         // suffix — the reference's `nextToKnight` / `nextToLance`.
-        let next_to_knight = usize::from(drops.first() == Some(&PieceKind::Knight));
-        let next_to_lance =
-            next_to_knight + usize::from(drops.get(next_to_knight) == Some(&PieceKind::Lance));
+        let knight = drop_template(PieceKind::Knight, stm);
+        let lance = drop_template(PieceKind::Lance, stm);
+        let next_to_knight = usize::from(drops.first() == Some(&knight));
+        let next_to_lance = next_to_knight + usize::from(drops.get(next_to_knight) == Some(&lance));
 
-        if next_to_lance == 0 {
-            // With no lance or knight in hand every kind can go on every empty
-            // square.
-            for sq in base.squares() {
-                for &kind in drops {
-                    out.push(ExtMove {
-                        mv: Move::make_drop(kind, stm, sq),
-                        value: 0,
-                    });
+        // Every empty square takes at most one move per kind in hand.
+        let room = drops.len() * base.popcount() as usize;
+        append_with(out, room, |mut dst| {
+            // SAFETY (all `put`s below): the bands partition `base`, and each
+            // square is written once per kind of the slice it is paired with,
+            // which is never longer than `drops`.
+            if next_to_lance == 0 {
+                // With no lance or knight in hand every kind can go on every
+                // empty square.
+                for sq in base.squares() {
+                    for &d in drops {
+                        dst = unsafe { put(dst, drop_move(d, sq)) };
+                    }
+                }
+                return dst;
+            }
+
+            // Own back rank.
+            for sq in (base & rank_mask(back_rank)).squares() {
+                for &d in &drops[next_to_lance..] {
+                    dst = unsafe { put(dst, drop_move(d, sq)) };
                 }
             }
-            return;
-        }
-
-        // Own back rank.
-        for sq in (base & rank_mask(back_rank)).squares() {
-            for &kind in &drops[next_to_lance..] {
-                out.push(ExtMove {
-                    mv: Move::make_drop(kind, stm, sq),
-                    value: 0,
-                });
+            // Own second rank: lance too, but not knight.
+            for sq in (base & rank_mask(second_rank)).squares() {
+                for &d in &drops[next_to_knight..] {
+                    dst = unsafe { put(dst, drop_move(d, sq)) };
+                }
             }
-        }
-        // Own second rank: lance too, but not knight.
-        for sq in (base & rank_mask(second_rank)).squares() {
-            for &kind in &drops[next_to_knight..] {
-                out.push(ExtMove {
-                    mv: Move::make_drop(kind, stm, sq),
-                    value: 0,
-                });
+            // Everywhere else: every kind.
+            let band3 = base & !(rank_mask(back_rank) | rank_mask(second_rank));
+            for sq in band3.squares() {
+                for &d in drops {
+                    dst = unsafe { put(dst, drop_move(d, sq)) };
+                }
             }
-        }
-        // Everywhere else: every kind.
-        let band3 = base & !(rank_mask(back_rank) | rank_mask(second_rank));
-        for sq in band3.squares() {
-            for &kind in drops {
-                out.push(ExtMove {
-                    mv: Move::make_drop(kind, stm, sq),
-                    value: 0,
-                });
-            }
-        }
+            dst
+        });
     }
 
     /// An 81-square band-scanning form of [`Position::emit_drops_masked`],
