@@ -48,7 +48,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: cargo --version
+      - uses: ./.github/actions/setup-rust
       - run: cargo fmt --all --check
 
   clippy:
@@ -74,7 +74,7 @@ jobs:
             args: --no-default-features --features nnue_kp_256x2_32_32,ref_check_time
     steps:
       - uses: actions/checkout@v4
-      - run: cargo --version
+      - uses: ./.github/actions/setup-rust
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.name }}
@@ -103,7 +103,7 @@ jobs:
             args: --no-default-features --features nnue_kp_256x2_32_32,ref_check_time
     steps:
       - uses: actions/checkout@v4
-      - run: cargo --version
+      - uses: ./.github/actions/setup-rust
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.name }}
@@ -133,7 +133,7 @@ jobs:
             args: --no-default-features --features nnue_kp_256x2_32_32,ref_check_time
     steps:
       - uses: actions/checkout@v4
-      - run: cargo --version
+      - uses: ./.github/actions/setup-rust
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.name }}
