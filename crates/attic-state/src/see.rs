@@ -192,11 +192,15 @@ fn reveal_sliders(
 /// the set of single blockers between `c`'s king and an enemy sniper;
 /// `pinners[~c]` is the set of enemy snipers whose single blocker is one of
 /// `c`'s own pieces. Both are computed over the full pre-move board.
+///
+/// Only the tests ask for it by colour alone; the engine already holds both
+/// king squares and goes through [`slider_blockers_at`].
+#[cfg(test)]
 pub(crate) fn slider_blockers(board: &crate::board::Board, c: Color) -> (Bitboard, Bitboard) {
     slider_blockers_at(board, c, try_find_king(board, c))
 }
 
-/// [`slider_blockers`] with `c`'s king square (`None` if the board has no `c`
+/// `slider_blockers` with `c`'s king square (`None` if the board has no `c`
 /// king) already known, so a caller that located both kings does not search
 /// the piece sets again.
 #[inline]

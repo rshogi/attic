@@ -732,14 +732,9 @@ fn nifu_blocked_files_scan(board: &Board, stm: Color) -> [bool; Square::FILES as
 // [`Position`], reduces the `gives_check` / `gives_direct_check` / `is_legal`
 // predicates below to table lookups.
 
-/// The number of distinct check-attack patterns keyed by [`check_pattern`].
+/// The number of distinct check-attack patterns keyed by
+/// [`crate::board::pattern_of`].
 const CHECK_PATTERN_COUNT: usize = crate::board::PATTERN_COUNT;
-
-/// Map a concrete piece to its `checkSquares` pattern slot — the shared
-/// [`crate::board::pattern_of`] partition.
-fn check_pattern(piece: Piece) -> usize {
-    crate::board::pattern_of(piece)
-}
 
 /// The set of squares `piece`, standing on `from`, attacks under occupancy
 /// `occ`. Sliders stop at and including the first occupied square.
@@ -836,14 +831,14 @@ pub(crate) struct CheckInfo {
     /// Whether the side to move is currently in check.
     in_check: bool,
     /// `checkSquares[pattern]`: squares from which a side-to-move piece of the
-    /// given [`check_pattern`] checks the enemy king, under the current
+    /// given [`crate::board::pattern_of`] checks the enemy king, under the current
     /// occupancy.
     check_squares: [Bitboard; CHECK_PATTERN_COUNT],
     /// `blockersForKing[color]`: the pieces singly blocking a slider check on
     /// `color`'s king. Indexed by [`Color::index`].
     blockers: [Bitboard; Color::COUNT],
     /// `pinners[color]`: the enemy sliders pinning a `color`-blocker to
-    /// `color`'s king. Note the index flip: [`crate::see::slider_blockers`]
+    /// `color`'s king. Note the index flip: [`crate::see::slider_blockers_at`]
     /// returns `pinners[~c]` alongside `blockersForKing[c]`.
     pinners: [Bitboard; Color::COUNT],
     /// `checkersBB`: the squares of the enemy pieces giving check to the side to
@@ -898,7 +893,8 @@ impl CheckInfo {
 /// `pos.check_squares(pt) & to` does.
 #[derive(Clone, Copy, Debug)]
 pub struct CheckSquares {
-    /// The snapshotted `checkSquares[pattern]` table, keyed by [`check_pattern`].
+    /// The snapshotted `checkSquares[pattern]` table, keyed by
+    /// [`crate::board::pattern_of`].
     table: [Bitboard; CHECK_PATTERN_COUNT],
 }
 
@@ -916,23 +912,6 @@ impl Position {
     /// the cold entry points, which have no pre-computed check flag.
     pub(crate) fn compute_check_info(&self) -> CheckInfo {
         self.compute_check_info_impl(None, None)
-    }
-
-    /// Check info for a child position whose check status is already known:
-    /// `in_check` is taken from `gives_check` rather than probed.
-    pub(crate) fn compute_check_info_with_in_check(&self, in_check: bool) -> CheckInfo {
-        self.compute_check_info_impl(Some(in_check), None)
-    }
-
-    /// Like [`Self::compute_check_info_with_in_check`], but with the child
-    /// `checkersBB` also supplied by the caller, built differentially rather
-    /// than re-derived by a full reverse-attack probe.
-    pub(crate) fn compute_check_info_with_in_check_and_checkers(
-        &self,
-        in_check: bool,
-        checkers: Bitboard,
-    ) -> CheckInfo {
-        self.compute_check_info_impl(Some(in_check), Some(checkers))
     }
 
     fn compute_check_info_impl(
@@ -2553,7 +2532,7 @@ mod tests {
 
 #[cfg(test)]
 mod attack_query_equivalence {
-    use super::{CHECK_PATTERN_COUNT, attack_set_from_scan, attacks_bb, check_pattern};
+    use super::{CHECK_PATTERN_COUNT, attack_set_from_scan, attacks_bb};
     use crate::bitboard::Bitboard;
     use crate::board::{Board, PATTERN_COUNT, pattern_of};
     use crate::color::Color;
@@ -2714,13 +2693,6 @@ mod attack_query_equivalence {
 
         // The pattern maps line up, which pins the numeric slots against drift.
         assert_eq!(CHECK_PATTERN_COUNT, PATTERN_COUNT);
-        for p in [
-            Piece::new(PieceKind::Gold, Color::Black),
-            Piece::promoted(PieceKind::Pawn, Color::White).unwrap(),
-            Piece::promoted(PieceKind::Rook, Color::Black).unwrap(),
-        ] {
-            assert_eq!(check_pattern(p), pattern_of(p));
-        }
     }
 
     /// Run both checks at `pos`.
