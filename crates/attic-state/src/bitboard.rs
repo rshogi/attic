@@ -54,7 +54,13 @@ pub struct Bitboard {
 
 /// Per-square single-bit table (`SquareBB`), so that [`Bitboard::from_square`]
 /// is a table load rather than a `part()` lane branch.
-const SQUARE_BB: [Bitboard; N] = {
+///
+/// A `static`, not a `const`: indexing a `const` array with a run-time index
+/// can make the compiler materialise the whole 1296-byte table on the stack
+/// (a `memcpy` per call) in a function short of registers, whereas a `static`
+/// is always read in place. `from_square` is `const fn` and only reads it at
+/// run time, so nothing needs the `const` form.
+static SQUARE_BB: [Bitboard; N] = {
     let mut t = [Bitboard::EMPTY; N];
     let mut idx = 0;
     while idx < N {
@@ -158,6 +164,34 @@ impl Bitboard {
             p0: self.p[0],
             p1: self.p[1],
         }
+    }
+
+    /// `self` without the members of `rhs` (`self & !rhs`) as one `pandn`.
+    ///
+    /// `!rhs` (the [`core::ops::Not`] operator) is the complement *within the
+    /// board*, which costs an extra `XOR` with [`Bitboard::FULL`] to keep the
+    /// spare lane bits clear. Here `self`'s own spare bits are clear (every
+    /// value keeps them so), so the plain bitwise complement is safe and the
+    /// result is canonical.
+    pub fn and_not(self, rhs: Bitboard) -> Bitboard {
+        let bb = Bitboard {
+            p: lane_andnot(rhs.p, self.p),
+        };
+        debug_assert_canonical(bb);
+        bb
+    }
+
+    /// The least member square of a **non-empty** set — what `squares().next()`
+    /// yields, without the `Option`.
+    pub fn lowest_square(self) -> Square {
+        debug_assert!(!self.is_empty(), "lowest_square of an empty set");
+        let [p0, p1] = self.p;
+        let index = if p0 != 0 {
+            p0.trailing_zeros()
+        } else {
+            p1.trailing_zeros() + LANE0_SPAN
+        };
+        Square::from_index(index as u8).expect("lowest_square: bit index < 81")
     }
 
     // The bitwise operator traits are not `const`-callable, so the const table
@@ -277,6 +311,18 @@ fn lane_xor(a: [u64; 2], b: [u64; 2]) -> [u64; 2] {
     }
 }
 
+/// SSE2 lane `ANDNOT`: `!a & b`. SAFETY: as [`lane_or`].
+#[cfg(target_arch = "x86_64")]
+fn lane_andnot(a: [u64; 2], b: [u64; 2]) -> [u64; 2] {
+    use core::arch::x86_64::{__m128i, _mm_andnot_si128};
+    unsafe {
+        let va: __m128i = core::mem::transmute(a);
+        let vb: __m128i = core::mem::transmute(b);
+        let r: [u64; 2] = core::mem::transmute(_mm_andnot_si128(va, vb));
+        r
+    }
+}
+
 /// SSE4.1 zero-overlap test: `(a & b) == 0` (`_mm_testz_si128`).
 ///
 /// SAFETY: SSE4.1 is part of the target's assumed base (this repo builds with
@@ -316,6 +362,24 @@ fn lane_byte_reverse(a: [u64; 2]) -> [u64; 2] {
     }
 }
 
+/// Byte-reverse the 128-bit value when `reverse`, else leave it as is, with
+/// no branch: one `pshufb` whose control is the identity or the reversal
+/// permutation. SAFETY: as [`lane_testz`]; both controls are permutations of
+/// `0..16`, so every output byte comes from the input.
+#[cfg(target_arch = "x86_64")]
+fn lane_byte_reverse_if(a: [u64; 2], reverse: bool) -> [u64; 2] {
+    use core::arch::x86_64::{__m128i, _mm_shuffle_epi8};
+    const CONTROL: [[u8; 16]; 2] = [
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+        [15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0],
+    ];
+    unsafe {
+        let va: __m128i = core::mem::transmute(a);
+        let control: __m128i = core::mem::transmute(CONTROL[reverse as usize]);
+        core::mem::transmute(_mm_shuffle_epi8(va, control))
+    }
+}
+
 /// SSE unpack: returns `(hi_out, lo_out)` where
 /// `hi_out = unpackhi(lo_in, hi_in)`, `lo_out = unpacklo(lo_in, hi_in)`.
 /// SAFETY: as [`lane_testz`].
@@ -333,7 +397,7 @@ fn lane_unpack(hi_in: [u64; 2], lo_in: [u64; 2]) -> ([u64; 2], [u64; 2]) {
 
 /// SSE 128-bit decrement of the whole register (`Bitboard::decrement`). SAFETY:
 /// as [`lane_testz`].
-#[cfg(all(test, target_arch = "x86_64"))]
+#[cfg(target_arch = "x86_64")]
 fn lane_decrement(a: [u64; 2]) -> [u64; 2] {
     use core::arch::x86_64::{
         __m128i, _mm_add_epi64, _mm_alignr_epi8, _mm_cmpeq_epi64, _mm_set1_epi64x,
@@ -378,11 +442,16 @@ fn lane_byte_reverse(a: [u64; 2]) -> [u64; 2] {
 }
 
 #[cfg(not(target_arch = "x86_64"))]
+fn lane_byte_reverse_if(a: [u64; 2], reverse: bool) -> [u64; 2] {
+    if reverse { lane_byte_reverse(a) } else { a }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
 fn lane_unpack(hi_in: [u64; 2], lo_in: [u64; 2]) -> ([u64; 2], [u64; 2]) {
     ([lo_in[1], hi_in[1]], [lo_in[0], hi_in[0]])
 }
 
-#[cfg(all(test, not(target_arch = "x86_64")))]
+#[cfg(not(target_arch = "x86_64"))]
 fn lane_decrement(a: [u64; 2]) -> [u64; 2] {
     [
         a[0].wrapping_sub(1),
@@ -434,6 +503,11 @@ fn lane_and(a: [u64; 2], b: [u64; 2]) -> [u64; 2] {
 #[cfg(not(target_arch = "x86_64"))]
 fn lane_xor(a: [u64; 2], b: [u64; 2]) -> [u64; 2] {
     [a[0] ^ b[0], a[1] ^ b[1]]
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn lane_andnot(a: [u64; 2], b: [u64; 2]) -> [u64; 2] {
+    [!a[0] & b[0], !a[1] & b[1]]
 }
 
 /// Ascending-index iterator over a [`Bitboard`]'s member squares.
@@ -1003,15 +1077,19 @@ impl Bitboard {
         // next file's first, and is masked off.
         let [p0, p1] = self.p;
         let bb = match color {
-            Color::Black => Bitboard {
-                p: [(p0 >> 1) | ((p1 & 1) << (LANE0_SPAN - 1)), p1 >> 1],
-            } & !RANK_MASKS[RANKS - 1],
-            Color::White => Bitboard {
-                p: [
-                    (p0 << 1) & P0_MASK,
-                    ((p1 << 1) | (p0 >> (LANE0_SPAN - 1))) & P1_MASK,
-                ],
-            } & !RANK_MASKS[0],
+            Color::Black => {
+                Bitboard {
+                    p: [(p0 >> 1) | ((p1 & 1) << (LANE0_SPAN - 1)), p1 >> 1],
+                } & !RANK_MASKS[RANKS - 1]
+            }
+            Color::White => {
+                Bitboard {
+                    p: [
+                        (p0 << 1) & P0_MASK,
+                        ((p1 << 1) | (p0 >> (LANE0_SPAN - 1))) & P1_MASK,
+                    ],
+                } & !RANK_MASKS[0]
+            }
         };
         debug_assert_canonical(bb);
         bb
@@ -1449,6 +1527,65 @@ pub fn dragon_attacks(sq: Square, occ: Bitboard) -> Bitboard {
     rook_attacks(sq, occ) | KING_ATTACKS[0][sq.index() as usize]
 }
 
+/// `STEP_RAY[sq][d - 2]` = the full ray from `sq` along direction `d` of
+/// [`DIRECTIONS`], for the rank and diagonal directions `d = 2..=7`, with the
+/// directions running toward *decreasing* square index (the odd `d`) stored
+/// byte-reversed — the reference's `QUGIY_STEP_EFFECT[dd][sq]`. Squares are the
+/// major index so that one `sq` selects a 96-byte row, which a loop over the
+/// directions of a fixed `sq` addresses once.
+const fn build_step_ray() -> [[Bitboard; 6]; N] {
+    let mut t = [[Bitboard::EMPTY; 6]; N];
+    let mut s = 0;
+    while s < N {
+        let mut d = 2;
+        while d < DIR_COUNT {
+            let ray = Bitboard::from_contiguous(RAY_BITS[d][s]).p;
+            t[s][d - 2] = Bitboard {
+                p: if d & 1 == 1 { cbyte_reverse(ray) } else { ray },
+            };
+            d += 1;
+        }
+        s += 1;
+    }
+    t
+}
+
+static STEP_RAY: [[Bitboard; 6]; N] = build_step_ray();
+
+/// The occupancy-limited ray from `sq` along one rank or diagonal direction
+/// `dir` (`2..=7`, an index into [`DIRECTIONS`]), cut at and including the
+/// first occupied square — the reference's `rayEffect<D>(sq, occ)`.
+///
+/// One direction costs a single 128-bit decrement, where
+/// [`rook_attacks`] / [`bishop_attacks`] walk every direction. The odd
+/// directions run toward decreasing index, so their occupancy and mask are
+/// byte-reversed to make the nearest blocker the lowest set bit. Every ray
+/// square of these directions sits in its own byte (the steps are 8, 9 and 10
+/// bits), which is what lets the byte reversal reverse the walk order. File
+/// directions (`0` and `1`) stay inside one lane and are a [`lance_attacks`].
+pub(crate) fn slide_ray(dir: usize, sq: Square, occ: Bitboard) -> Bitboard {
+    debug_assert!(
+        (2..DIR_COUNT).contains(&dir),
+        "slide_ray: direction {dir} is not a rank or diagonal"
+    );
+    let reverse = dir & 1 == 1;
+    let mask = STEP_RAY[sq.index() as usize][dir - 2].p;
+    let bb = lane_and(lane_byte_reverse_if(occ.p, reverse), mask);
+    let changed = lane_and(lane_xor(bb, lane_decrement(bb)), mask);
+    Bitboard {
+        p: lane_byte_reverse_if(changed, reverse),
+    }
+}
+
+/// The [`DIRECTIONS`] index of the unit direction from `from` toward `to`, or
+/// [`DIR_COUNT`] when the two do not lie on one of the eight queen-lines (the
+/// table form of [`ray_dir`], which callers that go on to index per-direction
+/// tables want).
+#[inline(always)]
+pub(crate) fn dir_toward(from: Square, to: Square) -> usize {
+    DIR_OF[from.index() as usize][to.index() as usize] as usize
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1575,6 +1712,97 @@ mod tests {
                     "dragon from {from:?} occ {occ:#x}",
                 );
             }
+        }
+    }
+
+    /// `slide_ray` walks one direction with one decrement; it must equal the
+    /// ray-walk oracle on every square and rank / diagonal direction, over
+    /// empty, full and random occupancies (including ones with a blocker on the
+    /// first square of the ray and ones with none).
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn slide_ray_equals_ray_walk_oracle() {
+        let mut state: u128 = 0x0123_4567_89AB_CDEF_FEDC_BA98_7654_3211;
+        let mut rng = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state & BOARD_MASK
+        };
+        let mut occs = vec![0u128, BOARD_MASK];
+        for _ in 0..20_000 {
+            occs.push(rng());
+            // A sparse board too: the typical SEE occupancy has long open rays.
+            occs.push(rng() & rng() & rng());
+        }
+        for occ in occs {
+            let occ_bb = Bitboard::from_raw(occ);
+            for from in all_squares() {
+                for dir in 2..DIR_COUNT {
+                    assert_eq!(
+                        slide_ray(dir, from, occ_bb),
+                        ray_attacks(dir, from, occ_bb),
+                        "dir {dir} from {from:?} occ {occ:#x}",
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dir_toward_matches_ray_dir() {
+        for a in all_squares() {
+            for b in all_squares() {
+                let expected = ray_dir(a, b).map(|d| {
+                    DIRECTIONS
+                        .iter()
+                        .position(|&x| x == d)
+                        .expect("ray_dir yields a DIRECTIONS entry")
+                });
+                let got = dir_toward(a, b);
+                match expected {
+                    Some(i) => assert_eq!(got, i, "{a:?} -> {b:?}"),
+                    None => assert_eq!(got, DIR_COUNT, "{a:?} -> {b:?}"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn and_not_equals_and_of_complement() {
+        let mut state: u128 = 0x9E37_79B9_7F4A_7C15_F39C_C060_5CED_C834;
+        let mut rng = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            Bitboard::from_raw(state)
+        };
+        for _ in 0..10_000 {
+            let (a, b) = (rng(), rng());
+            assert_eq!(a.and_not(b), a & !b);
+        }
+        assert_eq!(Bitboard::FULL.and_not(Bitboard::EMPTY), Bitboard::FULL);
+        assert_eq!(Bitboard::FULL.and_not(Bitboard::FULL), Bitboard::EMPTY);
+    }
+
+    #[test]
+    fn lowest_square_equals_first_of_squares() {
+        let mut state: u128 = 0x2545_F491_4F6C_DD1D_8F7A_B13C_5E29_0D47;
+        let mut rng = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..20_000 {
+            // Thin the board out so that members sit in either lane.
+            let bb = Bitboard::from_raw(rng() & rng() & rng());
+            if let Some(first) = bb.squares().next() {
+                assert_eq!(bb.lowest_square(), first);
+            }
+        }
+        for sq in all_squares() {
+            assert_eq!(Bitboard::from_square(sq).lowest_square(), sq);
         }
     }
 
