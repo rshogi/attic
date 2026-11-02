@@ -6,6 +6,10 @@
 //! depend on per-iteration output set `PvInterval value 0` so the default
 //! 300 ms throttle does not suppress the intermediate lines.
 
+// Every test here stages `common`'s synthetic nn.bin, which is an SFNN-1536 file;
+// see the note on the constants in `common/mod.rs`.
+#![cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
+
 mod common;
 
 use attic_state::parse_usi_move;

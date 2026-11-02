@@ -17,6 +17,19 @@ attic-storage = { path = "../attic-storage" }
 [features]
 default = ["quick-draw"]
 quick-draw = ["attic-state/quick-draw", "attic-eval/quick-draw"]
+# Network selection, passed through to attic-eval. Shapes that keep their
+# layer-stack coefficients outside `nn.bin` also make the loader pick up the
+# `progress.bin` beside it.
+sfnn_halfkahm2_1536_15_32_k3k3 = ["attic-eval/sfnn_halfkahm2_1536_15_32_k3k3"]
+sfnn_halfkahm2_2304_15_64_progress8ek = ["attic-eval/sfnn_halfkahm2_2304_15_64_progress8ek"]
+nnue_kp_256x2_32_32 = ["attic-eval/nnue_kp_256x2_32_32"]
+nnue_halfkp_256x2_32_32 = ["attic-eval/nnue_halfkp_256x2_32_32"]
+sym_kp_128x2_512 = ["attic-eval/sym_kp_128x2_512"]
+sym_halfkp_128x2_512 = ["attic-eval/sym_halfkp_128x2_512"]
+# Make `go nodes N` stop where the reference does: leave the `check_time` poll out
+# of `qsearch` and start each `go` with `callsCnt` at 0. For comparing against
+# YaneuraOu only; the default keeps the earlier abort latency.
+ref_check_time = []
 
 [dev-dependencies]
 serde = { version = "~1.0", features = ["derive"] }

@@ -5,6 +5,11 @@
 //! the test prints a notice and passes and the default `cargo test` run stays
 //! green everywhere.
 
+#![cfg(any(
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+))]
+
 use std::path::{Path, PathBuf};
 
 use attic_eval::{Backend, NnueNetwork, active_backend, evaluate, load_network};
@@ -104,14 +109,23 @@ fn position_for(fixture: &EvalFixture) -> Position {
 
 /// Backend selection is a compile-time decision, so a VNNI-capable CPU running
 /// a scalar build means the build was not made for its host. On a CPU without
-/// VNNI this only logs the scalar path.
+/// VNNI this only logs the scalar path. CI pins a baseline CPU instead of the
+/// host and says so with `ATTIC_BASELINE_BUILD`; the scalar path is then the
+/// right one even where the runner's CPU has VNNI.
 fn assert_simd_path_selected() {
     #[cfg(target_arch = "x86_64")]
     {
         let has_vnni = std::arch::is_x86_feature_detected!("avx512f")
             && std::arch::is_x86_feature_detected!("avx512bw")
             && std::arch::is_x86_feature_detected!("avx512vnni");
-        if has_vnni {
+        if std::env::var_os("ATTIC_BASELINE_BUILD").is_some() {
+            assert_eq!(
+                active_backend(),
+                Backend::Scalar,
+                "ATTIC_BASELINE_BUILD is set, so the build should not have \
+                 enabled AVX-512 VNNI",
+            );
+        } else if has_vnni {
             assert_eq!(
                 active_backend(),
                 Backend::Avx512Vnni,

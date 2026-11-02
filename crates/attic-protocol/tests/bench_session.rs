@@ -107,6 +107,7 @@ fn bench_session(evaldir: &str, bench_line: &str) -> String {
     drive(&input)
 }
 
+#[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
 #[test]
 #[cfg_attr(miri, ignore)]
 fn two_runs_in_one_process_report_identical_nodes() {
@@ -145,6 +146,7 @@ fn two_runs_in_one_process_report_identical_nodes() {
     );
 }
 
+#[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
 #[test]
 #[cfg_attr(miri, ignore)]
 fn two_process_launches_report_identical_nodes() {

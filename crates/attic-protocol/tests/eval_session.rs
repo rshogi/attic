@@ -7,6 +7,10 @@
 //! driver's `bestmove` equals a direct [`QSearch::run_root`] call for the same
 //! network, position, and table sizing.
 
+// Every test here stages `common`'s synthetic nn.bin, which is an SFNN-1536 file;
+// see the note on the constants in `common/mod.rs`.
+#![cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -200,19 +204,26 @@ fn synthetic_network_session_matches_direct_search_choice() {
     );
 }
 
-#[test]
-#[cfg_attr(miri, ignore)]
-fn isready_keep_alive_emits_bare_newline_during_heavy_load() {
-    // With a very short injected poll the real heavy work here — the `nn.bin`
-    // load and the 1024 MiB table zeroing — spans many keep-alive ticks.
-    let dir = TempDir::new("keepalive");
+/// Drive one `isready` whose heavy work is real — the `nn.bin` load and the
+/// 1024 MiB table zeroing — under a very short injected keep-alive poll, with
+/// `Threads` optionally set first, and check the keep-alive's output around it.
+/// A short `go` follows, so a worker pool that the keep-alive had disturbed
+/// would show up as a missing `bestmove`.
+fn assert_keep_alive_during_heavy_isready(tag: &str, threads: Option<usize>) {
+    let dir = TempDir::new(tag);
     write_synthetic_nn_bin(dir.path());
     let evaldir = dir.path().to_str().expect("utf-8 temp path");
+    let threads_line = threads
+        .map(|n| format!("setoption name Threads value {n}\n"))
+        .unwrap_or_default();
 
     let input = format!(
         "usi\n\
+         {threads_line}\
          setoption name EvalDir value {evaldir}\n\
          isready\n\
+         position startpos\n\
+         go depth 1\n\
          quit\n"
     );
     let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
@@ -228,7 +239,9 @@ fn isready_keep_alive_emits_bare_newline_during_heavy_load() {
     let readyok_pos = out.find("readyok\n").expect("readyok emitted");
 
     // No line the driver emits is otherwise empty, so any empty line is a
-    // keep-alive newline.
+    // keep-alive newline. The stop wakes the helper at once now, so these must
+    // come from ticks the long load really spanned, not from a join waiting out
+    // a poll.
     let before = &out[..readyok_pos];
     let bare_before = before.split('\n').filter(|s| s.is_empty()).count();
     assert!(
@@ -243,6 +256,33 @@ fn isready_keep_alive_emits_bare_newline_during_heavy_load() {
         out.lines().any(|l| l == "readyok"),
         "readyok must be intact in:\n{out:?}"
     );
+
+    // The guard is dropped, and its helper joined, before `readyok` goes out, so
+    // no keep-alive newline can follow it; the search after it writes none.
+    let after = &out[readyok_pos + "readyok\n".len()..];
+    assert!(
+        !after.lines().any(str::is_empty),
+        "a keep-alive newline arrived after readyok in:\n{out:?}"
+    );
+    assert_eq!(
+        bestmove_lines(&out).len(),
+        1,
+        "the go after the heavy isready must answer once in:\n{out:?}"
+    );
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
+fn isready_keep_alive_emits_bare_newline_during_heavy_load() {
+    assert_keep_alive_during_heavy_isready("keepalive", None);
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
+fn isready_keep_alive_emits_bare_newline_during_heavy_load_with_threads2() {
+    // The pool is rebuilt for two workers before the load, and the network is
+    // resolved per worker after it; the keep-alive runs across both.
+    assert_keep_alive_during_heavy_isready("keepalive-t2", Some(2));
 }
 
 #[test]

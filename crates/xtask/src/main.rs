@@ -8,6 +8,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use attic_state::packed_sfen::sfen_pack;
 use attic_state::{Position, parse_sfen, parse_usi_move};
 
+mod pgo;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "xtask",
@@ -36,6 +38,9 @@ enum Command {
     /// Convert a hand-authored `.db` text book into a `.ybb` binary book plus an
     /// expected-results JSON, using the workspace PackedSfen encoder.
     CaptureBook(CaptureBookArgs),
+    /// Build `attic` as a profile-guided release build: an instrumented build,
+    /// a training run over a fixed set of positions, then the final build.
+    BuildPgo(pgo::BuildPgoArgs),
 }
 
 #[derive(clap::Args, Debug)]
@@ -227,6 +232,21 @@ fn main() -> ExitCode {
             }
             Err(e) => {
                 eprintln!("xtask capture-book: {e}");
+                ExitCode::FAILURE
+            }
+        },
+        Command::BuildPgo(args) => match pgo::build_pgo(&args) {
+            Ok(outcome) => {
+                println!("profile-guided binary: {}", outcome.binary.display());
+                println!("merged profile: {}", outcome.profile.display());
+                println!(
+                    "training: {} positions, go nodes {} each",
+                    outcome.positions, outcome.nodes
+                );
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("xtask build-pgo: {e}");
                 ExitCode::FAILURE
             }
         },

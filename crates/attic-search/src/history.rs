@@ -78,6 +78,79 @@ fn piece_code(p: Piece) -> usize {
     p.kind.index() + if p.promoted { 8 } else { 0 } + if p.color == Color::White { 16 } else { 0 }
 }
 
+/// Entries in one `[pc][to]` plane: a continuation-history plane, or one
+/// pawn-history slot.
+pub const PIECE_TO_LEN: usize = PIECE_NB * SQ_NB;
+
+/// Entries in one `mainHistory[us]` or `lowPlyHistory[ply]` row: one per value
+/// of the move's low 16 bits (`move.raw()`).
+pub const MOVE16_NB: usize = 1 << 16;
+
+/// `piece_code(moved_piece_after) * SQ_NB` for every value of a move's 5-bit
+/// piece field (bits 16..20), or [`PIECE_TO_LEN`] for a field no move
+/// constructor produces — the reference `PieceType` codes `0` and `15`, which
+/// [`Move::moved_piece_after`] rejects. The sentinel puts the index
+/// [`piece_to_index`] forms out of range, so that a malformed move still
+/// panics there rather than reading a wrong entry.
+static PIECE_BASE_OF_FIELD: [u16; 32] = {
+    // Reference `PieceType` code (the field's low 4 bits) to this port's
+    // `(PieceKind::index, promoted)`; the move encoding documents the codes.
+    const REF_KIND: [Option<(usize, bool)>; 16] = [
+        None,             // 0  NO_PIECE_TYPE
+        Some((0, false)), // 1  PAWN
+        Some((1, false)), // 2  LANCE
+        Some((2, false)), // 3  KNIGHT
+        Some((3, false)), // 4  SILVER
+        Some((5, false)), // 5  BISHOP
+        Some((6, false)), // 6  ROOK
+        Some((4, false)), // 7  GOLD
+        Some((7, false)), // 8  KING
+        Some((0, true)),  // 9  PRO_PAWN
+        Some((1, true)),  // 10 PRO_LANCE
+        Some((2, true)),  // 11 PRO_KNIGHT
+        Some((3, true)),  // 12 PRO_SILVER
+        Some((5, true)),  // 13 HORSE
+        Some((6, true)),  // 14 DRAGON
+        None,             // 15 never on a move
+    ];
+    let mut t = [PIECE_TO_LEN as u16; 32];
+    let mut field = 0;
+    while field < 32 {
+        if let Some((kind, promoted)) = REF_KIND[field & 0x0F] {
+            let white = field & 0x10 != 0;
+            // `piece_code`, spelled out for a `const` context.
+            let code = kind + if promoted { 8 } else { 0 } + if white { 16 } else { 0 };
+            t[field] = (code * SQ_NB) as u16;
+        }
+        field += 1;
+    }
+    t
+};
+
+/// The `[pc][to]` index of `m` within a [`PIECE_TO_LEN`]-entry plane, `pc`
+/// being [`Move::moved_piece_after`] — the one index that every continuation
+/// plane and the pawn-history slot a quiet's score reads share, so that it is
+/// computed once per move rather than once per table.
+///
+/// The result is `< PIECE_TO_LEN` on every path that returns: the assert below
+/// is what lets the plane reads that follow drop their own bounds checks, and
+/// it fires on a malformed piece field just as `moved_piece_after` would.
+#[inline(always)]
+pub fn piece_to_index(m: Move) -> usize {
+    let to = m.to_sq().index() as usize;
+    let base = PIECE_BASE_OF_FIELD[((m.to_bits() >> 16) & 0x1F) as usize] as usize;
+    let i = base + to;
+    assert!(i < PIECE_TO_LEN, "piece_to_index: malformed move data");
+    i
+}
+
+/// The `move.raw()` index of `m` within a [`MOVE16_NB`]-entry row: always in
+/// range, being a 16-bit value.
+#[inline(always)]
+pub fn move16_index(m: Move) -> usize {
+    m.move16() as usize
+}
+
 /// Dense index for a captured piece's *type*, collapsing colour but keeping the
 /// promoted distinction. Index `0` is reserved for an empty target, as the
 /// reference's `type_of(NO_PIECE) == 0` is: the main search reads that slot for
@@ -168,6 +241,16 @@ impl ButterflyHistory {
         self.table[Self::index(us, m)] as i32
     }
 
+    /// The whole `mainHistory[us]` row, indexed by [`move16_index`]. Bounds are
+    /// settled here once, so that a caller scoring many moves for the same side
+    /// reads each entry without a further check.
+    pub fn row(&self, us: Color) -> &[i16; MOVE16_NB] {
+        let base = us.index() * MOVE16_NB;
+        self.table[base..base + MOVE16_NB]
+            .try_into()
+            .expect("a range of MOVE16_NB entries")
+    }
+
     /// Gravity-update `mainHistory[us][move.raw16]`.
     pub fn update(&mut self, us: Color, m: Move, bonus: i32) {
         let i = Self::index(us, m);
@@ -254,6 +337,15 @@ impl LowPlyHistory {
     /// `ply < LOW_PLY_HISTORY_SIZE`.
     pub fn get(&self, ply: usize, m: Move) -> i32 {
         self.table[Self::index(ply, m)] as i32
+    }
+
+    /// The whole `lowPlyHistory[ply]` row, indexed by [`move16_index`]. Panics
+    /// unless `ply < LOW_PLY_HISTORY_SIZE`.
+    pub fn row(&self, ply: usize) -> &[i16; MOVE16_NB] {
+        let base = ply * MOVE16_NB;
+        self.table[base..base + MOVE16_NB]
+            .try_into()
+            .expect("a range of MOVE16_NB entries")
     }
 
     /// Gravity-update `lowPlyHistory[ply][move.raw16]`. The caller guarantees
@@ -400,6 +492,30 @@ impl SharedHistories {
         self.correction[self.corr_index(key, color, channel)].load(Ordering::Relaxed) as i32
     }
 
+    /// Software-prefetch the correction slot keyed by `key` for side-to-move
+    /// `color`. The four channels of one `[color]` row are adjacent `i16`s, so
+    /// one hint covers whichever channel is read. A pure hardware hint with no
+    /// architectural effect, so it cannot change any search result.
+    #[inline]
+    pub fn correction_prefetch(&self, key: u64, color: Color) {
+        #[cfg(target_arch = "x86_64")]
+        {
+            // The checked index keeps the hinted address inside the table.
+            let entry = &self.correction[self.corr_index(key, color, CorrChannel::Pawn)];
+            // SAFETY: `_mm_prefetch` is a hint that neither reads nor writes
+            // the pointed-to memory in any observable way and cannot fault, and
+            // `entry` is a live, in-bounds element of the table.
+            unsafe {
+                use core::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
+                _mm_prefetch::<_MM_HINT_T0>(entry as *const AtomicI16 as *const i8);
+            }
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let _ = (key, color);
+        }
+    }
+
     /// Gravity-update the `channel` entry for side-to-move `color` in the slot
     /// keyed by `key`.
     pub fn correction_update(&self, key: u64, color: Color, channel: CorrChannel, bonus: i32) {
@@ -421,6 +537,16 @@ impl SharedHistories {
     /// by `pawn_key`.
     pub fn pawn_get(&self, pawn_key: u64, pc: Piece, to: Square) -> i32 {
         self.pawn[self.pawn_index(pawn_key, pc, to)].load(Ordering::Relaxed) as i32
+    }
+
+    /// The whole `[pc][to]` slot keyed by `pawn_key`, indexed by
+    /// [`piece_to_index`] — `pawn_get` for every move of one position, with the
+    /// slot selected and bounds-checked once.
+    pub fn pawn_plane(&self, pawn_key: u64) -> &[AtomicI16; PIECE_TO_LEN] {
+        let base = ((pawn_key as usize) & self.pawn_mask) * PAWN_SLOT_LEN;
+        self.pawn[base..base + PIECE_TO_LEN]
+            .try_into()
+            .expect("a range of PIECE_TO_LEN entries")
     }
 
     /// Gravity-update the `[pc][to]` entry in the plane keyed by `pawn_key`.
@@ -538,6 +664,15 @@ impl ContinuationHistory {
         self.table[Self::cell(plane, pc, to)] as i32
     }
 
+    /// The whole of `plane`, indexed by [`piece_to_index`]: `get_at` for every
+    /// move of one node, with the plane bounds-checked once.
+    pub fn plane(&self, plane: usize) -> &[i16; PIECE_TO_LEN] {
+        let base = plane * Self::PLANE_LEN;
+        self.table[base..base + Self::PLANE_LEN]
+            .try_into()
+            .expect("a range of PLANE_LEN entries")
+    }
+
     /// Gravity-update the inner `[pc][to]` entry in `plane`.
     pub fn update_at(&mut self, plane: usize, pc: Piece, to: Square, bonus: i32) {
         let i = Self::cell(plane, pc, to);
@@ -574,6 +709,85 @@ impl TtMoveHistory {
     /// Gravity-update the entry.
     pub fn update(&mut self, bonus: i32) {
         self.entry = apply_gravity(self.entry, bonus, TT_MOVE_HISTORY_D);
+    }
+}
+
+#[cfg(test)]
+mod index_tests {
+    use super::*;
+
+    /// [`piece_to_index`] is the `[piece_code(moved_piece_after)][to]` index
+    /// for every move a constructor produces, and panics wherever
+    /// `moved_piece_after` does.
+    #[test]
+    fn piece_to_index_matches_moved_piece_after_for_every_field() {
+        for field in 0u32..32 {
+            let probe = Move::from_bits(field << 16);
+            let Ok(pc) = std::panic::catch_unwind(|| probe.moved_piece_after()) else {
+                // A field `moved_piece_after` rejects must be rejected here too.
+                assert!(
+                    std::panic::catch_unwind(|| piece_to_index(probe)).is_err(),
+                    "field {field} must panic"
+                );
+                continue;
+            };
+            for to in 0..Square::COUNT as u32 {
+                let m = Move::from_bits((field << 16) | to);
+                assert_eq!(
+                    piece_to_index(m),
+                    piece_code(pc) * SQ_NB + to as usize,
+                    "field {field} to {to}"
+                );
+            }
+        }
+    }
+
+    /// The plane and row accessors read the same entries as the per-entry
+    /// getters.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn plane_accessors_agree_with_getters() {
+        use attic_state::PieceKind;
+        let pc = Piece::promoted(PieceKind::Rook, Color::White).unwrap();
+        let to = Square::new(2, 7).unwrap();
+        let m = Move::make_promote(
+            Square::new(2, 2).unwrap(),
+            to,
+            Piece::new(PieceKind::Rook, Color::White),
+        );
+        assert_eq!(m.moved_piece_after(), pc);
+        let i = piece_to_index(m);
+
+        let mut cont = ContinuationHistory::new();
+        let plane = ContinuationHistory::plane_index(true, false, pc, to);
+        cont.update_at(plane, pc, to, 1234);
+        assert_eq!(cont.plane(plane)[i] as i32, cont.get_at(plane, pc, to));
+        assert_ne!(cont.get_at(plane, pc, to), 0);
+
+        let mut main = ButterflyHistory::new();
+        main.update(Color::White, m, -777);
+        assert_eq!(
+            main.row(Color::White)[move16_index(m)] as i32,
+            main.get(Color::White, m)
+        );
+        assert_ne!(main.get(Color::White, m), 0);
+
+        let mut low = LowPlyHistory::new();
+        low.update(LOW_PLY_HISTORY_SIZE - 1, m, 555);
+        let row = low.row(LOW_PLY_HISTORY_SIZE - 1);
+        assert_eq!(
+            row[move16_index(m)] as i32,
+            low.get(LOW_PLY_HISTORY_SIZE - 1, m)
+        );
+
+        let sh = SharedHistories::new(2);
+        let key = 0xDEAD_BEEF_u64;
+        sh.pawn_update(key, pc, to, 999);
+        assert_eq!(
+            sh.pawn_plane(key)[i].load(Ordering::Relaxed) as i32,
+            sh.pawn_get(key, pc, to)
+        );
+        assert_ne!(sh.pawn_get(key, pc, to), PAWN_INIT as i32);
     }
 }
 

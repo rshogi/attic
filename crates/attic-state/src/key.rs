@@ -172,8 +172,7 @@ pub(crate) const NO_PAWNS_SEED: u64 = build().no_pawns;
 
 /// Encode a piece into its Zobrist table index (`0..PIECE_CODES`).
 const fn piece_code(piece: Piece) -> usize {
-    let promo = if piece.promoted { 1 } else { 0 };
-    (promo * Color::COUNT + piece.color.index()) * PieceKind::COUNT + piece.kind.index()
+    piece.code()
 }
 
 /// `board_key` term for `piece` sitting on `sq`. XOR to place, XOR again to

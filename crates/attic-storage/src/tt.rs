@@ -579,6 +579,74 @@ impl TranspositionTable {
         )
     }
 
+    /// [`Self::locate`] with the reference's `probe` rule for a TT move that
+    /// cannot be widened: a key match whose stored `move16` is non-zero and for
+    /// which `accept(move16)` is false is skipped, as the reference's
+    /// `if (!move) continue;`, so the next entry is tried and, failing that,
+    /// the replacement choice applies.
+    pub fn locate_checked(
+        &self,
+        key: u64,
+        side_to_move: u8,
+        accept: impl Fn(u16) -> bool,
+    ) -> (bool, TTData, TtSlot) {
+        assert!(!self.table.is_empty());
+        let ci = self.cluster_index(key, side_to_move);
+        let key16 = key as u16;
+        let generation = self.generation8.load(REL);
+        let cluster = &self.table[ci];
+
+        for i in 0..CLUSTER_SIZE {
+            if cluster.entry[i].key.load(REL) == key16 {
+                let found = cluster.entry[i].is_occupied();
+                let data = cluster.entry[i].read();
+                if data.move16 != 0 && !accept(data.move16) {
+                    continue;
+                }
+                return (
+                    found,
+                    data,
+                    TtSlot {
+                        cluster: ci,
+                        entry: i,
+                    },
+                );
+            }
+        }
+
+        let mut replace = 0;
+        for i in 1..CLUSTER_SIZE {
+            if cluster.entry[replace].replace_priority(generation)
+                > cluster.entry[i].replace_priority(generation)
+            {
+                replace = i;
+            }
+        }
+        (
+            false,
+            TTData::none(),
+            TtSlot {
+                cluster: ci,
+                entry: replace,
+            },
+        )
+    }
+
+    /// [`Self::probe`] with the same skip rule as [`Self::locate_checked`].
+    pub fn probe_checked(
+        &self,
+        key: u64,
+        side_to_move: u8,
+        accept: impl Fn(u16) -> bool,
+    ) -> (bool, TTData, TTWriter<'_>) {
+        let (found, data, slot) = self.locate_checked(key, side_to_move, accept);
+        (
+            found,
+            data,
+            TTWriter::new(&self.table[slot.cluster].entry[slot.entry]),
+        )
+    }
+
     /// Like [`Self::probe`] but returning the chosen entry's *location* rather
     /// than a borrowing [`TTWriter`], so that the caller can hold it across the
     /// recursive search calls that also mutate the table. The reference obtains

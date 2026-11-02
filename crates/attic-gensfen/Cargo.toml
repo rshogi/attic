@@ -1,0 +1,30 @@
+[package]
+name = "attic-gensfen"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+# Teacher-data generation. Drives the search in-process rather than over USI:
+# one process holds one copy of the network and plays many games at once, which
+# is what the external-process pipeline could not do.
+[dependencies]
+attic-eval = { path = "../attic-eval", default-features = false }
+attic-search = { path = "../attic-search", default-features = false }
+attic-state = { path = "../attic-state", default-features = false }
+attic-storage = { path = "../attic-storage" }
+attic-numa = { path = "../attic-numa" }
+
+[features]
+default = ["quick-draw"]
+quick-draw = [
+    "attic-eval/quick-draw",
+    "attic-search/quick-draw",
+    "attic-state/quick-draw",
+]
+# On by default here: this binary exists to generate teacher data from NAGISA V4.
+sfnn_halfkahm2_1536_15_32_k3k3 = ["attic-eval/sfnn_halfkahm2_1536_15_32_k3k3", "attic-search/sfnn_halfkahm2_1536_15_32_k3k3"]
+sfnn_halfkahm2_2304_15_64_progress8ek = ["attic-eval/sfnn_halfkahm2_2304_15_64_progress8ek", "attic-search/sfnn_halfkahm2_2304_15_64_progress8ek"]
+nnue_kp_256x2_32_32 = ["attic-eval/nnue_kp_256x2_32_32", "attic-search/nnue_kp_256x2_32_32"]
+nnue_halfkp_256x2_32_32 = ["attic-eval/nnue_halfkp_256x2_32_32", "attic-search/nnue_halfkp_256x2_32_32"]
+sym_kp_128x2_512 = ["attic-eval/sym_kp_128x2_512", "attic-search/sym_kp_128x2_512"]
+sym_halfkp_128x2_512 = ["attic-eval/sym_halfkp_128x2_512", "attic-search/sym_halfkp_128x2_512"]
