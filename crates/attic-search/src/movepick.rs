@@ -59,6 +59,7 @@
 //!   and sorted, and legality filtered only at yield.
 
 use std::cell::RefCell;
+use std::hint::select_unpredictable;
 
 use attic_state::{CheckSquares, ExtMove, Move, Position, piece_value};
 
@@ -114,11 +115,161 @@ fn take_scratch() -> PickerScratch {
     scratch
 }
 
+/// Lists shorter than this keep the plain insertion sort: they are mostly the
+/// two-to-seven-element capture lists, where its data-dependent branches cost
+/// less than the branch-free path's setup.
+const BRANCHLESS_SORT_MIN_LEN: usize = 16;
+
 /// The reference `partial_insertion_sort`: a stable descending insertion sort
 /// over the elements scoring at or above `limit`, leaving the rest toward the
 /// tail in unspecified order. Equal-scored elements keep their input order, so
 /// a full sort tie-breaks on generation order.
+///
+/// The result is exactly the reference's, element for element, including the
+/// order of the unsorted tail (see [`insertion_partial`]). Long lists take a
+/// branch-free route to the same arrangement, because the reference's
+/// data-dependent branches (a keep-or-skip test per element and a shift loop
+/// whose length varies) mispredict about once per element on the quiet lists
+/// the main search sorts.
 fn partial_insertion_sort(a: &mut [ExtMove], limit: i32) {
+    if a.len() < BRANCHLESS_SORT_MIN_LEN {
+        insertion_partial(a, limit);
+        return;
+    }
+
+    // Pass 1: the reference's promotion swaps, without its insertion.
+    //
+    // The reference moves each element scoring `>= limit` to `a[sorted_end]`,
+    // the slot just past its sorted prefix, and copies that slot's previous
+    // occupant into the promoted element's old place. Doing only that exchange
+    // leaves `a[0..=sorted_end]` holding the same elements the reference's
+    // sorted prefix would, in arrival order, and leaves the tail exactly as the
+    // reference does. The two stores below are an unconditional swap-or-keep,
+    // so there is no branch on the element's score.
+    let mut sorted_end = 0usize;
+    for p in 1..a.len() {
+        let cur = a[p];
+        // `sorted_end < p` holds before every step, so this index is in range.
+        let front = a[sorted_end + 1];
+        let promote = cur.value >= limit;
+        // A promoted element takes the slot past the prefix and hands that
+        // slot's occupant its old place; anything else is rewritten in place.
+        // Aiming the second store at `p` (rather than rewriting `front`) keeps
+        // the next step's load of `a[sorted_end + 1]` from waiting on it.
+        a[p] = select_unpredictable(promote, front, cur);
+        a[select_unpredictable(promote, sorted_end + 1, p)] = cur;
+        sorted_end += promote as usize;
+    }
+
+    // Pass 2: the reference's insertion order is a stable descending sort of
+    // the prefix by score, which is a pure function of the prefix.
+    stable_sort_desc(&mut a[..=sorted_end]);
+}
+
+/// Descending sort of `a` by score, equal scores keeping their input order.
+fn stable_sort_desc(a: &mut [ExtMove]) {
+    let m = a.len();
+    if m < 2 {
+        return;
+    }
+    if m > SORT_CAPACITY {
+        insertion_sort_desc(a);
+        return;
+    }
+
+    SORT_SCRATCH.with(|cell| {
+        let mut guard = cell.borrow_mut();
+        let SortScratch { keys, copy } = &mut *guard;
+
+        // One key per element, unique and strictly ordered by (score desc,
+        // index asc): a higher score is a higher key, and among equal scores
+        // the earlier index has the larger low field. A score outside the
+        // window the key can carry sends the whole list to the fallback.
+        let mut in_window = true;
+        for (i, e) in a.iter().enumerate() {
+            let score = e.value.wrapping_add(SCORE_BIAS) as u32;
+            in_window &= score < 1 << SCORE_BITS;
+            keys[i] = ((score << INDEX_BITS) | ((1 << INDEX_BITS) - 1 - i as u32)) as i32;
+            copy[i] = *e;
+        }
+        if !in_window {
+            insertion_sort_desc(a);
+            return;
+        }
+
+        // Zero padding is never greater than a real key (all are non-negative),
+        // so it adds nothing to a rank.
+        let padded = m.next_multiple_of(LANES);
+        keys[m..padded].fill(0);
+
+        // The keys are unique, so an element's rank (how many keys exceed its
+        // own) is its final position. Ranks are counted for `LANES` elements at
+        // a time with no branch on the data, which vectorizes.
+        for block in (0..m).step_by(LANES) {
+            let mine: [i32; LANES] = keys[block..block + LANES].try_into().unwrap();
+            let mut rank = [0u32; LANES];
+            for &other in &keys[..m] {
+                for lane in 0..LANES {
+                    rank[lane] += (other > mine[lane]) as u32;
+                }
+            }
+            for lane in 0..(m - block).min(LANES) {
+                a[rank[lane] as usize] = copy[block + lane];
+            }
+        }
+    });
+}
+
+/// Bits of the position index packed under the score in a sort key.
+const INDEX_BITS: u32 = 10;
+/// Width, in bits, of the score window a sort key can carry. With
+/// [`INDEX_BITS`] the key fits in 31 bits, so signed lane compares order it.
+const SCORE_BITS: u32 = 21;
+/// Added to a score to move the window `[-2^20, 2^20)` onto `[0, 2^21)`. Quiet
+/// scores stay well inside it: the six history terms bound them by about
+/// `2.6 * 10^5`.
+const SCORE_BIAS: i32 = 1 << (SCORE_BITS - 1);
+/// Elements the rank count handles per pass; keys are padded to a multiple.
+const LANES: usize = 8;
+/// Longest list [`stable_sort_desc`] sorts by packed key: the index must fit
+/// under the score, and the move buffer holds at most 600 entries anyway.
+const SORT_CAPACITY: usize = 1 << INDEX_BITS;
+
+/// The fallback for [`stable_sort_desc`] when the scores are too spread, or the
+/// list too long, for the packed-key route.
+fn insertion_sort_desc(a: &mut [ExtMove]) {
+    for p in 1..a.len() {
+        let tmp = a[p];
+        let mut q = p;
+        while q != 0 && a[q - 1].value < tmp.value {
+            a[q] = a[q - 1];
+            q -= 1;
+        }
+        a[q] = tmp;
+    }
+}
+
+/// Buffers for [`stable_sort_desc`]. One per thread rather than one per picker,
+/// because they only live for the duration of one call.
+struct SortScratch {
+    /// Packed `(score, index)` keys, zero-padded to a multiple of [`LANES`].
+    keys: [i32; SORT_CAPACITY + LANES],
+    /// A copy of the list being sorted, read while its slots are overwritten.
+    copy: [ExtMove; SORT_CAPACITY],
+}
+
+thread_local! {
+    static SORT_SCRATCH: RefCell<SortScratch> = const {
+        RefCell::new(SortScratch {
+            keys: [0; SORT_CAPACITY + LANES],
+            copy: [ExtMove { mv: Move::none(), value: 0 }; SORT_CAPACITY],
+        })
+    };
+}
+
+/// The reference's `partial_insertion_sort` verbatim: the correctness oracle
+/// for [`partial_insertion_sort`], and the path for short lists.
+fn insertion_partial(a: &mut [ExtMove], limit: i32) {
     if a.is_empty() {
         return;
     }
@@ -991,6 +1142,71 @@ mod tests {
 
     fn pos(sfen: &str) -> Position {
         parse_sfen(sfen).expect("valid SFEN")
+    }
+
+    /// xorshift64*, so the sort tests need no dependency.
+    struct Xorshift(u64);
+
+    impl Xorshift {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+
+        fn below(&mut self, n: u64) -> u64 {
+            self.next() % n
+        }
+    }
+
+    /// The branch-free [`partial_insertion_sort`] must reproduce the reference
+    /// algorithm element for element — the sorted prefix, the order of ties and
+    /// the order of the unsorted tail — for every length, score spread and
+    /// limit, including the spreads that force the insertion fallback.
+    #[test]
+    fn branchless_sort_matches_reference() {
+        let mut rng = Xorshift(0x9E37_79B9_7F4A_7C15);
+        // (score span, limit rule) — span 1 forces all-equal scores.
+        let spans: [i64; 8] = [1, 3, 40, 3000, 260_000, 600_000, 1 << 28, 1 << 31];
+        for round in 0..40_000u32 {
+            let len = match round % 8 {
+                0 => rng.below(16),
+                1 => 16 + rng.below(8),
+                2..=4 => 16 + rng.below(100),
+                5 => 100 + rng.below(200),
+                6 => 590 + rng.below(11),
+                _ => rng.below(601),
+            } as usize;
+            let span = spans[rng.below(spans.len() as u64) as usize];
+            let base = rng.below(2_000_001) as i64 - 1_000_000;
+            let list: Vec<ExtMove> = (0..len)
+                .map(|i| {
+                    let value = (base + rng.below(span as u64) as i64)
+                        .clamp(i32::MIN as i64, i32::MAX as i64)
+                        as i32;
+                    ExtMove {
+                        mv: Move::from_bits(i as u32 + 1),
+                        value,
+                    }
+                })
+                .collect();
+            let limit = match rng.below(5) {
+                0 => i32::MIN,
+                1 => i32::MAX,
+                2 => base as i32,
+                3 => (base + span / 2) as i32,
+                _ => -3560 * (1 + rng.below(20) as i32),
+            };
+            let mut expected = list.clone();
+            insertion_partial(&mut expected, limit);
+            let mut actual = list.clone();
+            partial_insertion_sort(&mut actual, limit);
+            assert_eq!(
+                actual, expected,
+                "len {len} span {span} limit {limit} diverged"
+            );
+        }
     }
 
     /// The six sentinel continuation planes of a node with untouched stack
