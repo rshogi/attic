@@ -700,32 +700,52 @@ impl Dirty {
 
 /// The add/sub feature delta for one perspective across a move. At most two
 /// columns change per side, so the lists are fixed two-slot arrays.
-#[derive(Clone, Copy, Default)]
+///
+/// Plain data, written field by field and read back field by field at the same
+/// width. It used to be built zero-initialised, counted in `usize`s, wrapped in
+/// an `Option` and moved by value, and the compiled code copied it with 32-byte
+/// vector moves out of a stack slot that had just been written with 4-byte
+/// stores -- a load spanning several recent stores cannot be store-forwarded
+/// (the old profile's hottest instructions in `from_move` were exactly those
+/// loads).
+#[derive(Clone, Copy)]
 pub struct PerspectiveDelta {
     removed: [FeatureIndex; 2],
-    n_removed: usize,
     added: [FeatureIndex; 2],
-    n_added: usize,
+    n_removed: u8,
+    n_added: u8,
+    /// This perspective's own king moved: no add/sub delta exists and its half
+    /// must be rebuilt from scratch.
+    rebuild: bool,
 }
 
 impl PerspectiveDelta {
+    /// The marker for a half that is rebuilt rather than updated.
+    const REBUILD: PerspectiveDelta = PerspectiveDelta {
+        removed: [0; 2],
+        added: [0; 2],
+        n_removed: 0,
+        n_added: 0,
+        rebuild: true,
+    };
+
     /// Feature columns to subtract from the pre-move accumulator half.
     #[inline]
     pub fn removed(&self) -> &[FeatureIndex] {
-        &self.removed[..self.n_removed]
+        &self.removed[..self.n_removed as usize]
     }
 
     /// Feature columns to add to the pre-move accumulator half.
     #[inline]
     pub fn added(&self) -> &[FeatureIndex] {
-        &self.added[..self.n_added]
+        &self.added[..self.n_added as usize]
     }
 }
 
 /// The per-perspective feature delta a move induces, computed straight from the
 /// pre-move position without the [`active_features`] scan.
 pub struct MoveDelta {
-    halves: [Option<PerspectiveDelta>; Color::COUNT],
+    halves: [PerspectiveDelta; Color::COUNT],
 }
 
 impl MoveDelta {
@@ -733,7 +753,8 @@ impl MoveDelta {
     /// king moved and its half must be refreshed from scratch.
     #[inline]
     pub fn half(&self, perspective: Color) -> Option<&PerspectiveDelta> {
-        self.halves[perspective.index()].as_ref()
+        let half = &self.halves[perspective.index()];
+        if half.rebuild { None } else { Some(half) }
     }
 
     /// Compute the delta for `mv` from the **pre-move** `pos`, which is not
@@ -742,111 +763,153 @@ impl MoveDelta {
     /// # Panics
     /// Panics if a non-drop move has no piece on its origin square, or if an
     /// incrementally-updated perspective is missing its king.
+    #[inline]
     pub fn from_move(pos: &Position, mv: Move) -> MoveDelta {
         let mover = pos.side_to_move();
         let to = mv.to_sq();
 
-        let mut removed: [Option<Dirty>; 2] = [None, None];
-        let mut added: [Option<Dirty>; 2] = [None, None];
-
+        // The three shapes a move can take are spelled out so that each
+        // `assemble` sees its slots, and their arities, as constants.
         if mv.is_drop() {
             // The top held slot leaves the hand and an unpromoted board piece
             // appears at `to`.
             let kind = mv.dropped_piece_kind();
             let count = pos.hand(mover).count(kind) as usize;
-            removed[0] = Some(Dirty::Hand {
-                color: mover,
-                kind,
-                count,
-            });
-            added[0] = Some(Dirty::Board {
-                sq: to,
-                piece: Piece::new(kind, mover),
-            });
-        } else {
-            let from = mv.from_sq();
-            // The `Move` encoding already carries the moving piece, so there is
-            // no need to re-read the board. `before` undoes any promotion.
-            let after = mv.moved_piece_after();
-            let before = if mv.is_promote() {
-                Piece {
-                    promoted: false,
-                    ..after
-                }
-            } else {
-                after
-            };
-            debug_assert_eq!(
-                pos.board().get(from),
-                Some(before),
-                "Move encoding disagrees with the board on the mover at {from:?}",
-            );
-            removed[0] = Some(Dirty::Board {
-                sq: from,
-                piece: before,
-            });
-            added[0] = Some(Dirty::Board {
-                sq: to,
-                piece: after,
-            });
-
-            // The victim leaves the board and enters the mover's hand as its
-            // unpromoted kind, at the next count slot.
-            if let Some(captured) = pos.board().get(to) {
-                removed[1] = Some(Dirty::Board {
-                    sq: to,
-                    piece: captured,
-                });
-                let base = captured.kind;
-                let count = pos.hand(mover).count(base) as usize + 1;
-                added[1] = Some(Dirty::Hand {
+            return Self::assemble(
+                pos,
+                mv,
+                [Dirty::Hand {
                     color: mover,
-                    kind: base,
+                    kind,
                     count,
-                });
-            }
+                }],
+                [Dirty::Board {
+                    sq: to,
+                    piece: Piece::new(kind, mover),
+                }],
+            );
         }
 
-        let encode_half = |persp: Color| -> Option<PerspectiveDelta> {
-            if requires_full_refresh(mv, persp) {
-                return None;
+        let from = mv.from_sq();
+        // The `Move` encoding already carries the moving piece, so there is no
+        // need to re-read the board. `before` undoes any promotion.
+        let after = mv.moved_piece_after();
+        let before = if mv.is_promote() {
+            Piece {
+                promoted: false,
+                ..after
             }
-            // The perspective's own king did not move, so its `(sq_k_code,
-            // mirror)` is the same pre- and post-move; read it from `pos`.
-            //
-            // Through `king_code`, not `needs_mirror` spelled out again: which
-            // king code a shape crosses its pieces on, and whether it mirrors
-            // at all, is exactly what differs between the feature sets. This
-            // used to recompute the `hm` mirror unconditionally, so the KP
-            // shapes -- whose `king_code` is `(0, false)` and whose
-            // `active_features` therefore never mirrors -- got a delta whose
-            // squares were file-mirrored whenever that perspective's king stood
-            // on files 6-9. The incremental accumulator then walked away from a
-            // full refresh, silently, from that move on.
-            let (sq_k_code, mirror) = king_code(pos, persp);
-
-            let mut pd = PerspectiveDelta::default();
-            // A slot that encodes to nothing is dropped rather than counted.
-            // Only HalfKP produces one, and only for a king — whose move that
-            // space answers with a full refresh anyway.
-            for d in removed.iter().flatten() {
-                if let Some(index) = d.encode(persp, sq_k_code, mirror) {
-                    pd.removed[pd.n_removed] = index;
-                    pd.n_removed += 1;
-                }
-            }
-            for d in added.iter().flatten() {
-                if let Some(index) = d.encode(persp, sq_k_code, mirror) {
-                    pd.added[pd.n_added] = index;
-                    pd.n_added += 1;
-                }
-            }
-            Some(pd)
+        } else {
+            after
+        };
+        debug_assert_eq!(
+            pos.board().get(from),
+            Some(before),
+            "Move encoding disagrees with the board on the mover at {from:?}",
+        );
+        let lifted = Dirty::Board {
+            sq: from,
+            piece: before,
+        };
+        let placed = Dirty::Board {
+            sq: to,
+            piece: after,
         };
 
-        MoveDelta {
-            halves: [encode_half(Color::Black), encode_half(Color::White)],
+        match pos.board().get(to) {
+            None => Self::assemble(pos, mv, [lifted], [placed]),
+            // The victim leaves the board and enters the mover's hand as its
+            // unpromoted kind, at the next count slot.
+            Some(captured) => {
+                let base = captured.kind;
+                let count = pos.hand(mover).count(base) as usize + 1;
+                Self::assemble(
+                    pos,
+                    mv,
+                    [
+                        lifted,
+                        Dirty::Board {
+                            sq: to,
+                            piece: captured,
+                        },
+                    ],
+                    [
+                        placed,
+                        Dirty::Hand {
+                            color: mover,
+                            kind: base,
+                            count,
+                        },
+                    ],
+                )
+            },
         }
+    }
+
+    /// Encode the dirty slots for both perspectives.
+    #[inline(always)]
+    fn assemble<const R: usize, const A: usize>(
+        pos: &Position,
+        mv: Move,
+        removed: [Dirty; R],
+        added: [Dirty; A],
+    ) -> MoveDelta {
+        MoveDelta {
+            halves: [
+                Self::encode_half(pos, mv, Color::Black, &removed, &added),
+                Self::encode_half(pos, mv, Color::White, &removed, &added),
+            ],
+        }
+    }
+
+    #[inline(always)]
+    fn encode_half<const R: usize, const A: usize>(
+        pos: &Position,
+        mv: Move,
+        persp: Color,
+        removed: &[Dirty; R],
+        added: &[Dirty; A],
+    ) -> PerspectiveDelta {
+        if requires_full_refresh(mv, persp) {
+            return PerspectiveDelta::REBUILD;
+        }
+        // The perspective's own king did not move, so its `(sq_k_code,
+        // mirror)` is the same pre- and post-move; read it from `pos`.
+        //
+        // Through `king_code`, not `needs_mirror` spelled out again: which
+        // king code a shape crosses its pieces on, and whether it mirrors
+        // at all, is exactly what differs between the feature sets. This
+        // used to recompute the `hm` mirror unconditionally, so the KP
+        // shapes -- whose `king_code` is `(0, false)` and whose
+        // `active_features` therefore never mirrors -- got a delta whose
+        // squares were file-mirrored whenever that perspective's king stood
+        // on files 6-9. The incremental accumulator then walked away from a
+        // full refresh, silently, from that move on.
+        let (sq_k_code, mirror) = king_code(pos, persp);
+
+        let mut pd = PerspectiveDelta {
+            removed: [0; 2],
+            added: [0; 2],
+            n_removed: 0,
+            n_added: 0,
+            rebuild: false,
+        };
+        // A slot that encodes to nothing is dropped rather than counted.
+        // Only HalfKP produces one, and only for a king -- whose move that
+        // space answers with a full refresh anyway.
+        for d in removed {
+            if let Some(index) = d.encode(persp, sq_k_code, mirror) {
+                pd.removed[pd.n_removed as usize] = index;
+                pd.n_removed += 1;
+            }
+        }
+        for d in added {
+            if let Some(index) = d.encode(persp, sq_k_code, mirror) {
+                pd.added[pd.n_added as usize] = index;
+                pd.n_added += 1;
+            }
+        }
+        pd
     }
 }
 
