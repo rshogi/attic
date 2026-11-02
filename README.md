@@ -46,15 +46,51 @@ yaneurao 氏および YaneuraOu の各コントリビューターに帰属しま
 入れておいてください（`sudo apt install build-essential`）。
 
 ビルド時に使用する Rust ツールチェインのバージョンを [`rust-toolchain.toml`](rust-toolchain.toml) に明記しています。
-そのため、後述する `cargo build --release` の実行時に、`rustup` が該当バージョンを自動的にダウンロードします。
+そのため、後述するビルドの実行時に、`rustup` が該当バージョンを自動的にダウンロードします。
+PGO のプロファイル統合に使う `llvm-profdata`（`llvm-tools` コンポーネント）も同じファイルで
+指定しているので、あわせて入ります。
 
-クローンしたディレクトリに移動してから、リリースビルドを行います。
+クローンしたディレクトリに移動してから、リリースビルドを行います。既定のリリースビルドは
+PGO（プロファイルに基づく最適化）付きで、`cargo xtask build-pgo` で行います。
 
 ```bash
-cargo build --release
+cargo xtask build-pgo --features <評価関数の構成>
 ```
 
-- ビルドされる実行ファイルは `target/release/attic` です。
+評価関数の構成（`attic` の feature）は 1 つ選ぶ必要があります。選べる名前は
+[`crates/attic-eval/Cargo.toml`](crates/attic-eval/Cargo.toml) の `[features]` にあります。
+たとえば次のように渡します。
+
+```bash
+cargo xtask build-pgo --no-default-features --features nnue_kp_256x2_32_32,ref_check_time --eval-dir /path/to/eval
+```
+
+- 次の 3 段階を順に実行します。
+  1. プロファイルを採取する計測用ビルド（`target/pgo/instrumented` 以下）。
+  2. 計測用バイナリに USI で探索させる学習走行。局面は
+     [`crates/xtask/pgo-positions.sfen`](crates/xtask/pgo-positions.sfen) の 256 局面で、
+     1 局面あたり `go nodes 100000`、スレッド数 1、置換表 16 MB です。
+  3. 採取したプロファイルを `llvm-profdata` で統合（`target/pgo/merged.profdata`）し、
+     それを使う本ビルド。
+- 学習走行は評価関数ファイルを読み込みます。`eval/nn.bin` を置くか、`--eval-dir` で
+  `nn.bin` のあるディレクトリを指してください。見つからないときは、ビルドを始める前に
+  エラーで止まります（PGO なしのバイナリを黙って作ることはしません）。
+- 学習走行のエンジンが異常終了したときや、`bestmove` が返らないとき、プロファイルが
+  1 つも出なかったときもエラーで止まります。
+- ビルドされる実行ファイルは `target/release/attic` です。学習の局面と探索のノード数は
+  `--positions` と `--nodes` で差し替えられ、`--keep-profile` を付けると統合前の
+  `.profraw` を残します。
+- 所要時間: 手元の機械（Intel Core Ultra 7 265KF、コア 3 つに制限、`target` が空の状態、
+  評価関数は 0.9 MB 弱の `nnue_kp_256x2_32_32`）で 1 分 10 秒前後でした。内訳は計測用
+  ビルド約 10 秒、学習走行約 52 秒、本ビルド約 9 秒です。学習走行の時間は評価関数の
+  大きさと CPU の速さで変わります。他の構成での所要時間は測っていません。
+- 環境変数 `RUSTFLAGS` を設定している場合は、その値に `-Cprofile-generate=...` /
+  `-Cprofile-use=...` を足して使います。設定していない場合は `cargo build --config` で
+  足すので、次の項目の `-C target-cpu=native` はそのまま効きます。
+- PGO が不要なら、従来どおり `cargo build --release` でもビルドできます（`--features` などは
+  同じように渡します）。同じ構成の PGO 付きと PGO なしを、手元の機械で 128 局面 × 10 万ノード
+  （1 コア）を交互に 3 回ずつ測ったところ、PGO 付きの方が毎回速く、knps は PGO なしより
+  2.9%、3.4%、5.8% 高い結果でした（探索ノード数はどちらも 12,808,906 で一致）。
 - [`.cargo/config.toml`](.cargo/config.toml) が全プロファイルに
   `-C target-cpu=native` を適用します。生成されるバイナリはビルドしたマシンの
   CPU に最適化されるため、実行するマシン上でビルドしてください。
