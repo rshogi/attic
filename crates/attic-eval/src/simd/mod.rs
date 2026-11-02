@@ -447,12 +447,25 @@ mod tests {
         // configured for its host: under `-C target-cpu=native` a VNNI-capable
         // CPU must yield the SIMD backend, and a scalar one here means the build
         // did not enable the host's features.
+        //
+        // CI is the one place that is not built for its host: it pins
+        // `-C target-cpu=x86-64-v3` so cached artefacts run on any runner, and
+        // sets `ATTIC_BASELINE_BUILD` to say so. A runner whose CPU happens to
+        // have AVX-512 VNNI must then still get the scalar backend, which is
+        // what this asserts in that case.
         #[cfg(target_arch = "x86_64")]
         {
             let has_vnni = std::arch::is_x86_feature_detected!("avx512f")
                 && std::arch::is_x86_feature_detected!("avx512bw")
                 && std::arch::is_x86_feature_detected!("avx512vnni");
-            if has_vnni {
+            if std::env::var_os("ATTIC_BASELINE_BUILD").is_some() {
+                assert_eq!(
+                    active_backend(),
+                    Backend::Scalar,
+                    "ATTIC_BASELINE_BUILD is set, so the build should not have \
+                     enabled AVX-512 VNNI",
+                );
+            } else if has_vnni {
                 assert_eq!(
                     active_backend(),
                     Backend::Avx512Vnni,

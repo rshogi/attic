@@ -29,6 +29,11 @@ env:
   # tests enable their features per function and probe the CPU at run time, so
   # they still run on a runner that has the instructions.
   RUSTFLAGS: "-C target-cpu=x86-64-v3"
+  # Tells the two tests that check the build matches its host (`active_backend`
+  # in attic-eval) that this build deliberately does not: a runner with
+  # AVX-512 VNNI is expected to run the scalar backend here. Without it those
+  # tests fail on whichever runners happen to have that CPU.
+  ATTIC_BASELINE_BUILD: "1"
 
 # The network shape is a build-time feature and exactly one must be selected
 # (`attic-eval` refuses to compile with none or two), so `--all-features` can
