@@ -31,12 +31,83 @@ yaneurao 氏および YaneuraOu の各コントリビューターに帰属しま
 - 評価関数（NNUE）の計算に SIMD 実装を使うかは、ビルド時に決まります。実行時の
   CPU 判定は行いません。選択の基準はビルドが有効化している CPU 機能で、AVX-512 の
   F + BW が有効なら特徴量変換器と要素単位の演算が SIMD 実装になり、さらに VNNI も
-  有効ならレイヤースタックをまとめて計算する処理も SIMD 実装になります。いずれも有効で
-  なければスカラ実装です。本リポジトリは
+  有効ならレイヤースタックをまとめて計算する処理も SIMD 実装になります。AVX-512 の
+  F + BW が無くても AVX2 が有効なら、特徴量変換器は AVX2 実装になります。KP / HalfKP の
+  全結合層は、AVX-512 の有無にかかわらず AVX2 実装で、AVX-VNNI が有効なら 256 ビット幅の
+  `vpdpbusd` を使います。どれも有効でなければスカラ実装です。`sym_…` の 2 構成には
+  手書きの SIMD 実装がなく、スカラ実装で計算します。本リポジトリは
   `-C target-cpu=native` でビルドする（[ビルドと実行](#ビルドと実行)参照）ため、
   実際に選ばれる実装はビルドしたマシンの CPU で決まります。
 - どちらの実装が選ばれても、評価値はビット単位で一致します（近似ではなく同じ値を返すことを、SIMD とスカラの等価性テストで検証しています）。
 - 生成されたバイナリはビルドしたマシンの CPU 向けです（[ビルドと実行](#ビルドと実行)参照）。
+
+## 対応している評価関数
+
+評価関数の構成は、ビルド時に 1 つだけ選びます。`attic` の feature で指定し、0 個または
+2 個以上を指定するとコンパイルエラーになります（[ビルドと実行](#ビルドと実行)参照）。
+実行時に切り替えることはできないので、別の構成を使うときはビルドし直してください。
+いずれの構成も、評価関数ファイルは `<EvalDir>/nn.bin` として読み込みます
+（[評価関数ファイル](#評価関数ファイルnnbin)参照）。
+
+| feature | 特徴量（次元数） | 変換器 | 全結合層 | 層スタック | `nn.bin` 以外に必要なファイル |
+| --- | --- | --- | --- | --- | --- |
+| `sfnn_halfkahm2_1536_15_32_k3k3` | HalfKA_hm2（73,305） | 1536×2 | 15 → 32 → 1 | 9（両玉の段で選択） | なし |
+| `sfnn_halfkahm2_2304_15_64_progress8ek` | HalfKA_hm2（73,305） | 2304×2 | 15 → 64 → 1 | 9（進行度 8 + 入玉 1） | `progress.bin` |
+| `nnue_kp_256x2_32_32` | K+P（1,710） | 256×2 | 32 → 32 → 1 | 1 | なし |
+| `nnue_halfkp_256x2_32_32` | HalfKP（125,388） | 256×2 | 32 → 32 → 1 | 1 | なし |
+| `sym_kp_128x2_512` | K+P（1,710） | 128×2 | 512 → 1 | なし | なし |
+| `sym_halfkp_128x2_512` | HalfKP（125,389） | 128×2 | 512 → 1 | なし | なし |
+
+- 前の 2 つ（`sfnn_…`）は SFNN 系の構成です。`sfnn_halfkahm2_1536_15_32_k3k3`（以下
+  SFNN-1536）は、YaneuraOu を `YANEURAOU_EDITION=YANEURAOU_ENGINE_SFNN1536` でビルド
+  した場合と同じ構成です。`sfnn_halfkahm2_2304_15_64_progress8ek` は、shielune 版の
+  YaneuraOu（<https://github.com/shielune/YaneuraOu>）の
+  `YANEURAOU_ENGINE_SFNN_halfkahm2_2304_15_64_progress8ek` に当たる構成です。
+  移植元の基準コミットに含まれているかは確認していません。
+- `nnue_kp_256x2_32_32` は YaneuraOu の `YANEURAOU_ENGINE_NNUE_KP256` に、
+  `nnue_halfkp_256x2_32_32` は `YANEURAOU_ENGINE_NNUE` に当たる構成です。
+- `sfnn_halfkahm2_2304_15_64_progress8ek` は、層スタックの選択に使う係数を `nn.bin` の外の
+  `progress.bin` から読みます。`nn.bin` と同じディレクトリに置く、ヘッダなしの
+  `f64[81][1548]` のファイルです。`progress.bin` が読めなかった場合は警告を出し、
+  すべての局面を層スタック 0 で評価します。評価値は誤ったものになるので、この構成を
+  使うときは必ず置いてください。
+- 末尾の 2 つ（`sym_…`）は、移植元の YaneuraOu には対応する構成がない、Manaka 独自の
+  評価関数です。特徴量の番号付けだけを YaneuraOu の KP / HalfKP から借り、特徴量の
+  冪和（3 次まで）を作って RMS で正規化します。ファイルは `nn.bin` と同じコンテナ形式で、
+  量子化した形式と f32 の形式のどちらも読めます。HalfKP 版の次元数が YaneuraOu の
+  HalfKP（125,388）より 1 つ多い 125,389 なのは、Manaka がパディング（詰め物）用の行を
+  1 行足しているためです。
+
+### 移植元との一致の検証状況
+
+「移植元と一致」とは、同じ局面・同じ条件で探索したときに、各反復の深さ・評価値・ノード数・
+読み筋と `bestmove` が YaneuraOu 9.80 と行単位で同じになることを指します。
+一致を確かめたのは次の範囲だけで、他の構成の探索は検証していません。
+
+| 構成 | 確認した内容 |
+| --- | --- |
+| `nnue_kp_256x2_32_32` | 16,384 局面（1 局面 10 万ノード、置換表 16 MB）の全行が一致 |
+| `nnue_halfkp_256x2_32_32` | 18 局面 × 4 段階で一致（局面数は KP256 より大幅に少ない） |
+| 上記以外 | 未検証（高速化後の探索を YaneuraOu と突き合わせていない） |
+
+- `nnue_kp_256x2_32_32` の 16,384 局面の一致は、
+  `--no-default-features --features nnue_kp_256x2_32_32,ref_check_time` でビルドした
+  ときのものです。`--no-default-features` は、既定で有効な `quick-draw`
+  （YaneuraOu の `ENABLE_QUICK_DRAW` に当たる、千日手の判定方式の切り替え）を外します。
+  `ref_check_time` は、`go nodes N` の時間チェックを YaneuraOu と同じ位置に移します。
+  YaneuraOu の `make normal` ビルドと突き合わせるための構成で、通常の対局用には不要です。
+- リポジトリに入っているテスト
+  （[`crates/attic-protocol/tests/yaneuraou_parity.rs`](crates/attic-protocol/tests/yaneuraou_parity.rs)）
+  は、16,384 局面のうちの 160 局面を使います。評価関数ファイルは本リポジトリに含まれて
+  いないので、`ATTIC_KP256_NN` にパスを設定するか `eval/nn.bin` に置いてください。見つからないとき
+  は、通知を出して成功扱いにします（`ATTIC_REQUIRE_PARITY=1` を付けると失敗にします）。
+- GitHub Actions の CI（[`integration.yaml`](.github/workflows/integration.yaml)）は、
+  上の 6 構成と、この一致用の構成の計 7 つを、それぞれ clippy・ビルド・テストにかけます。
+  CI には評価関数ファイルがないので、ファイルを読むテストは通知を出して飛ばします。
+  CI が通っても、各構成が正しく評価できることまでは確かめていません。
+- USI 経由でエンジンを起動する統合テスト（`crates/attic-protocol/tests/`）のうち、合成した
+  `nn.bin` を使う 63 件は、SFNN-1536 のビルドでしか動きません。合成する `nn.bin` が
+  SFNN-1536 の形式で、他の構成では読み込めないためです。
 
 ## ビルドと実行
 
@@ -131,42 +202,52 @@ wsl.exe --cd %REPO% ^
 
 この手順は本リポジトリでは動作確認していません。
 
-### どちらの NNUE 実装が選ばれたかを確認する
+### どの NNUE 実装が選ばれたかを確認する
 
 評価関数の SIMD 実装はビルド時に固定される（[対応環境](#対応環境)参照）ので、選択結果は
-できあがったバイナリを逆アセンブルすれば確認できます。VNNI の内積命令 `vpdpbusd` の
-出現数を数えます。
-
-```bash
-objdump -d target/release/attic | grep -c vpdpbusd
-```
-
-- 0 以外なら AVX-512（F + BW、VNNI）実装が選ばれています。
-- 0 ならスカラ実装です。選ばれなかった側の実装は、どこからも呼ばれないため
-  リリースビルドのデッドコード除去で実行ファイルから取り除かれます。
-
-実測例（AMD EPYC 9B45 / Zen 5 上の `cargo build --release`）: 既定の
-`-C target-cpu=native` ビルドで 29、`target-cpu` を AVX-512 を持たない
-`x86-64-v2` に上書きしたビルドで 0 でした。
-
-なお `vpdpbusd` は VNNI 実装の有無を示す命令です。F + BW だけが有効で VNNI がない
-CPU 向けのビルドでは、特徴量変換器などが SIMD 実装でも計数は 0 になります。その場合は
-ZMM レジスタの使用有無で判別できます。
+できあがったバイナリを逆アセンブルすれば確認できます。確認する項目は次の 3 つです。
 
 ```bash
 objdump -d target/release/attic | grep -c '%zmm'
+objdump -d target/release/attic | grep -c vpdpbusd
+objdump -d target/release/attic | grep -c vpmaddubsw
 ```
 
-上の 2 つのビルドでは、それぞれ 2382 と 0 でした。
+- `%zmm`（512 ビットのレジスタ）が 0 以外なら、AVX-512 の実装が選ばれています。
+  AVX-512 の有無は、この項目で判別してください。
+- `vpdpbusd`（VNNI の内積命令）が 0 以外であることは、AVX-512 を意味しません。
+  KP / HalfKP の全結合層は、AVX-VNNI が有効なら 256 ビット幅の `vpdpbusd` を使うため、
+  AVX-512 を持たない CPU 向けのビルドでも出現します。`vpdpbusd` の行に `%zmm` が
+  あれば AVX-512 版、`%ymm` なら AVX-VNNI 版です。
+- `vpmaddubsw`（AVX2 の内積命令）が 0 以外で、上の 2 つが 0 なら、AVX2 実装です。
+  AVX2 だけが有効なビルドでは、KP / HalfKP の全結合層がこの命令を使います。
+  `%ymm` の数は、コンパイラが自動で SIMD 化した部分にも出るので、判別には使えません。
+- 3 つとも 0 なら、スカラ実装です。選ばれなかった側の実装は、どこからも
+  呼ばれないため、リリースビルドのデッドコード除去で実行ファイルから取り除かれます。
+
+実測例:
+
+| ビルド | CPU | `%zmm` | `vpdpbusd` | `vpmaddubsw` |
+| --- | --- | --- | --- | --- |
+| `sfnn_halfkahm2_1536_15_32_k3k3`、`-C target-cpu=native` | AMD EPYC 9B45（Zen 5） | 2382 | 29 | 未測定 |
+| `sfnn_halfkahm2_1536_15_32_k3k3`、`-C target-cpu=x86-64-v2` | 同上 | 0 | 0 | 未測定 |
+| `nnue_kp_256x2_32_32`、`-C target-cpu=native` | Intel Core Ultra 7 265KF（AVX-VNNI あり、AVX-512 なし） | 0 | 97（すべて `%ymm`） | 未測定 |
+| `nnue_kp_256x2_32_32`、`-C target-cpu=x86-64-v3` | 同上 | 0 | 0 | 105 |
+| `nnue_kp_256x2_32_32`、`-C target-cpu=x86-64-v2` | 同上 | 0 | 0 | 0 |
+
+上の 2 行は以前の測定で、当時の唯一の構成が SFNN-1536 でした。下の 3 行は、この README を
+更新した際に測りました（`--no-default-features` 付き、`--release`）。数は、ビルドしたコードに
+よって変わります。
 
 ## 評価関数ファイル（`nn.bin`）
 
-本エンジンが読み込める評価関数は、YaneuraOu を
-`YANEURAOU_EDITION=YANEURAOU_ENGINE_SFNN1536` でビルドした場合と同じ、
-SFNNwoP1536（SFNN-1536）ネットワーク構成のものだけです。評価関数ファイルは本リポジトリに含まれていないため、
-この形式の `nn.bin` を別途用意してください。入手方法の一例として、YaneuraOu
-プロジェクトを支援する方法があります
-（<https://yaneuraou.yaneu.com/support-the-project/>）。
+本エンジンが読み込める評価関数は、ビルド時に選んだ構成のもの 1 種類だけです
+（構成の一覧は[対応している評価関数](#対応している評価関数)参照）。別の構成の `nn.bin` を
+渡しても読み込めません。評価関数ファイルは本リポジトリに含まれていないため、選んだ
+構成に合う `nn.bin` を別途用意してください。SFNN-1536（`sfnn_halfkahm2_1536_15_32_k3k3`）については、入手方法の一例として、
+YaneuraOu プロジェクトを支援する方法があります
+（<https://yaneuraou.yaneu.com/support-the-project/>）。他の構成の入手先は、本リポジトリでは
+案内していません。
 
 用意した `nn.bin` は、作業ディレクトリの `eval/nn.bin` に置いてください。`EvalDir` の
 既定値（`eval`）のまま読み込めます。
@@ -181,6 +262,12 @@ SFNNwoP1536（SFNN-1536）ネットワーク構成のものだけです。評価
   のハッシュが一致しない場合は、`info string` で警告を出したうえで読み込みを
   続行します。
 - アーキテクチャ文字列は読み取りますが、比較には使いません。
+
+以上は SFNN と KP / HalfKP の 4 構成の場合です。`sym_…` の 2 構成は検証が厳しく、
+アーキテクチャ文字列が、その構成の期待する文字列（量子化した形式か f32 の形式のどちらか）と
+一致しなければ読み込みを中止します。ファイル全体のハッシュと各セクションのハッシュが
+一致しない場合も、警告にとどめず読み込みを中止します
+（[`crates/attic-eval/src/manaka.rs`](crates/attic-eval/src/manaka.rs)）。
 
 ### 読み込みのタイミング
 
