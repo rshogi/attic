@@ -822,38 +822,38 @@ impl Position {
 
         let mut i = 4i32;
         while i <= end {
-            if let Some(prev) = self.state_back(i as usize) {
-                if prev.board_key == self.board_key {
-                    if prev.hands == self.hands {
-                        let times = prev.repetition_times + 1;
-                        let repetition = if times >= 3 { -i } else { i };
-                        let mut typ = if i <= cc_stm {
-                            RepetitionState::Lose
-                        } else if i <= cc_opp {
-                            RepetitionState::Win
-                        } else {
-                            RepetitionState::Draw
-                        };
-                        // A cycle that was perpetual check only part of the way
-                        // is an ordinary draw.
-                        if prev.repetition_times != 0 && typ != prev.repetition_type {
-                            typ = RepetitionState::Draw;
-                        }
-                        return (repetition, times, typ);
+            if let Some(prev) = self.state_back(i as usize)
+                && prev.board_key == self.board_key
+            {
+                if prev.hands == self.hands {
+                    let times = prev.repetition_times + 1;
+                    let repetition = if times >= 3 { -i } else { i };
+                    let mut typ = if i <= cc_stm {
+                        RepetitionState::Lose
+                    } else if i <= cc_opp {
+                        RepetitionState::Win
+                    } else {
+                        RepetitionState::Draw
+                    };
+                    // A cycle that was perpetual check only part of the way
+                    // is an ordinary draw.
+                    if prev.repetition_times != 0 && typ != prev.repetition_type {
+                        typ = RepetitionState::Draw;
                     }
-                    // Piece conservation moves the opponent's hand oppositely,
-                    // so the side to move's hand alone decides. Note
-                    // `repetition_times` stays 0.
-                    let cur_hand = &self.hands[stm.index()];
-                    let prev_hand = &prev.hands[stm.index()];
-                    if hand_is_equal_or_superior(cur_hand, prev_hand) {
-                        return (i, 0, RepetitionState::Superior);
-                    }
-                    if hand_is_equal_or_superior(prev_hand, cur_hand) {
-                        return (i, 0, RepetitionState::Inferior);
-                    }
-                    // Neither dominates: a coincidental board match.
+                    return (repetition, times, typ);
                 }
+                // Piece conservation moves the opponent's hand oppositely,
+                // so the side to move's hand alone decides. Note
+                // `repetition_times` stays 0.
+                let cur_hand = &self.hands[stm.index()];
+                let prev_hand = &prev.hands[stm.index()];
+                if hand_is_equal_or_superior(cur_hand, prev_hand) {
+                    return (i, 0, RepetitionState::Superior);
+                }
+                if hand_is_equal_or_superior(prev_hand, cur_hand) {
+                    return (i, 0, RepetitionState::Inferior);
+                }
+                // Neither dominates: a coincidental board match.
             }
             i += 2;
         }

@@ -75,7 +75,7 @@ impl Piece {
     pub(crate) const fn from_code(code: usize) -> Piece {
         Piece {
             kind: PieceKind::from_index(code % PieceKind::COUNT),
-            color: if (code / PieceKind::COUNT) % Color::COUNT == 0 {
+            color: if (code / PieceKind::COUNT).is_multiple_of(Color::COUNT) {
                 Color::Black
             } else {
                 Color::White
