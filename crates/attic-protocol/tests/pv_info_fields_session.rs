@@ -6,6 +6,10 @@
 //! test additionally stages a `.ybb`, whose hit short-circuits the search and
 //! takes the separate depth-0 output path.
 
+// Every test here stages `common`'s synthetic nn.bin, which is an SFNN-1536 file;
+// see the note on the constants in `common/mod.rs`.
+#![cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
+
 mod common;
 
 use common::{TEST_BOOK_SEED, TempDir, drive_with_seed, stage_sample_ybb, write_synthetic_nn_bin};

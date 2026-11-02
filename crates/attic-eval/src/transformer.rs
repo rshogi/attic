@@ -32,7 +32,12 @@ use crate::features::{
     FeatureIndex, MoveDelta, active_features, changed_indices, requires_full_refresh,
 };
 use crate::finny::FinnyCache;
-use crate::simd::{post_ft_kernel, transformer_kernel};
+#[cfg(any(
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+))]
+use crate::simd::post_ft_kernel;
+use crate::simd::transformer_kernel;
 use crate::types::{FC_0_INPUT_DIMS, HIDDEN_SIZE, NnueNetwork};
 
 /// Width of the byte buffer the output transform fills: one lane per fc_0
@@ -163,15 +168,13 @@ impl Accumulator {
         for color in [Color::Black, Color::White] {
             let i = color.index();
             match delta.half(color) {
-                Some(pd) => {
-                    dst.perspectives[i].copy_from_slice(&src.perspectives[i]);
-                    apply_diff(
-                        &mut dst.perspectives[i],
-                        &net.ft_weights,
-                        pd.added(),
-                        pd.removed(),
-                    );
-                }
+                Some(pd) => transformer_kernel::derive_features(
+                    &mut dst.perspectives[i],
+                    &src.perspectives[i],
+                    &net.ft_weights,
+                    pd.added(),
+                    pd.removed(),
+                ),
                 None => {
                     refresh_perspective(
                         &mut dst.perspectives[i],
@@ -209,15 +212,13 @@ impl Accumulator {
         for color in [Color::Black, Color::White] {
             let i = color.index();
             match delta.half(color) {
-                Some(pd) => {
-                    dst.perspectives[i].copy_from_slice(&src.perspectives[i]);
-                    apply_diff(
-                        &mut dst.perspectives[i],
-                        &net.ft_weights,
-                        pd.added(),
-                        pd.removed(),
-                    );
-                }
+                Some(pd) => transformer_kernel::derive_features(
+                    &mut dst.perspectives[i],
+                    &src.perspectives[i],
+                    &net.ft_weights,
+                    pd.added(),
+                    pd.removed(),
+                ),
                 None => cache.refresh_into(net, post_pos, color, &mut dst.perspectives[i]),
             }
         }
@@ -225,12 +226,37 @@ impl Accumulator {
 
     /// Pack the accumulator into `out`, the byte input buffer for L1, as the
     /// module head describes.
+    #[cfg(any(
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+    ))]
     pub fn output_transform(&self, stm: Color, out: &mut [u8; FT_OUTPUT_DIMS]) {
         const HALF: usize = HIDDEN_SIZE / 2;
         let stm_half = &self.perspectives[stm.index()];
         let other_half = &self.perspectives[stm.flip().index()];
         post_ft_kernel::ewm_one_perspective(stm_half, &mut out[..HALF]);
         post_ft_kernel::ewm_one_perspective(other_half, &mut out[HALF..]);
+    }
+
+    /// The standard shapes' output transform: clip each accumulator to a byte
+    /// and lay the two perspectives side by side.
+    ///
+    /// No element-wise multiply and so no halving — `nnue_feature_transformer.h`
+    /// clamps to `[0, 127]` with no shift, and fc_0 reads both halves, which is
+    /// why [`FT_OUTPUT_DIMS`] is twice [`HIDDEN_SIZE`] here and equal to it for
+    /// the SFNN shapes above.
+    #[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
+    pub fn output_transform(&self, stm: Color, out: &mut [u8; FT_OUTPUT_DIMS]) {
+        let halves = [
+            &self.perspectives[stm.index()],
+            &self.perspectives[stm.flip().index()],
+        ];
+        let (chunks, _) = out.as_chunks_mut::<HIDDEN_SIZE>();
+        for (half, chunk) in halves.iter().zip(chunks) {
+            for (slot, &sum) in chunk.iter_mut().zip(half.iter()) {
+                *slot = sum.clamp(0, 127) as u8;
+            }
+        }
     }
 }
 
@@ -288,11 +314,23 @@ mod tests {
     use attic_state::{Move, PieceKind, format_usi_move, parse_sfen, parse_usi_move};
 
     const STARTPOS: &str = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1";
+    #[cfg(any(
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+    ))]
     const HALF: usize = HIDDEN_SIZE / 2;
 
     // Mirrored from the scalar kernel, so that these tests can transcribe the
     // reference formula independently.
+    #[cfg(any(
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+    ))]
     const EWM_CLAMP: i32 = 127 * 2;
+    #[cfg(any(
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+    ))]
     const EWM_SHIFT: i32 = 9;
 
     #[test]
@@ -873,8 +911,13 @@ mod tests {
         parent.refresh(&net, &pos);
 
         let delta = MoveDelta::from_move(&pos, mv);
-        assert!(
+        // Only where the index embeds the own king; a KP king move is a delta.
+        assert_eq!(
             delta.half(Color::Black).is_none(),
+            !cfg!(any(
+                feature = "nnue_kp_256x2_32_32",
+                feature = "sym_kp_128x2_512"
+            )),
             "this fixture must exercise the rebuild arm",
         );
         pos.do_move(mv);
@@ -1002,10 +1045,23 @@ mod tests {
             }
         }
 
-        assert!(king_moves > 0, "playout exercised no king move");
-        assert!(warm_hits > 0, "playout never hit a warm cache entry");
+        if cfg!(any(
+            feature = "nnue_kp_256x2_32_32",
+            feature = "sym_kp_128x2_512"
+        )) {
+            // A KP index embeds no king: its king moves are plain deltas (the
+            // drift check above still covered them) and never reach the cache.
+            assert_eq!(king_moves, 0, "a KP king move must be a delta");
+        } else {
+            assert!(king_moves > 0, "playout exercised no king move");
+            assert!(warm_hits > 0, "playout never hit a warm cache entry");
+        }
     }
 
+    #[cfg(any(
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+    ))]
     #[test]
     fn output_transform_lays_out_stm_then_other() {
         let mut acc = Accumulator::new();
@@ -1027,6 +1083,10 @@ mod tests {
         assert_eq!(out_w[HALF], 39);
     }
 
+    #[cfg(any(
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+    ))]
     #[test]
     fn output_transform_clamps_min_zero_and_max() {
         let mut acc = Accumulator::new();
@@ -1051,6 +1111,10 @@ mod tests {
         assert_eq!(out[4], 9, "mid-range pair");
     }
 
+    #[cfg(any(
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+    ))]
     #[test]
     fn output_transform_full_row_matches_scalar_formula() {
         // Cross-checked against a direct transcription of the reference formula.

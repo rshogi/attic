@@ -5,6 +5,10 @@
 //! in a temp dir, waiting for the `bestmove` before quitting so a fixed result
 //! never races the `quit`-driven join.
 
+// Every test here stages `common`'s synthetic nn.bin, which is an SFNN-1536 file;
+// see the note on the constants in `common/mod.rs`.
+#![cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
+
 mod common;
 
 use attic_state::parse_usi_move;

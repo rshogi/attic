@@ -8,17 +8,19 @@
 
 mod common;
 
-use common::{
-    TEST_BOOK_SEED, TempDir, bestmove_lines, drive, drive_with_profile, write_option_profile,
-    write_synthetic_nn_bin, write_ybb,
-};
+use common::{TEST_BOOK_SEED, TempDir, drive, drive_with_profile, write_option_profile};
+#[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
+use common::{bestmove_lines, write_synthetic_nn_bin, write_ybb};
 
+#[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
 const STARTPOS_B: &str = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1";
+#[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
 const STARTPOS_W: &str = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL w - 1";
 
 /// Stage a two-record book, one Black root and one White root, with identical
 /// value / depth spreads — so the only thing that can distinguish the Black from
 /// the White filter options is the root side to move.
+#[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
 fn stage_two_sided_book(dir: &std::path::Path) {
     write_ybb(
         &dir.join("user_book1.ybb"),
@@ -37,6 +39,7 @@ fn stage_two_sided_book(dir: &std::path::Path) {
 
 /// A V2 session prefix. No book-filter option is set, so every filter runs at
 /// its V2 default.
+#[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
 fn v2_prefix(dir: &str) -> String {
     format!(
         "usi\n\
@@ -138,6 +141,7 @@ fn a_v1_profile_file_keeps_the_v1_surface() {
     assert_eq!(out, drive("usi\nquit\n"));
 }
 
+#[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
 #[test]
 #[cfg_attr(miri, ignore)]
 fn v2_black_root_filters_with_the_black_eval_diff() {
@@ -199,6 +203,7 @@ fn v2_black_root_filters_with_the_black_eval_diff() {
     );
 }
 
+#[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
 #[test]
 #[cfg_attr(miri, ignore)]
 fn v2_white_root_filters_with_the_white_eval_diff() {
@@ -259,6 +264,7 @@ fn v2_white_root_filters_with_the_white_eval_diff() {
     );
 }
 
+#[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
 #[test]
 #[cfg_attr(miri, ignore)]
 fn v2_depth_floor_follows_the_root_side_to_move() {
@@ -320,6 +326,7 @@ fn v2_depth_floor_follows_the_root_side_to_move() {
     );
 }
 
+#[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
 #[test]
 #[cfg_attr(miri, ignore)]
 fn v1_still_uses_the_single_eval_diff_and_depth_limit() {

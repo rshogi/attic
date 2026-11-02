@@ -17,39 +17,35 @@
 //! output is raw, pre-ReLU, and is added to L3's output as the shortcut term.
 //! The result is divided by the live [`fv_scale`] to produce the score.
 
-use std::sync::atomic::{AtomicI32, Ordering};
+use attic_state::Position;
+#[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
+use attic_state::{Color, Square};
 
-use attic_state::{Color, Position, Square};
-
+#[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
 use crate::features::king_square;
+use crate::scale::fv_scale;
 use crate::simd::post_ft_kernel;
 use crate::transformer::{Accumulator, FT_OUTPUT_DIMS};
+#[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
+use crate::types::FcKernels;
+#[cfg(any(
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+))]
+use crate::types::HIDDEN1_DIMS;
+#[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
+use crate::types::LAYER_STACKS;
 use crate::types::{
     FC_0_INPUT_DIMS, FC_0_OUTPUT_DIMS, FC_0_PADDED_INPUT_DIMS, FC_1_INPUT_DIMS, FC_1_OUTPUT_DIMS,
     FC_1_PADDED_INPUT_DIMS, FC_2_INPUT_DIMS, FC_2_OUTPUT_DIMS, FC_2_PADDED_INPUT_DIMS,
-    HIDDEN1_DIMS, LAYER_STACKS, NetworkStack, NnueNetwork,
+    NetworkStack, NnueNetwork,
 };
-
-/// The reference default fixed-point scale, and the USI option's default.
-pub const FV_SCALE_DEFAULT: i32 = 16;
-
-/// The live fixed-point scale applied to the network output, mirroring the
-/// reference's mutable global `NNUE::FV_SCALE`.
-static FV_SCALE: AtomicI32 = AtomicI32::new(FV_SCALE_DEFAULT);
-
-/// The current fixed-point scale (the reference live global `NNUE::FV_SCALE`).
-pub fn fv_scale() -> i32 {
-    FV_SCALE.load(Ordering::Relaxed)
-}
-
-/// Set the live fixed-point scale. The next [`evaluate`] divides by it.
-pub fn set_fv_scale(scale: i32) {
-    FV_SCALE.store(scale, Ordering::Relaxed);
-}
 
 /// `k*ToIndex` tables from `stack_index_for_nnue`: the own-king rank contributes
 /// the coarse third `{0,3,6}`, the enemy-king rank the fine third `{0,1,2}`.
+#[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
 const F_RANK_TO_INDEX: [usize; 9] = [0, 0, 0, 3, 3, 3, 6, 6, 6];
+#[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
 const E_RANK_TO_INDEX: [usize; 9] = [0, 0, 0, 1, 1, 1, 2, 2, 2];
 
 /// Select the layer-stack (bucket) index for `pos`.
@@ -60,6 +56,25 @@ const E_RANK_TO_INDEX: [usize; 9] = [0, 0, 0, 1, 1, 1, 2, 2, 2];
 ///
 /// # Panics
 /// Panics if either king is missing.
+/// Layer-stack selection for the 2304 shape, which buckets by game progress
+/// rather than by the kings' ranks — see [`crate::progress`].
+#[cfg(feature = "sfnn_halfkahm2_2304_15_64_progress8ek")]
+pub fn layer_stack_index(pos: &Position) -> usize {
+    crate::progress::bucket_index(pos)
+}
+
+/// The standard shapes carry one stack and choose nothing.
+///
+/// `kLayerStacks` is 1 for `NNUE_kp_256x2_32_32` and its HalfKP twin, so the
+/// file has a single set of dense weights and there is no bucket to pick. The
+/// position is still taken, so that callers need not know which shape they
+/// were built for.
+#[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
+pub fn layer_stack_index(_pos: &Position) -> usize {
+    0
+}
+
+#[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
 pub fn layer_stack_index(pos: &Position) -> usize {
     let stm = pos.side_to_move();
     let f_king = king_square(pos, stm);
@@ -121,6 +136,10 @@ pub fn evaluate_with(net: &NnueNetwork, acc: &Accumulator, pos: &Position) -> i3
 /// kernel; otherwise the per-layer flow below runs. The two are byte-for-byte
 /// equivalent.
 #[cfg(all(
+    any(
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+    ),
     target_arch = "x86_64",
     target_feature = "avx512f",
     target_feature = "avx512bw",
@@ -149,12 +168,18 @@ fn per_layer_flow(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> 
 }
 
 /// Layer-stack forward pass, non-VNNI arm.
-#[cfg(not(all(
-    target_arch = "x86_64",
-    target_feature = "avx512f",
-    target_feature = "avx512bw",
-    target_feature = "avx512vnni"
-)))]
+#[cfg(all(
+    any(
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+    ),
+    not(all(
+        target_arch = "x86_64",
+        target_feature = "avx512f",
+        target_feature = "avx512bw",
+        target_feature = "avx512vnni"
+    ))
+))]
 fn per_layer_flow(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> i32 {
     per_layer_flow_unfused(transformed, stack)
 }
@@ -162,6 +187,62 @@ fn per_layer_flow(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> 
 /// The unfused layer-stack forward pass. Compiled unconditionally so that the
 /// equivalence tests can hold it against the fused chain, which leaves it
 /// caller-less outside `cfg(test)` on a VNNI build.
+#[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
+fn per_layer_flow(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> i32 {
+    let mut fc_0_out = [0i32; FC_0_OUTPUT_DIMS];
+    // The kernels below load by pointer and trust the layer sizes, which
+    // `NetworkStack` proved once when it was built. The widest layer, fc_0,
+    // adds eight chunks of `maddubs` results in `i16` when its weights were
+    // also proven to keep every such sum inside it for any 7-bit input.
+    match stack.fc_kernels {
+        FcKernels::WideFc0 => post_ft_kernel::affine_u7_wide(
+            &mut fc_0_out,
+            &stack.fc_0_biases,
+            &stack.fc_0_weights,
+            transformed,
+            FC_0_INPUT_DIMS,
+            FC_0_PADDED_INPUT_DIMS,
+        ),
+        FcKernels::Plain => post_ft_kernel::affine_u7(
+            &mut fc_0_out,
+            &stack.fc_0_biases,
+            &stack.fc_0_weights,
+            transformed,
+            FC_0_INPUT_DIMS,
+            FC_0_PADDED_INPUT_DIMS,
+        ),
+        FcKernels::Mismatched => {
+            panic!("the network's dense layers are not the sizes this build's shape needs")
+        }
+    }
+    let mut act_0 = [0u8; FC_1_INPUT_DIMS];
+    post_ft_kernel::clipped_relu(&fc_0_out, &mut act_0);
+    let mut fc_1_out = [0i32; FC_1_OUTPUT_DIMS];
+    post_ft_kernel::affine_u7(
+        &mut fc_1_out,
+        &stack.fc_1_biases,
+        &stack.fc_1_weights,
+        &act_0,
+        FC_1_INPUT_DIMS,
+        FC_1_PADDED_INPUT_DIMS,
+    );
+    let mut act_1 = [0u8; FC_2_INPUT_DIMS];
+    post_ft_kernel::clipped_relu(&fc_1_out, &mut act_1);
+    let mut fc_2_out = [0i32; FC_2_OUTPUT_DIMS];
+    post_ft_kernel::affine_u7(
+        &mut fc_2_out,
+        &stack.fc_2_biases,
+        &stack.fc_2_weights,
+        &act_1,
+        FC_2_INPUT_DIMS,
+        FC_2_PADDED_INPUT_DIMS,
+    );
+    fc_2_out[0]
+}
+#[cfg(any(
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+))]
 #[allow(dead_code)]
 fn per_layer_flow_unfused(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> i32 {
     let mut fc_0_out = [0i32; FC_0_OUTPUT_DIMS];
@@ -216,7 +297,7 @@ fn per_layer_flow_unfused(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkSt
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{NetDims, NetHeader, NnueNetworkBuilder};
+    use crate::types::{LAYER_STACKS, NetDims, NetHeader, NnueNetworkBuilder};
     use attic_state::parse_sfen;
 
     fn synthetic_header() -> NetHeader {
@@ -288,6 +369,10 @@ mod tests {
         assert_eq!(per_layer_flow(&transformed, &net.stacks[0]), 0);
     }
 
+    #[cfg(any(
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+    ))]
     #[test]
     fn forward_wires_shortcut_and_chain() {
         // The reference's `classic_chain_with_ewm_and_shortcut` wiring:
@@ -310,9 +395,17 @@ mod tests {
         transformed[0] = 39;
 
         assert_eq!(per_layer_flow(&transformed, stack), 1_256);
-        assert_eq!(per_layer_flow(&transformed, stack) / FV_SCALE_DEFAULT, 78);
+        // Whole-pipeline division by the default FV_SCALE: 1_256 / 16 = 78.
+        assert_eq!(
+            per_layer_flow(&transformed, stack) / crate::scale::FV_SCALE_DEFAULT,
+            78
+        );
     }
 
+    #[cfg(any(
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+    ))]
     #[test]
     fn selected_forward_path_matches_the_unfused_reference() {
         // Whichever path this build compiled must agree bit-for-bit with the
@@ -353,6 +446,132 @@ mod tests {
         }
     }
 
+    /// The layer chain written out with the always-scalar kernels, as a
+    /// reference for whichever kernels `per_layer_flow` selects.
+    #[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
+    fn scalar_reference_flow(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> i32 {
+        use crate::simd::scalar_post_ft as sc;
+        let mut fc_0_out = [0i32; FC_0_OUTPUT_DIMS];
+        sc::affine(
+            &mut fc_0_out,
+            &stack.fc_0_biases,
+            &stack.fc_0_weights,
+            transformed,
+            FC_0_INPUT_DIMS,
+            FC_0_PADDED_INPUT_DIMS,
+        );
+        let mut act_0 = [0u8; FC_1_INPUT_DIMS];
+        sc::clipped_relu(&fc_0_out, &mut act_0);
+        let mut fc_1_out = [0i32; FC_1_OUTPUT_DIMS];
+        sc::affine(
+            &mut fc_1_out,
+            &stack.fc_1_biases,
+            &stack.fc_1_weights,
+            &act_0,
+            FC_1_INPUT_DIMS,
+            FC_1_PADDED_INPUT_DIMS,
+        );
+        let mut act_1 = [0u8; FC_2_INPUT_DIMS];
+        sc::clipped_relu(&fc_1_out, &mut act_1);
+        let mut fc_2_out = [0i32; FC_2_OUTPUT_DIMS];
+        sc::affine(
+            &mut fc_2_out,
+            &stack.fc_2_biases,
+            &stack.fc_2_weights,
+            &act_1,
+            FC_2_INPUT_DIMS,
+            FC_2_PADDED_INPUT_DIMS,
+        );
+        fc_2_out[0]
+    }
+
+    /// Both fc_0 paths -- the `i16`-accumulating one that small weights qualify
+    /// for and the plain one that large weights fall back to -- agree with the
+    /// scalar chain, on random inputs and on the extreme all-127 / all-0 ones.
+    #[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
+    #[test]
+    fn standard_flow_matches_the_scalar_chain_on_both_fc_0_paths() {
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move || {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            state.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11
+        };
+
+        for (magnitude, expect_wide) in [(6i64, true), (127, false)] {
+            let mut b = builder_1stack_std();
+            let mut fill_i8 = |w: &mut [i8], m: i64| {
+                for x in w.iter_mut() {
+                    *x = ((next() % (2 * m as u64 + 1)) as i64 - m) as i8;
+                }
+            };
+            fill_i8(b.fc_0_weights_mut(0), magnitude);
+            fill_i8(b.fc_1_weights_mut(0), 127);
+            fill_i8(b.fc_2_weights_mut(0), 127);
+            for bias in b.fc_0_biases_mut(0).iter_mut() {
+                *bias = (next() as i64 - (1 << 52)) as i32;
+            }
+            for bias in b.fc_1_biases_mut(0).iter_mut() {
+                *bias = (next() as i64 - (1 << 52)) as i32;
+            }
+            for bias in b.fc_2_biases_mut(0).iter_mut() {
+                *bias = (next() as i64 - (1 << 52)) as i32;
+            }
+            let net = b.build();
+            let stack = &net.stacks[0];
+            let want_kernels = if expect_wide {
+                FcKernels::WideFc0
+            } else {
+                FcKernels::Plain
+            };
+            assert_eq!(
+                stack.fc_kernels, want_kernels,
+                "magnitude {magnitude}: the build-time check decided differently"
+            );
+
+            let mut inputs: Vec<[u8; FC_0_INPUT_DIMS]> =
+                vec![[0u8; FC_0_INPUT_DIMS], [127u8; FC_0_INPUT_DIMS]];
+            for _ in 0..200 {
+                let mut t = [0u8; FC_0_INPUT_DIMS];
+                for x in t.iter_mut() {
+                    *x = match next() % 4 {
+                        0 => 0,
+                        1 => 127,
+                        _ => (next() % 128) as u8,
+                    };
+                }
+                inputs.push(t);
+            }
+            for t in &inputs {
+                assert_eq!(
+                    per_layer_flow(t, stack),
+                    scalar_reference_flow(t, stack),
+                    "magnitude {magnitude}"
+                );
+            }
+        }
+    }
+
+    /// A network whose dense layers are not the build's sizes (the loader tests
+    /// build such networks, which is legitimate) must refuse to evaluate: the
+    /// AVX2 kernels load by pointer and trust the sizes `NetworkStack` proved.
+    #[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
+    #[test]
+    #[should_panic(expected = "not the sizes")]
+    fn a_network_with_other_dense_sizes_refuses_to_evaluate() {
+        let dims = NetDims {
+            layer_stacks: 1,
+            num_features: 1,
+            fc_0_output: 2,
+            fc_1_output: 2,
+            ..NetDims::STANDARD
+        };
+        let net = NnueNetworkBuilder::with_dims(synthetic_header(), [0u8; 32], &dims).build();
+        assert_eq!(net.stacks[0].fc_kernels, FcKernels::Mismatched);
+        per_layer_flow(&[0u8; FC_0_INPUT_DIMS], &net.stacks[0]);
+    }
+
     #[test]
     fn evaluate_zero_network_is_zero_for_both_sides() {
         // Full-size zeroed FT weights, so that refresh's feature-column indexing
@@ -367,6 +586,7 @@ mod tests {
 
     /// An SFEN-parsing oracle for the bucket index, sharing no code with
     /// [`layer_stack_index`].
+    #[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
     fn oracle_bucket(sfen: &str) -> usize {
         let mut parts = sfen.split_whitespace();
         let board = parts.next().unwrap();
@@ -410,6 +630,12 @@ mod tests {
         (8, "9/9/8k/9/9/9/8K/9/9 b - 1"),
     ];
 
+    // The three below pin `layer_stack_index` to the kings' ranks. That is the
+    // 1536 shape's rule; the 2304 shape buckets by game progress instead and
+    // never looks at the kings, so these say nothing there. `oracle_bucket`
+    // itself stays valid as a statement about the reference's king rule — it is
+    // the *binding* to `layer_stack_index` that is shape-specific.
+    #[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
     #[test]
     fn layer_stack_index_matches_oracle_on_each_bucket() {
         for (expected, sfen) in BUCKET_FIXTURES {
@@ -424,6 +650,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
     #[test]
     fn layer_stack_index_white_to_move_mirrors_ranks() {
         let sfen = "8k/9/9/9/9/9/9/9/8K w - 1";
@@ -431,6 +658,7 @@ mod tests {
         assert_eq!(layer_stack_index(&parse_sfen(sfen).unwrap()), 8);
     }
 
+    #[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
     #[test]
     fn layer_stack_index_startpos_is_eight() {
         let startpos = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1";

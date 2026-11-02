@@ -104,6 +104,7 @@ fn drive(input: &str) -> String {
 
 const OVERRIDE_LINE: &str = "info string engine option override. name = FV_SCALE , value = 24";
 
+#[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
 #[test]
 #[cfg_attr(miri, ignore)]
 fn eval_options_override_applies_at_isready() {
@@ -133,6 +134,7 @@ fn eval_options_override_applies_at_isready() {
     );
 }
 
+#[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
 #[test]
 #[cfg_attr(miri, ignore)]
 fn absent_eval_options_is_silent() {

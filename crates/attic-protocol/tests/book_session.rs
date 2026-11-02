@@ -5,6 +5,10 @@
 //! best move and carrying the depth-0 book `info` signature is what proves the
 //! book was consulted.
 
+// Every test here stages `common`'s synthetic nn.bin, which is an SFNN-1536 file;
+// see the note on the constants in `common/mod.rs`.
+#![cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
+
 mod common;
 
 use attic_state::{format_sfen, parse_usi_move};

@@ -49,6 +49,92 @@ pub fn affine(
     }
 }
 
+/// [`affine`] for inputs that are all at most 127.
+///
+/// The scalar loop has no use for the bound; it exists so the AVX2 kernel,
+/// which does (`maddubs` saturates above 127), has a same-signature baseline to
+/// match bit for bit, and so a build without AVX2 can call one name.
+pub fn affine_u7(
+    output: &mut [i32],
+    biases: &[i32],
+    weights: &[i8],
+    input: &[u8],
+    in_dims: usize,
+    padded_in: usize,
+) {
+    debug_assert!(input[..in_dims].iter().all(|&x| x <= 127));
+    affine(output, biases, weights, input, in_dims, padded_in);
+}
+
+/// Input bytes one 256-bit `maddubs` consumes.
+pub const U7_CHUNK_BYTES: usize = 32;
+
+/// Chunks whose `maddubs` results the wide affine adds as `i16` before
+/// widening (see [`pair_sums_fit_i16`]).
+pub const U7_WIDE_GROUP_CHUNKS: usize = 8;
+
+/// Whether [`affine_u7_wide`](crate::simd::post_ft_kernel::affine_u7_wide)'s
+/// `i16` accumulation is exact for these weights, for **every** input in
+/// `0..=127`.
+///
+/// `maddubs` yields one `i16` per adjacent byte pair, `x[2p]*w[2p] +
+/// x[2p+1]*w[2p+1]`. The wide kernel adds [`U7_WIDE_GROUP_CHUNKS`] such results
+/// (same lane `p`, consecutive 32-byte chunks) in `i16` and only then widens to
+/// `i32`, saving a widen and an `i32` add per chunk. That is exact exactly when
+/// no lane's running sum leaves `i16`. For inputs in `0..=127` the sum over a
+/// set of weights ranges over `[127 * (sum of the negative weights), 127 * (sum
+/// of the positive weights)]`, and every partial sum of the lane (a subset of
+/// the terms) lies inside the full group's range, so it is enough to check the
+/// two ends for each row, lane and group of chunks.
+///
+/// A trailing group shorter than [`U7_WIDE_GROUP_CHUNKS`] is checked as it is.
+/// Only the first `in_dims` bytes of each `padded_in`-byte row are read, as in
+/// [`affine`]; `in_dims` must be a multiple of [`U7_CHUNK_BYTES`].
+pub fn pair_sums_fit_i16(weights: &[i8], rows: usize, in_dims: usize, padded_in: usize) -> bool {
+    if !in_dims.is_multiple_of(U7_CHUNK_BYTES)
+        || in_dims > padded_in
+        || weights.len() != rows * padded_in
+    {
+        return false;
+    }
+    let chunks = in_dims / U7_CHUNK_BYTES;
+    for row in 0..rows {
+        let r = &weights[row * padded_in..row * padded_in + in_dims];
+        for first in (0..chunks).step_by(U7_WIDE_GROUP_CHUNKS) {
+            let last = (first + U7_WIDE_GROUP_CHUNKS).min(chunks);
+            for lane in 0..U7_CHUNK_BYTES / 2 {
+                let (mut pos, mut neg) = (0i32, 0i32);
+                for chunk in first..last {
+                    for w in &r[chunk * U7_CHUNK_BYTES + 2 * lane..][..2] {
+                        if *w > 0 {
+                            pos += *w as i32;
+                        } else {
+                            neg += *w as i32;
+                        }
+                    }
+                }
+                if pos * 127 > i16::MAX as i32 || neg * 127 < i16::MIN as i32 {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+/// [`affine_u7`] for weights that passed [`pair_sums_fit_i16`]: the portable
+/// build has no wider accumulator to exploit, so this is the plain loop.
+pub fn affine_u7_wide(
+    output: &mut [i32],
+    biases: &[i32],
+    weights: &[i8],
+    input: &[u8],
+    in_dims: usize,
+    padded_in: usize,
+) {
+    affine_u7(output, biases, weights, input, in_dims, padded_in);
+}
+
 /// Clipped ReLU: `output = clamp(input >> WEIGHT_SCALE_BITS, 0, 127)`.
 pub fn clipped_relu(input: &[i32], output: &mut [u8]) {
     debug_assert_eq!(input.len(), output.len());
@@ -135,6 +221,65 @@ mod tests {
         affine(&mut out, &biases, &weights, &input, 2, 3);
         assert_eq!(out[0], 41);
         assert_eq!(out[1], 18);
+    }
+
+    #[test]
+    fn pair_sums_fit_i16_accepts_the_exact_limit_and_rejects_one_past_it() {
+        // One row of 256 inputs = 8 chunks = one group. Lane 0 covers bytes
+        // 0 and 1 of every chunk, so put the weights there.
+        let make = |lane0: i8, lane1: i8| {
+            let mut w = vec![0i8; 256];
+            for chunk in 0..8 {
+                w[chunk * 32] = lane0;
+                w[chunk * 32 + 1] = lane1;
+            }
+            w
+        };
+        // 16 weights of 16 sum to 256 -> 256 * 127 = 32512, inside i16.
+        assert!(pair_sums_fit_i16(&make(16, 16), 1, 256, 256));
+        // 16 weights summing to 258: 258 * 127 = 32766, the last value that fits.
+        let mut edge = make(16, 16);
+        edge[0] = 18;
+        assert!(pair_sums_fit_i16(&edge, 1, 256, 256));
+        // 259 * 127 = 32893 does not.
+        edge[1] = 17;
+        assert!(!pair_sums_fit_i16(&edge, 1, 256, 256));
+        // The negative end: -258 * 127 = -32766 fits, -259 * 127 does not.
+        let mut neg = make(-16, -16);
+        neg[0] = -18;
+        assert!(pair_sums_fit_i16(&neg, 1, 256, 256));
+        neg[1] = -17;
+        assert!(!pair_sums_fit_i16(&neg, 1, 256, 256));
+    }
+
+    #[test]
+    fn pair_sums_fit_i16_splits_a_row_into_groups_of_eight_chunks() {
+        // 16 chunks: the same large weight in lane 0 of chunk 0 and chunk 8
+        // lands in different groups, so each group's sum stays small.
+        let mut w = vec![0i8; 512];
+        for chunk in [0usize, 8] {
+            for k in 0..2 {
+                w[chunk * 32 + k] = 100;
+            }
+        }
+        assert!(pair_sums_fit_i16(&w, 1, 512, 512));
+        // In one group (chunks 0 and 1) they would sum to 400 * 127 > i16::MAX.
+        let mut w = vec![0i8; 512];
+        for chunk in [0usize, 1] {
+            for k in 0..2 {
+                w[chunk * 32 + k] = 100;
+            }
+        }
+        assert!(!pair_sums_fit_i16(&w, 1, 512, 512));
+    }
+
+    #[test]
+    fn pair_sums_fit_i16_rejects_shapes_it_cannot_vouch_for() {
+        assert!(
+            !pair_sums_fit_i16(&[0i8; 48], 1, 48, 48),
+            "not a multiple of 32"
+        );
+        assert!(!pair_sums_fit_i16(&[0i8; 10], 1, 32, 32), "wrong length");
     }
 
     #[test]

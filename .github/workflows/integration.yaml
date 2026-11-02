@@ -1,0 +1,145 @@
+name: Integration
+
+on:
+  pull_request:
+  push:
+    branches: [main, master, develop]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+  # `.cargo/config.toml` compiles for the host CPU (`-C target-cpu=native`),
+  # which is right everywhere a binary runs on the machine that produced it.
+  # These jobs are the one place that does not hold: `rust-cache` restores a
+  # `target/` directory built on an earlier runner, the hosted runners are not
+  # a single CPU model, and a native-built artifact dies with SIGILL on the
+  # first instruction its new host lacks. An environment `RUSTFLAGS` overrides
+  # the config file, and `rust-cache` folds `RUSTFLAGS` into its cache key, so
+  # pinning a baseline every current x86-64 runner provides keeps the restored
+  # artifacts runnable. Builds outside CI keep the native default.
+  #
+  # The pin also fixes which kernels these jobs cover: the AVX-512 forward pass
+  # is selected by `cfg(target_feature = "avx512…")`, which x86-64-v3 does not
+  # enable, so CI exercises the portable path. The AVX-512 kernels' own unit
+  # tests enable their features per function and probe the CPU at run time, so
+  # they still run on a runner that has the instructions.
+  RUSTFLAGS: "-C target-cpu=x86-64-v3"
+  # Tells the two tests that check the build matches its host (`active_backend`
+  # in attic-eval) that this build deliberately does not: a runner with
+  # AVX-512 VNNI is expected to run the scalar backend here. Without it those
+  # tests fail on whichever runners happen to have that CPU.
+  ATTIC_BASELINE_BUILD: "1"
+
+# The network shape is a build-time feature and exactly one must be selected
+# (`attic-eval` refuses to compile with none or two), so `--all-features` can
+# neither build nor test anything. Each job below runs once per shape instead.
+# `args` is what follows `cargo <verb>` to pick it; the seventh entry is the
+# build that must match YaneuraOu node for node (`ref_check_time` moves the
+# time checks to where the reference's are), which turns off the defaults.
+# The list is written out in each job on purpose: it is the same seven entries
+# three times, and kept that way rather than behind a YAML anchor so that no
+# workflow parser has to support one for CI to start at all.
+#
+# Nothing here has a network file: the tests that read one skip with a notice
+# when it is absent, so a green run says the code builds and its self-contained
+# tests pass, not that the shape evaluates correctly.
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: clippy (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: sfnn-1536
+            args: --features sfnn_halfkahm2_1536_15_32_k3k3
+          - name: sfnn-2304
+            args: --features sfnn_halfkahm2_2304_15_64_progress8ek
+          - name: nnue-kp
+            args: --features nnue_kp_256x2_32_32
+          - name: nnue-halfkp
+            args: --features nnue_halfkp_256x2_32_32
+          - name: sym-kp
+            args: --features sym_kp_128x2_512
+          - name: sym-halfkp
+            args: --features sym_halfkp_128x2_512
+          - name: yaneuraou-parity
+            args: --no-default-features --features nnue_kp_256x2_32_32,ref_check_time
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
+      - run: cargo clippy --workspace --all-targets ${{ matrix.args }} -- -D warnings
+
+  build:
+    name: build (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: sfnn-1536
+            args: --features sfnn_halfkahm2_1536_15_32_k3k3
+          - name: sfnn-2304
+            args: --features sfnn_halfkahm2_2304_15_64_progress8ek
+          - name: nnue-kp
+            args: --features nnue_kp_256x2_32_32
+          - name: nnue-halfkp
+            args: --features nnue_halfkp_256x2_32_32
+          - name: sym-kp
+            args: --features sym_kp_128x2_512
+          - name: sym-halfkp
+            args: --features sym_halfkp_128x2_512
+          - name: yaneuraou-parity
+            args: --no-default-features --features nnue_kp_256x2_32_32,ref_check_time
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
+      - run: cargo build --release -p attic ${{ matrix.args }}
+
+  test:
+    name: test (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: sfnn-1536
+            args: --features sfnn_halfkahm2_1536_15_32_k3k3
+          - name: sfnn-2304
+            args: --features sfnn_halfkahm2_2304_15_64_progress8ek
+          - name: nnue-kp
+            args: --features nnue_kp_256x2_32_32
+          - name: nnue-halfkp
+            args: --features nnue_halfkp_256x2_32_32
+          - name: sym-kp
+            args: --features sym_kp_128x2_512
+          - name: sym-halfkp
+            args: --features sym_halfkp_128x2_512
+          - name: yaneuraou-parity
+            args: --no-default-features --features nnue_kp_256x2_32_32,ref_check_time
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
+      - run: cargo test --workspace ${{ matrix.args }}

@@ -74,6 +74,44 @@ const REF_TO_PIECE_KIND: [Option<(PieceKind, bool)>; 16] = [
     None,                             // 15 (B_GOLDS / W_GOLDS — never on a Move)
 ];
 
+/// The 5-bit piece field of a move (bits 16..20) to the piece it names, or
+/// `None` for a field no constructor produces (`pt` code `0` or `15`).
+static MOVED_PIECE_OF_FIELD: [Option<Piece>; 32] = {
+    let mut t = [None; 32];
+    let mut field = 0;
+    while field < 32 {
+        if let Some((kind, promoted)) = REF_TO_PIECE_KIND[field & 0x0F] {
+            t[field] = Some(Piece {
+                kind,
+                color: if field & PIECE_WHITE as usize != 0 {
+                    Color::White
+                } else {
+                    Color::Black
+                },
+                promoted,
+            });
+        }
+        field += 1;
+    }
+    t
+};
+
+/// The attack-pattern slot ([`crate::board::pat`]) of the piece a move's piece
+/// field names, or [`crate::board::PATTERN_COUNT`] — one past the last slot —
+/// for a field no constructor produces, so that a table indexed by the result
+/// panics on a malformed move just as [`Move::moved_piece_after`] does.
+static PATTERN_OF_FIELD: [u8; 32] = {
+    let mut t = [crate::board::PATTERN_COUNT as u8; 32];
+    let mut field = 0;
+    while field < 32 {
+        if let Some(piece) = MOVED_PIECE_OF_FIELD[field] {
+            t[field] = crate::board::pattern_of_const(piece) as u8;
+        }
+        field += 1;
+    }
+    t
+};
+
 const fn piece_to_ref_code(piece: Piece) -> u32 {
     let pt = PIECE_KIND_TO_REF[piece.kind.index()];
     let promote_bit = if piece.promoted { PIECE_PROMOTE } else { 0 };
@@ -230,21 +268,20 @@ impl Move {
     /// # Panics
     /// Panics if the upper 5 bits encode an invalid piece (e.g. on
     /// `MOVE_NONE`, where they are zero).
+    #[inline]
     pub fn moved_piece_after(self) -> Piece {
-        let code = (self.0 >> 16) & 0x1F;
-        let color = if (code & PIECE_WHITE) != 0 {
-            Color::White
-        } else {
-            Color::Black
-        };
-        let pt_bits = (code & 0x0F) as usize;
-        let (kind, promoted) =
-            REF_TO_PIECE_KIND[pt_bits].expect("Move::moved_piece_after: malformed move data");
-        Piece {
-            kind,
-            color,
-            promoted,
-        }
+        MOVED_PIECE_OF_FIELD[((self.0 >> 16) & 0x1F) as usize]
+            .expect("Move::moved_piece_after: malformed move data")
+    }
+
+    /// The attack-pattern slot ([`crate::board::pat`]) of
+    /// [`Self::moved_piece_after`], read straight off the move's piece field.
+    ///
+    /// A malformed move yields one past the last slot, so indexing a
+    /// pattern-keyed table with it panics as `moved_piece_after` would.
+    #[inline(always)]
+    pub(crate) fn moved_pattern(self) -> usize {
+        PATTERN_OF_FIELD[((self.0 >> 16) & 0x1F) as usize] as usize
     }
 }
 
@@ -627,6 +664,43 @@ mod tests {
                 assert!(m.is_ok());
             }
         }
+    }
+
+    #[test]
+    fn moved_pattern_is_the_pattern_of_the_moved_piece() {
+        let from = Square::new(4, 4).unwrap();
+        let to = Square::new(4, 5).unwrap();
+        for code in 0..Piece::CODES {
+            let piece = Piece::from_code(code);
+            let mut moves = Vec::new();
+            if !piece.promoted {
+                moves.push(Move::make(from, to, piece));
+                if piece.kind.can_promote() {
+                    moves.push(Move::make_promote(from, to, piece));
+                }
+                if piece.kind != PieceKind::King {
+                    moves.push(Move::make_drop(piece.kind, piece.color, to));
+                }
+            }
+            for m in moves {
+                assert_eq!(
+                    m.moved_pattern(),
+                    crate::board::pattern_of(m.moved_piece_after()),
+                    "{m:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "malformed move data")]
+    fn moved_piece_after_panics_on_the_null_piece_field() {
+        let _ = Move::none().moved_piece_after();
+    }
+
+    #[test]
+    fn moved_pattern_of_a_malformed_move_is_out_of_range() {
+        assert_eq!(Move::none().moved_pattern(), crate::board::PATTERN_COUNT);
     }
 
     #[test]

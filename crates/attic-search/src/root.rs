@@ -479,7 +479,18 @@ fn declaration_win_try(pos: &Position) -> Option<Move> {
 }
 
 /// The side-to-move-agnostic king locator shared by the declaration branches.
+///
+/// `declaration_win` runs at nearly every search node, so this goes through the
+/// board's king bitboard rather than scanning the 81 squares. A legal position
+/// has exactly one king per side, so both forms name the same square.
+#[inline]
 fn find_king(pos: &Position, us: Color) -> Option<Square> {
+    pos.king_square(us)
+}
+
+/// The 81-square scan that [`find_king`] replaced, kept as its oracle.
+#[cfg(test)]
+fn find_king_scan(pos: &Position, us: Color) -> Option<Square> {
     (0..Square::COUNT as u8)
         .filter_map(Square::from_index)
         .find(|&sq| {
@@ -567,6 +578,22 @@ mod tests {
         assert!(declaration_win(&pos(STARTPOS), &cfg).is_none());
         // In check ⇒ no declaration even with pieces forward.
         assert!(declaration_win(&pos(IN_CHECK), &cfg).is_none());
+    }
+
+    #[test]
+    fn find_king_agrees_with_the_square_scan() {
+        for sfen in [
+            STARTPOS,
+            IN_CHECK,
+            CHECKMATE,
+            NYUGYOKU,
+            "9/9/9/9/9/9/9/9/9 b - 1",
+        ] {
+            let p = pos(sfen);
+            for c in [Color::Black, Color::White] {
+                assert_eq!(find_king(&p, c), find_king_scan(&p, c), "{sfen} {c:?}");
+            }
+        }
     }
 
     #[test]

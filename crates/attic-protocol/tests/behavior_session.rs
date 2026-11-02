@@ -5,6 +5,10 @@
 //! in a temp dir. Searches run on a worker thread, so the harness waits for the
 //! `bestmove` before comparing or quitting.
 
+// Every test here stages `common`'s synthetic nn.bin, which is an SFNN-1536 file;
+// see the note on the constants in `common/mod.rs`.
+#![cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
+
 mod common;
 
 use common::{StreamHarness, TempDir, bestmove_lines, write_synthetic_nn_bin};

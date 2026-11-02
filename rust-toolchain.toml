@@ -1,6 +1,7 @@
 # Pins the workspace toolchain. An auto-fetched pinned toolchain must bring
 # rustfmt + clippy along, so `cargo fmt` and `cargo clippy` run on a fresh
-# checkout.
+# checkout, and llvm-tools for the `llvm-profdata` that `cargo xtask build-pgo`
+# merges its profile with.
 [toolchain]
 channel = "1.98.1"
-components = ["rustfmt", "clippy"]
+components = ["rustfmt", "clippy", "llvm-tools"]

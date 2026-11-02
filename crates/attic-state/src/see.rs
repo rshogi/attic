@@ -15,7 +15,10 @@
 //!   GOLDS, BISHOP, ROOK, HORSE, DRAGON, KING — ROOK before HORSE, even though
 //!   `HorseValue < RookValue`. Node-count parity depends on it.
 
-use crate::bitboard::{Bitboard, between, bishop_attacks, lance_attacks, ray_dir, rook_attacks};
+use crate::bitboard::{
+    Bitboard, between, bishop_step_effect, dir_toward, lance_attacks, lance_step_effect,
+    rook_step_effect, slide_ray,
+};
 use crate::board::pat;
 use crate::color::Color;
 use crate::move_::Move;
@@ -41,9 +44,8 @@ const HORSE_VALUE: i32 = 945;
 const DRAGON_VALUE: i32 = 1395;
 const KING_VALUE: i32 = 15000;
 
-/// `Eval::PieceValue[piece]` — the value of a concrete board piece, with
-/// promoted pieces returning their promoted value.
-pub fn piece_value(p: Piece) -> i32 {
+/// The match form of [`piece_value`], used once to build [`PIECE_VALUE_OF_CODE`].
+const fn piece_value_match(p: Piece) -> i32 {
     use crate::piece::PieceKind;
     match (p.kind, p.promoted) {
         (PieceKind::Pawn, false) => PAWN_VALUE,
@@ -63,67 +65,77 @@ pub fn piece_value(p: Piece) -> i32 {
     }
 }
 
-/// The reference's `pieces(<TYPE>)` least-valuable-attacker buckets. `Golds`
-/// covers plain gold and any promoted `{Pawn, Lance, Knight, Silver}`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Bucket {
-    Pawn,
-    Lance,
-    Knight,
-    Silver,
-    Golds,
-    Bishop,
-    Rook,
-    Horse,
-    Dragon,
-}
-
-/// The nine capturing buckets paired with their [`pat`] pattern slot, in the
-/// try order stated at the module head. KING is the terminal `else`, handled
-/// separately.
-const BUCKET_ORDER: [(Bucket, usize); 9] = [
-    (Bucket::Pawn, pat::PAWN),
-    (Bucket::Lance, pat::LANCE),
-    (Bucket::Knight, pat::KNIGHT),
-    (Bucket::Silver, pat::SILVER),
-    (Bucket::Golds, pat::GOLD),
-    (Bucket::Bishop, pat::BISHOP),
-    (Bucket::Rook, pat::ROOK),
-    (Bucket::Horse, pat::HORSE),
-    (Bucket::Dragon, pat::DRAGON),
-];
-
-/// The constant the swap loop subtracts for a least-valuable attacker of the
-/// given bucket.
-fn bucket_value(b: Bucket) -> i32 {
-    match b {
-        Bucket::Pawn => PAWN_VALUE,
-        Bucket::Lance => LANCE_VALUE,
-        Bucket::Knight => KNIGHT_VALUE,
-        Bucket::Silver => SILVER_VALUE,
-        Bucket::Golds => GOLD_VALUE,
-        Bucket::Bishop => BISHOP_VALUE,
-        Bucket::Rook => ROOK_VALUE,
-        Bucket::Horse => HORSE_VALUE,
-        Bucket::Dragon => DRAGON_VALUE,
+/// [`piece_value`] for every [`Piece::code`], so the lookup is one load rather
+/// than a two-level `match`.
+static PIECE_VALUE_OF_CODE: [i32; Piece::CODES] = {
+    let mut t = [0i32; Piece::CODES];
+    let mut code = 0;
+    while code < Piece::CODES {
+        t[code] = piece_value_match(Piece::from_code(code));
+        code += 1;
     }
+    t
+};
+
+/// `Eval::PieceValue[piece]` — the value of a concrete board piece, with
+/// promoted pieces returning their promoted value.
+#[inline(always)]
+pub fn piece_value(p: Piece) -> i32 {
+    PIECE_VALUE_OF_CODE[p.code()]
 }
 
-/// Locate the least-valuable attacker within `stm_attackers`, tie-breaking on
-/// the lowest square index (the reference's `bb.pop()`). `stm_attackers` is
-/// non-empty by the caller's guarantee, so `None` means only a KING remains —
-/// the reference's terminal `else` branch.
-#[inline]
+/// The least-valuable attacker among `stm_attackers`, as the reference's
+/// `pieces(<TYPE>)` else-if chain tries them: PAWN, LANCE, KNIGHT, SILVER,
+/// GOLDS (plain gold and any promoted `{Pawn, Lance, Knight, Silver}`), BISHOP,
+/// ROOK, HORSE, DRAGON. Returns the attackers of that bucket, the constant the
+/// swap loop subtracts for it, and whether it is a knight (which jumps, so
+/// consuming it uncovers nothing). `None` means only a KING remains — the
+/// reference's terminal `else` branch. `stm_attackers` is non-empty by the
+/// caller's guarantee.
+///
+/// Each bucket is one `AND` and one `ptest`; the constants are immediates, so
+/// no bucket table is built or indexed.
+#[inline(always)]
 fn least_valuable_attacker(
     board: &crate::board::Board,
     stm_attackers: Bitboard,
     stm: Color,
-) -> Option<(Bucket, Square)> {
-    for (bucket, pattern) in BUCKET_ORDER {
-        let set = stm_attackers & board.pieces_pattern(stm, pattern);
-        if let Some(sq) = set.squares().next() {
-            return Some((bucket, sq));
-        }
+) -> Option<(Bitboard, i32, bool)> {
+    let bb = stm_attackers & board.pieces_pattern(stm, pat::PAWN);
+    if !bb.is_empty() {
+        return Some((bb, PAWN_VALUE, false));
+    }
+    let bb = stm_attackers & board.pieces_pattern(stm, pat::LANCE);
+    if !bb.is_empty() {
+        return Some((bb, LANCE_VALUE, false));
+    }
+    let bb = stm_attackers & board.pieces_pattern(stm, pat::KNIGHT);
+    if !bb.is_empty() {
+        return Some((bb, KNIGHT_VALUE, true));
+    }
+    let bb = stm_attackers & board.pieces_pattern(stm, pat::SILVER);
+    if !bb.is_empty() {
+        return Some((bb, SILVER_VALUE, false));
+    }
+    let bb = stm_attackers & board.pieces_pattern(stm, pat::GOLD);
+    if !bb.is_empty() {
+        return Some((bb, GOLD_VALUE, false));
+    }
+    let bb = stm_attackers & board.pieces_pattern(stm, pat::BISHOP);
+    if !bb.is_empty() {
+        return Some((bb, BISHOP_VALUE, false));
+    }
+    let bb = stm_attackers & board.pieces_pattern(stm, pat::ROOK);
+    if !bb.is_empty() {
+        return Some((bb, ROOK_VALUE, false));
+    }
+    let bb = stm_attackers & board.pieces_pattern(stm, pat::HORSE);
+    if !bb.is_empty() {
+        return Some((bb, HORSE_VALUE, false));
+    }
+    let bb = stm_attackers & board.pieces_pattern(stm, pat::DRAGON);
+    if !bb.is_empty() {
+        return Some((bb, DRAGON_VALUE, false));
     }
     None
 }
@@ -132,39 +144,46 @@ fn least_valuable_attacker(
 /// cleared from `occ`) is consumed. `removed` is always aligned with `to` on
 /// one of the eight ray directions, because the caller skips knights.
 ///
-/// Removing a piece can only open the one ray through its square, so OR-ing the
-/// whole occupancy-limited slider query back in is idempotent for attackers
-/// already present and adds exactly the newly revealed ones — equivalent to the
-/// reference's per-direction `rayEffect<DIR>(to, occupied)` switch.
-#[inline]
+/// Only the one ray from `to` through `removed` can open, so only that ray is
+/// walked — the reference's `rayEffect<DIR>(to, occupied)` switch — and the
+/// pieces that attack along it are the ones OR-ed in: bishops and horses on a
+/// diagonal, rooks and dragons on a rank, and on a file the rooks and dragons
+/// plus the lance that faces `to` (a Black lance attacks toward rank 0, so it
+/// looks at `to` from the rank-8 side, and the other way round for White).
+#[inline(always)]
 fn reveal_sliders(
     board: &crate::board::Board,
     to: Square,
     removed: Square,
     occ: Bitboard,
 ) -> Bitboard {
-    let (df, dr) = ray_dir(to, removed).expect("non-knight SEE attacker is aligned with `to`");
-    if df != 0 && dr != 0 {
-        let bishop_horse = board.pieces_pattern(Color::Black, pat::BISHOP)
-            | board.pieces_pattern(Color::White, pat::BISHOP)
-            | board.pieces_pattern(Color::Black, pat::HORSE)
-            | board.pieces_pattern(Color::White, pat::HORSE);
-        bishop_attacks(to, occ) & bishop_horse
-    } else {
-        let rook_dragon = board.pieces_pattern(Color::Black, pat::ROOK)
-            | board.pieces_pattern(Color::White, pat::ROOK)
-            | board.pieces_pattern(Color::Black, pat::DRAGON)
-            | board.pieces_pattern(Color::White, pat::DRAGON);
-        let mut revealed = rook_attacks(to, occ) & rook_dragon;
-        if df == 0 {
-            // A lance too, on a vertical ray: a Black lance attacks `to` from
-            // below, which is the White lance direction seen from `to`.
-            revealed |= lance_attacks(Color::White, to, occ)
-                & board.pieces_pattern(Color::Black, pat::LANCE);
-            revealed |= lance_attacks(Color::Black, to, occ)
-                & board.pieces_pattern(Color::White, pat::LANCE);
+    let rook_dragon = board.pieces_pattern(Color::Black, pat::ROOK)
+        | board.pieces_pattern(Color::Black, pat::DRAGON)
+        | board.pieces_pattern(Color::White, pat::ROOK)
+        | board.pieces_pattern(Color::White, pat::DRAGON);
+    let dir = dir_toward(to, removed);
+    debug_assert!(dir < 8, "non-knight SEE attacker is aligned with `to`");
+    match dir {
+        // Toward rank 0: the revealed lance is a White one (it attacks toward
+        // rank 8).
+        0 => {
+            lance_attacks(Color::Black, to, occ)
+                & (rook_dragon | board.pieces_pattern(Color::White, pat::LANCE))
         }
-        revealed
+        // Toward rank 8: a Black lance.
+        1 => {
+            lance_attacks(Color::White, to, occ)
+                & (rook_dragon | board.pieces_pattern(Color::Black, pat::LANCE))
+        }
+        2 | 3 => slide_ray(dir, to, occ) & rook_dragon,
+        4..=7 => {
+            let bishop_horse = board.pieces_pattern(Color::Black, pat::BISHOP)
+                | board.pieces_pattern(Color::Black, pat::HORSE)
+                | board.pieces_pattern(Color::White, pat::BISHOP)
+                | board.pieces_pattern(Color::White, pat::HORSE);
+            slide_ray(dir, to, occ) & bishop_horse
+        }
+        _ => unreachable!("non-knight SEE attacker is aligned with `to`"),
     }
 }
 
@@ -173,19 +192,36 @@ fn reveal_sliders(
 /// the set of single blockers between `c`'s king and an enemy sniper;
 /// `pinners[~c]` is the set of enemy snipers whose single blocker is one of
 /// `c`'s own pieces. Both are computed over the full pre-move board.
+///
+/// Only the tests ask for it by colour alone; the engine already holds both
+/// king squares and goes through [`slider_blockers_at`].
+#[cfg(test)]
 pub(crate) fn slider_blockers(board: &crate::board::Board, c: Color) -> (Bitboard, Bitboard) {
-    let ksq = match try_find_king(board, c) {
+    slider_blockers_at(board, c, try_find_king(board, c))
+}
+
+/// `slider_blockers` with `c`'s king square (`None` if the board has no `c`
+/// king) already known, so a caller that located both kings does not search
+/// the piece sets again.
+#[inline]
+pub(crate) fn slider_blockers_at(
+    board: &crate::board::Board,
+    c: Color,
+    king: Option<Square>,
+) -> (Bitboard, Bitboard) {
+    let ksq = match king {
         Some(s) => s,
         None => return (Bitboard::EMPTY, Bitboard::EMPTY),
     };
+    debug_assert_eq!(king, try_find_king(board, c));
     let enemy = c.flip();
 
-    // `*_attacks(.., EMPTY)` is the full ray to the edge — the reference's
-    // occupancy-independent `rookStepEffect` / `bishopStepEffect` /
-    // `lanceStepEffect`.
-    let rook_line = rook_attacks(ksq, Bitboard::EMPTY);
-    let bishop_line = bishop_attacks(ksq, Bitboard::EMPTY);
-    let lance_line = lance_attacks(c, ksq, Bitboard::EMPTY);
+    // The occupancy-independent full rays to the edge — the reference's
+    // `rookStepEffect` / `bishopStepEffect` / `lanceStepEffect`, each a single
+    // table load (equal to the occupancy-limited query under an empty board).
+    let rook_line = rook_step_effect(ksq);
+    let bishop_line = bishop_step_effect(ksq);
+    let lance_line = lance_step_effect(c, ksq);
     let rook_dragon =
         board.pieces_pattern(enemy, pat::ROOK) | board.pieces_pattern(enemy, pat::DRAGON);
     let bishop_horse =
@@ -253,38 +289,20 @@ impl Position {
         // Clearing `from` reveals the x-ray attackers behind the moving piece.
         // Clearing `to` is immaterial — it never blocks attacks to itself — but
         // the reference xors it, so this does too.
-        let mut occupied = board.occupied();
-        occupied.clear(to);
+        let mut removed = Bitboard::from_square(to);
         if !drop {
-            occupied.clear(m.from_sq());
+            removed |= Bitboard::from_square(m.from_sq());
         }
-
-        // Copied out of the `Ref` guard so it does not outlive this borrow.
-        let (blockers_black, blockers_white, pinners_black, pinners_white) = {
-            let ci = self.check_info();
-            (
-                ci.blockers(Color::Black),
-                ci.blockers(Color::White),
-                ci.pinners(Color::Black),
-                ci.pinners(Color::White),
-            )
-        };
-        let blockers_for_king = |c: Color| match c {
-            Color::Black => blockers_black,
-            Color::White => blockers_white,
-        };
-        // The `~stm` snipers pinning `stm`'s pieces to `stm`'s king. Note the
-        // index flip: [`slider_blockers`] returns `pinners[~c]` alongside
-        // `blockersForKing[c]`.
-        let pinners_against = |stm: Color| match stm {
-            Color::Black => pinners_white,
-            Color::White => pinners_black,
-        };
+        let mut occupied = board.occupied().and_not(removed);
 
         // Collected once, then maintained incrementally: `attackers &= occupied`
         // drops consumed pieces and [`reveal_sliders`] adds the ones uncovered
         // behind them.
         let mut attackers = attackers_to_both(board, to, occupied);
+
+        // Read in place rather than copied out: most calls end in the first
+        // round or two and never look at the pins.
+        let check_info = self.check_info();
 
         let mut stm = mover;
         let mut res: i32 = 1;
@@ -299,9 +317,11 @@ impl Position {
             }
 
             // Don't allow pinned pieces to attack while a pinner is still on
-            // the board.
-            if !(pinners_against(stm) & occupied).is_empty() {
-                stm_attackers &= !blockers_for_king(stm);
+            // the board. The `~stm` snipers pinning `stm`'s pieces to `stm`'s
+            // king are `pinners(stm)` flipped: [`slider_blockers`] returns
+            // `pinners[~c]` alongside `blockersForKing[c]`.
+            if !(check_info.pinners(stm.flip()) & occupied).is_empty() {
+                stm_attackers = stm_attackers.and_not(check_info.blockers(stm));
                 if stm_attackers.is_empty() {
                     break;
                 }
@@ -309,29 +329,31 @@ impl Position {
 
             res ^= 1;
 
-            let (bucket, lva_sq) = match least_valuable_attacker(board, stm_attackers, stm) {
-                Some(c) => c,
-                None => {
-                    // Only a KING remains, and capturing with it loses the king
-                    // if the opponent still attacks `to`.
-                    let opp_attackers = attackers & board.pieces_color(stm.flip());
-                    let final_res = if !opp_attackers.is_empty() {
-                        res ^ 1
-                    } else {
-                        res
-                    };
-                    return final_res != 0;
-                }
+            let Some((bb, value, is_knight)) = least_valuable_attacker(board, stm_attackers, stm)
+            else {
+                // Only a KING remains, and capturing with it loses the king
+                // if the opponent still attacks `to`.
+                let opp_attackers = attackers & board.pieces_color(stm.flip());
+                let final_res = if !opp_attackers.is_empty() {
+                    res ^ 1
+                } else {
+                    res
+                };
+                return final_res != 0;
             };
 
-            swap = bucket_value(bucket) - swap;
+            swap = value - swap;
             if swap < res {
                 break;
             }
 
+            // The reference's `bb.pop()`: the lowest square of the bucket. The
+            // attacker is in `occupied` (it came out of `attackers &= occupied`),
+            // so toggling its bit clears it.
+            let lva_sq = bb.lowest_square();
+            occupied ^= Bitboard::from_square(lva_sq);
             // Knights jump, so they uncover nothing.
-            occupied.clear(lva_sq);
-            if bucket != Bucket::Knight {
+            if !is_knight {
                 attackers |= reveal_sliders(board, to, lva_sq, occupied);
             }
         }

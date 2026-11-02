@@ -1,0 +1,23 @@
+name: Set up Rust
+description: Make `cargo` available with the toolchain that rust-toolchain.toml pins.
+
+# GitHub-hosted runners ship rustup, so this step is a no-op there beyond
+# printing the version. The self-hosted runners that also answer to the
+# `ubuntu-latest` label (rtx5060-*) have no Rust at all, and a job cannot choose
+# which kind it lands on, so every job installs rustup first when it is missing.
+# rustup then reads rust-toolchain.toml and fetches the pinned toolchain with the
+# components listed there (rustfmt, clippy, llvm-tools).
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        export PATH="$HOME/.cargo/bin:$PATH"
+        if ! command -v rustup >/dev/null 2>&1; then
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain none
+        fi
+        # Later steps of the job need the same PATH.
+        echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+        rustup show active-toolchain || rustup toolchain install
+        cargo --version

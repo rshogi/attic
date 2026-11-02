@@ -250,6 +250,17 @@ pub struct QSearchOutcome {
 /// perturb the fixed-depth parity path.
 const CHECK_INTERVAL: i32 = 512;
 
+/// The value `calls_cnt` takes at the start of a `go`.
+///
+/// By default a full [`CHECK_INTERVAL`], for the reason above. Under
+/// `ref_check_time` it is `0`, as the reference leaves `callsCnt` after
+/// `clear()`: the first `check_time` of a `go` then does a real check, and where
+/// `go nodes N` stops depends on where those checks fall.
+#[cfg(not(feature = "ref_check_time"))]
+const CALLS_CNT_AT_GO: i32 = CHECK_INTERVAL;
+#[cfg(feature = "ref_check_time")]
+const CALLS_CNT_AT_GO: i32 = 0;
+
 /// The shared ponder state for one `go ponder` — the reference
 /// `SearchManager::ponder` atomic plus the `ponderhitTime` its `set_ponderhit`
 /// stamps. Held behind an [`Arc`] so that the driver thread can clear it while
@@ -524,6 +535,11 @@ pub struct WorkerResult {
     pub ponder_candidate: Move,
     /// This worker's own node count.
     pub nodes: u64,
+    /// `pvIdx` as the reference leaves it when the search is aborted inside the
+    /// MultiPV loop: the line that was being searched, whose fail bound the
+    /// final `pv()` still prints. `None` when the loop ran to its end, where
+    /// `pvIdx == multiPV` makes every line exact.
+    pub aborted_pv_idx: Option<usize>,
     /// Whether the main worker already emitted the last completed iteration's
     /// final PV (`uciPvSent`). The coordinator's fallback keys off this, so
     /// that a fully throttled search still emits one PV before `bestmove`.
@@ -941,7 +957,7 @@ impl<'a> QSearch<'a> {
         self.read_tt = read_tt;
         self.root_us = pos.side_to_move();
         self.stopped = false;
-        self.calls_cnt = CHECK_INTERVAL;
+        self.calls_cnt = CALLS_CNT_AT_GO;
 
         for cell in self.stack.iter_mut() {
             cell.current_move = Move::none();
@@ -1012,6 +1028,16 @@ impl<'a> QSearch<'a> {
         self.tt
             .prefetch(post_pos.key(), post_pos.side_to_move().index() as u8);
 
+        // The child reads four correction slots in `correction_value`, after
+        // its TT probe and evaluation. Their keys are known now, so the hints
+        // go out here, with that much work to hide the miss behind.
+        let us = post_pos.side_to_move();
+        let shared = &self.histories.shared;
+        shared.correction_prefetch(post_pos.pawn_key(), us);
+        shared.correction_prefetch(post_pos.minor_piece_key(), us);
+        shared.correction_prefetch(post_pos.non_pawn_key(Color::White), us);
+        shared.correction_prefetch(post_pos.non_pawn_key(Color::Black), us);
+
         let net = self.net;
         let d = self.acc_depth;
         let (parent_slots, child_slots) = self.acc_stack.split_at_mut(d + 1);
@@ -1079,7 +1105,10 @@ impl<'a> QSearch<'a> {
     /// It generates and matches, which reconstructs the full move and proves
     /// legality in one step. Both forms are repetition-blind, so the two agree
     /// even on a move that continues a perpetual check.
-    #[cfg(test)]
+    #[cfg(all(
+        test,
+        not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512"))
+    ))]
     fn widen_tt_move(pos: &Position, move16: u16) -> Option<Move> {
         if move16 == 0 {
             return None;
@@ -1093,7 +1122,10 @@ impl<'a> QSearch<'a> {
     /// `Move16` equals `move16`. A total comparison: no bit of the fragment is
     /// decoded into a `Move`. Split out from [`widen_tt_move`] so that the
     /// torn-entry test can drive all 65536 fragments against one generated list.
-    #[cfg(test)]
+    #[cfg(all(
+        test,
+        not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512"))
+    ))]
     fn select_tt_move(legal: &[Move], move16: u16) -> Option<Move> {
         legal.iter().copied().find(|&m| move16_of(m) == move16)
     }
@@ -1105,9 +1137,14 @@ impl<'a> QSearch<'a> {
         // The reference only checks in the interior `search`; polling here too
         // bounds the abort latency inside a deep leaf tree. On abort the return
         // value is discarded, the interior caller unwinding on its own check.
-        self.check_time();
-        if self.stopped {
-            return VALUE_DRAW;
+        // Under `ref_check_time` this is left out, so the checks fall exactly
+        // where the reference's do.
+        #[cfg(not(feature = "ref_check_time"))]
+        {
+            self.check_time();
+            if self.stopped {
+                return VALUE_DRAW;
+            }
         }
 
         // -----------------------------------------------------------------
@@ -1147,7 +1184,9 @@ impl<'a> QSearch<'a> {
         let side = us.index() as u8;
         // Captured once, as the reference's `ttWriter` is; every write below
         // targets this exact slot.
-        let (found, tt_data, tt_slot) = self.tt.locate(pos_key, side);
+        let (found, tt_data, tt_slot) = self
+            .tt
+            .locate_checked(pos_key, side, |m16| pos.to_move(m16).is_some());
         // `if constexpr (!ReadTT) ttHit = false;`.
         let tt_hit = found && self.read_tt;
         // `ttData.move = ttHit ? to_move(ttData.move) : Move::none();`. The
@@ -1342,7 +1381,11 @@ impl<'a> QSearch<'a> {
             self.pop_accumulator();
 
             // An abort inside this child's subtree makes `value` untrustworthy,
-            // so it must not be folded in.
+            // so it must not be folded in. The reference's `qsearch` never looks
+            // at the stop flag: it runs to its natural end after an abort and
+            // the interior caller discards what it returns. `ref_check_time`
+            // follows it, so a stopped search spends the same nodes there.
+            #[cfg(not(feature = "ref_check_time"))]
             if self.stopped {
                 return best_value;
             }
@@ -1505,7 +1548,7 @@ impl QSearch<'_> {
         // The counter is seeded so that the first checkpoint lands a full
         // interval in; see [`CHECK_INTERVAL`].
         self.stopped = false;
-        self.calls_cnt = CHECK_INTERVAL;
+        self.calls_cnt = CALLS_CNT_AT_GO;
         // Fresh time-management bookkeeping for this `go`.
         self.completed_depth = 0;
         self.best_move_changes = 0.0;
@@ -1580,6 +1623,15 @@ impl QSearch<'_> {
         // The last *completed* iteration's root move — the stable result an
         // aborted search rolls back to.
         let mut completed_best: Option<RootMove> = None;
+        // The best move of an iteration the abort cut short, which is what the
+        // reference reports (`bestThread->rootMoves[0]`).
+        let mut aborted_best: Option<RootMove> = None;
+        let mut aborted_pv_idx: Option<usize> = None;
+        // The reference's `lastBestPV` / `lastBestScore`: the head of the last
+        // iteration whose best move changed, which an aborted search falls back
+        // to only when its own score is a loss it cannot trust.
+        let mut last_best_pv: Vec<Move> = vec![Move::none()];
+        let mut last_best_score: Value = -VALUE_INFINITE;
         // The last completed iteration's top-`multiPV` lines, for the
         // coordinator's throttled-final-PV re-emit.
         let mut completed_lines: Vec<RootMove> = Vec::new();
@@ -1614,9 +1666,12 @@ impl QSearch<'_> {
             // below — the reference's function-level `bestValue`.
             let mut iter_best_value = -VALUE_INFINITE;
 
+            // The line the loop was on when it ended, for the final `pv()`.
+            let mut last_pv_idx = 0;
             // A full root search per PV line.
             for pv_idx in 0..multi_pv {
                 self.pv_idx = pv_idx;
+                last_pv_idx = pv_idx;
                 // Shogi uses no tbRank banding, so the finished head is
                 // `[0..pv_idx]` and the active tail `[pv_idx..]`.
                 self.sel_depth = 0;
@@ -1720,8 +1775,26 @@ impl QSearch<'_> {
             self.pv_idx = 0;
 
             // The MultiPV loop broke on an abort, so this iteration is
-            // incomplete and the last completed ordering stands.
+            // incomplete. The reference keeps whatever `rootMoves[0]` the aborted
+            // iteration left (`completedDepth` is not advanced) and rolls back to
+            // the previous best only when that score is a loss, which an
+            // unfinished search cannot prove.
             if self.stopped {
+                if root_moves[0].score != -VALUE_INFINITE
+                    && is_loss(root_moves[0].score)
+                    && last_best_pv[0].is_ok()
+                {
+                    let target = last_best_pv[0];
+                    if let Some(i) = root_moves.iter().position(|rm| rm.mv == target) {
+                        let rm = root_moves.remove(i);
+                        root_moves.insert(0, rm);
+                    }
+                    root_moves[0].pv = last_best_pv.clone();
+                    root_moves[0].score = last_best_score;
+                    root_moves[0].uci_score = last_best_score;
+                }
+                aborted_best = Some(root_moves[0].clone());
+                aborted_pv_idx = Some(last_pv_idx);
                 break;
             }
 
@@ -1731,6 +1804,10 @@ impl QSearch<'_> {
                 last_best_move_depth = root_depth;
             }
             self.last_iteration_pv = root_moves[0].pv.clone();
+            if root_moves[0].pv[0] != last_best_pv[0] {
+                last_best_pv = root_moves[0].pv.clone();
+                last_best_score = root_moves[0].score;
+            }
             completed_best = Some(root_moves[0].clone());
             completed_lines = root_moves[..multi_pv].to_vec();
             completed_depth = root_depth;
@@ -1867,7 +1944,9 @@ impl QSearch<'_> {
 
         // Only an abort during iteration 1 leaves `completed_best` empty, and
         // `root_moves[0]` is then still a legal best-so-far.
-        let best = completed_best.unwrap_or_else(|| root_moves[0].clone());
+        let best = aborted_best
+            .or(completed_best)
+            .unwrap_or_else(|| root_moves[0].clone());
         if completed_lines.is_empty() {
             completed_lines = vec![best.clone()];
         }
@@ -1877,6 +1956,7 @@ impl QSearch<'_> {
             completed_depth,
             ponder_candidate,
             nodes: self.nodes,
+            aborted_pv_idx,
             uci_pv_sent,
             pv_lines: completed_lines,
             time_reduction,
@@ -2062,7 +2142,9 @@ impl QSearch<'_> {
             } else {
                 let key = pos.key();
                 let side = pos.side_to_move().index() as u8;
-                let (found, data, _writer) = self.tt.probe(key, side);
+                let (found, data, _writer) = self
+                    .tt
+                    .probe_checked(key, side, |m16| pos.to_move(m16).is_some());
                 if !found {
                     break;
                 }
@@ -2116,7 +2198,9 @@ impl QSearch<'_> {
         let undo = pos.do_move(pv0);
         let key = pos.key();
         let side = pos.side_to_move().index() as u8;
-        let (found, data, _writer) = self.tt.probe(key, side);
+        let (found, data, _writer) = self
+            .tt
+            .probe_checked(key, side, |m16| pos.to_move(m16).is_some());
         if found {
             // Push the child TT move only if it is playable here.
             if let Some(m) = pos.to_move(data.move16)
@@ -2292,7 +2376,7 @@ impl QSearch<'_> {
         self.root_depth = depth;
         self.last_iteration_pv.clear();
         self.stopped = false;
-        self.calls_cnt = CHECK_INTERVAL;
+        self.calls_cnt = CALLS_CNT_AT_GO;
         for cell in self.stack.iter_mut() {
             let mut pv = std::mem::take(&mut cell.pv);
             pv.clear();
@@ -2420,7 +2504,9 @@ impl QSearch<'_> {
         let side = us.index() as u8;
         // Captured once, as the reference's `ttWriter` is; every write in this
         // node targets this exact slot.
-        let (tt_hit, tt_data, tt_slot) = self.tt.locate(pos_key, side);
+        let (tt_hit, tt_data, tt_slot) = self
+            .tt
+            .locate_checked(pos_key, side, |m16| pos.to_move(m16).is_some());
         self.stack[s].tt_hit = tt_hit;
         // At the root the current PV line's move is treated as the TT move
         // whatever the probe returned, while `tt_data`'s other fields are still
@@ -2537,13 +2623,13 @@ impl QSearch<'_> {
                 unadjusted_static_eval = static_eval;
                 eval = static_eval;
             } else if tt_hit {
-                unadjusted_static_eval = tt_data.eval;
-                if !is_valid(unadjusted_static_eval) {
-                    unadjusted_static_eval = self.static_eval(pos);
-                } else if pv_node {
-                    // USE_CLASSIC_EVAL re-eval on PV nodes.
-                    unadjusted_static_eval = self.static_eval(pos);
-                }
+                // The reference, built without `USE_LAZY_EVALUATE`, evaluates the
+                // position again on every hit rather than trusting the stored
+                // value: `else unadjustedStaticEval = evaluate(pos);`. A stored
+                // value can be one this search itself wrote corrected (the
+                // ProbCut inside a singular search does), and trusting it would
+                // correct it twice.
+                unadjusted_static_eval = self.static_eval(pos);
                 let corrected = to_corrected_static_eval(unadjusted_static_eval, correction_value);
                 static_eval = corrected;
                 eval = if is_valid(tt_value) && bound_matches(tt_data.bound, tt_value > corrected) {
@@ -3363,37 +3449,32 @@ impl QSearch<'_> {
     }
 }
 
-#[cfg(test)]
+// Manaka's shapes have no synthetic-network builder: their networks exist only
+// as trained `MNW1` files, so there is nothing for these tests to evaluate with.
+#[cfg(all(
+    test,
+    not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512"))
+))]
 mod tests {
     use super::*;
-    use attic_eval::{
-        FC_0_PADDED_INPUT_DIMS, HIDDEN_SIZE, HIDDEN1_DIMS, NetHeader, NnueNetwork,
-        NnueNetworkBuilder,
-    };
+    use attic_eval::{NetHeader, NnueNetwork, NnueNetworkBuilder};
     use attic_state::{Piece, PieceKind, Square, parse_sfen};
     use attic_storage::{Bound, TTData, TranspositionTable};
 
     // A network whose every position evaluates to 0, so that the qsearch
     // arithmetic can be exercised against a known static eval.
-    const LANE_A: usize = 0;
-    const LANE_B: usize = HIDDEN_SIZE / 2;
-
     fn zero_net() -> NnueNetwork {
-        // The FT stays zero, and each stack routes the two live lanes to the
-        // score through the fc_0 shortcut row.
+        // Every array starts zeroed and the builder is given nothing else, so no
+        // position can evaluate to anything but 0 — in every shape. (There used
+        // to be a pair of fc_0 weights here routing two accumulator lanes to the
+        // score; those lanes are zero too, so they never contributed, and the
+        // row they wrote exists only in the SFNN shapes.)
         let header = NetHeader {
             version: 0,
             hash: 0,
             arch_id: "synthetic".to_string(),
         };
-        let mut b = NnueNetworkBuilder::new(header, [0u8; 32]);
-        let row = HIDDEN1_DIMS * FC_0_PADDED_INPUT_DIMS;
-        for s in 0..b.layer_stacks() {
-            let w = b.fc_0_weights_mut(s);
-            w[row + LANE_A] = 1;
-            w[row + LANE_B] = 1;
-        }
-        b.build()
+        NnueNetworkBuilder::new(header, [0u8; 32]).build()
     }
 
     fn pos(sfen: &str) -> Position {

@@ -19,13 +19,17 @@
 //!
 //! ```text
 //! cargo test --config 'build.rustflags=["-C","target-cpu=x86-64-v2"]' \
-//!     -p attic-eval --all-features --test incremental_parity_proptest -- --nocapture
+//!     -p attic-eval --features sfnn_halfkahm2_1536_15_32_k3k3 --test incremental_parity_proptest -- --nocapture
 //! ```
 //!
 //! # Network file
 //!
 //! The network is staged locally and never committed, so when it is absent the
 //! test prints a notice and passes.
+
+// Manaka's shapes have no kernel backend to report and read an `MNW1` file, not
+// `eval/nn.bin`; `sym_network.rs` is their test.
+#![cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
 
 use std::path::PathBuf;
 use std::sync::OnceLock;

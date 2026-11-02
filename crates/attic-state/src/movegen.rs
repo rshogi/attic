@@ -7,6 +7,7 @@
 //! time, as the reference does inside `GenerateDropMoves`, so no legal-move
 //! list is filtered for them after the fact.
 
+use crate::bitboard::Bitboard;
 use crate::board::Board;
 use crate::color::Color;
 use crate::move_::Move;
@@ -183,51 +184,95 @@ fn scan_slider(
 /// perspective flipped for the asymmetric steppers and the lance, would reach
 /// `s`. Each pattern's attackers are then one intersection against the
 /// maintained piece sets.
+#[inline]
 pub(crate) fn is_attacked_by(board: &Board, sq: Square, attacker: Color) -> bool {
+    is_attacked_by_impl::<false>(board, sq, attacker, sq)
+}
+
+/// [`is_attacked_by`] on `board` with the piece on `discount` taken off it — the
+/// answer `is_attacked_by` gives after `board.set(discount, None)`, without
+/// copying the board. The square leaves the occupancy and every attacker set.
+#[inline]
+pub(crate) fn is_attacked_by_discounting(
+    board: &Board,
+    sq: Square,
+    attacker: Color,
+    discount: Square,
+) -> bool {
+    is_attacked_by_impl::<true>(board, sq, attacker, discount)
+}
+
+/// Shared body of [`is_attacked_by`] and [`is_attacked_by_discounting`];
+/// `DISCOUNT` selects whether `discount` is taken off the board (it is ignored
+/// otherwise).
+#[inline(always)]
+fn is_attacked_by_impl<const DISCOUNT: bool>(
+    board: &Board,
+    sq: Square,
+    attacker: Color,
+    discount: Square,
+) -> bool {
     use crate::bitboard::{
         bishop_attacks, gold_attacks, king_attacks, knight_attacks, lance_attacks, pawn_attacks,
         rook_attacks, silver_attacks,
     };
     use crate::board::pat;
 
-    let occ = board.occupied();
+    // The squares that stay: everything, or everything but `discount`.
+    let keep = if DISCOUNT {
+        !Bitboard::from_square(discount)
+    } else {
+        Bitboard::FULL
+    };
+    let occ = if DISCOUNT {
+        board.occupied() & keep
+    } else {
+        board.occupied()
+    };
     let opp = attacker.flip();
+    let of = |pattern: usize| {
+        if DISCOUNT {
+            board.pieces_pattern(attacker, pattern) & keep
+        } else {
+            board.pieces_pattern(attacker, pattern)
+        }
+    };
 
     // The colour flip is the reverse symmetry: a Black pawn attacks `sq` from
     // where a White pawn on `sq` would attack.
-    if !(pawn_attacks(opp, sq) & board.pieces_pattern(attacker, pat::PAWN)).is_empty() {
+    if !(pawn_attacks(opp, sq) & of(pat::PAWN)).is_empty() {
         return true;
     }
-    if !(lance_attacks(opp, sq, occ) & board.pieces_pattern(attacker, pat::LANCE)).is_empty() {
+    if !(lance_attacks(opp, sq, occ) & of(pat::LANCE)).is_empty() {
         return true;
     }
-    if !(knight_attacks(opp, sq) & board.pieces_pattern(attacker, pat::KNIGHT)).is_empty() {
+    if !(knight_attacks(opp, sq) & of(pat::KNIGHT)).is_empty() {
         return true;
     }
-    if !(silver_attacks(opp, sq) & board.pieces_pattern(attacker, pat::SILVER)).is_empty() {
+    if !(silver_attacks(opp, sq) & of(pat::SILVER)).is_empty() {
         return true;
     }
-    if !(gold_attacks(opp, sq) & board.pieces_pattern(attacker, pat::GOLD)).is_empty() {
+    if !(gold_attacks(opp, sq) & of(pat::GOLD)).is_empty() {
         return true;
     }
 
     // The sliders are symmetric, so no colour flip.
     let king_ring = king_attacks(attacker, sq);
     let bishop = bishop_attacks(sq, occ);
-    if !(bishop & board.pieces_pattern(attacker, pat::BISHOP)).is_empty() {
+    if !(bishop & of(pat::BISHOP)).is_empty() {
         return true;
     }
-    if !((bishop | king_ring) & board.pieces_pattern(attacker, pat::HORSE)).is_empty() {
+    if !((bishop | king_ring) & of(pat::HORSE)).is_empty() {
         return true;
     }
     let rook = rook_attacks(sq, occ);
-    if !(rook & board.pieces_pattern(attacker, pat::ROOK)).is_empty() {
+    if !(rook & of(pat::ROOK)).is_empty() {
         return true;
     }
-    if !((rook | king_ring) & board.pieces_pattern(attacker, pat::DRAGON)).is_empty() {
+    if !((rook | king_ring) & of(pat::DRAGON)).is_empty() {
         return true;
     }
-    if !(king_ring & board.pieces_pattern(attacker, pat::KING)).is_empty() {
+    if !(king_ring & of(pat::KING)).is_empty() {
         return true;
     }
     false

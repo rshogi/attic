@@ -71,6 +71,21 @@ pub fn add_sub_sub_features(
     }
 }
 
+/// `dst = src + sum(added) - sum(removed)`, wrapping: the one-pass derive the
+/// AVX2 kernel is checked against (and the portable build's implementation).
+pub fn derive_features(
+    dst: &mut [i16],
+    src: &[i16],
+    weights: &[i16],
+    added: &[FeatureIndex],
+    removed: &[FeatureIndex],
+) {
+    debug_assert_eq!(dst.len(), HIDDEN_SIZE);
+    dst.copy_from_slice(src);
+    sub_features(dst, weights, removed);
+    add_features(dst, weights, added);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
