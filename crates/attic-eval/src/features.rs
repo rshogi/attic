@@ -1382,7 +1382,7 @@ mod tests {
             DROP_HEAVY,
             "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL w - 1",
             "pnsg1k2l/l1rg2s2/+P1p3n1p/Pp2pp3/L2p2pp1/1B2P2P1/NP1PGPPRP/3S1K2L/3G1S1N1 b B 55",
-            "pnsg1k2l/l1rg2s2/+P1p3n1p/Pp2pp3/L2p2pp1/1B2P2P1/NP1PGPPRP/3S1K2L/3G1S1N1 w Bp 56",
+            "pnsg1k2l/l1rg2s2/+P1p3n1p/Pp2pp3/L2p2pp1/1B2P2P1/NP1PGPPRP/3S1K2L/3G1S1N1 w B 56",
             "4k4/2pP5/9/3+r5/9/6+b2/9/1R1+B5/4K4 b 2G2S2N2L8Pgsnl 1",
             "4k4/2pP5/9/3+r5/9/6+b2/9/1R1+B5/4K4 w 2G2S2N2L8Pgsnl 1",
             "k8/9/9/9/9/9/9/9/8K b RB2G2S2N2L9Prb2g2s2n2l9p 1",
