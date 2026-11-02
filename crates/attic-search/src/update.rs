@@ -107,23 +107,35 @@ impl WorkerHistories {
     /// A fresh bundle of per-worker tables attached to the given node-shared
     /// ones.
     pub fn with_shared(shared: Arc<SharedHistories>) -> Self {
-        let mut main = ButterflyHistory::new();
-        main.fill(MAIN_HISTORY_INIT);
-        let mut capture = CapturePieceToHistory::new();
-        capture.fill(CAPTURE_HISTORY_INIT);
-        let mut continuation = ContinuationHistory::new();
-        continuation.fill(CONTINUATION_INIT);
-        let mut continuation_correction = ContinuationCorrectionHistory::new();
-        continuation_correction.fill(CONTINUATION_CORRECTION_INIT);
-        Self {
-            main,
+        let mut h = Self {
+            main: ButterflyHistory::new(),
             low_ply: LowPlyHistory::new(),
-            capture,
-            continuation,
-            continuation_correction,
+            capture: CapturePieceToHistory::new(),
+            continuation: ContinuationHistory::new(),
+            continuation_correction: ContinuationCorrectionHistory::new(),
             tt_move: TtMoveHistory::new(),
             shared,
-        }
+        };
+        h.clear();
+        h
+    }
+
+    /// Reset every per-worker table in place to the reference `Worker::clear()`
+    /// init, leaving exactly the state [`Self::with_shared`] builds, so that a new
+    /// game reuses the already-mapped tables instead of reallocating them.
+    ///
+    /// `lowPlyHistory`, which the reference leaves to the per-`go` refill, goes
+    /// back to the zero of a fresh allocation. The node-shared tables are left
+    /// alone: several workers hold the same set, so its owner resets it once with
+    /// [`SharedHistories::clear`].
+    pub fn clear(&mut self) {
+        self.main.fill(MAIN_HISTORY_INIT);
+        self.low_ply.fill(0);
+        self.capture.fill(CAPTURE_HISTORY_INIT);
+        self.continuation.fill(CONTINUATION_INIT);
+        self.continuation_correction
+            .fill(CONTINUATION_CORRECTION_INIT);
+        self.tt_move = TtMoveHistory::new();
     }
 
     /// Swap in a different node's shared tables, leaving the per-worker ones
@@ -560,6 +572,41 @@ mod tests {
         );
         // ttMoveHistory init 0.
         assert_eq!(hist.tt_move.get(), 0);
+    }
+
+    /// `clear()` on a dirtied bundle and `SharedHistories::clear()` on its
+    /// dirtied shared set must leave every entry of every table exactly as a
+    /// fresh allocation has it: a new game reuses the tables through these
+    /// instead of reallocating, and one differing entry would change the search.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn clear_restores_the_fresh_state_of_every_table() {
+        let fresh = WorkerHistories::new();
+        let mut hist = WorkerHistories::new();
+
+        hist.main.fill(1234);
+        hist.low_ply.fill(98);
+        hist.capture.fill(77);
+        hist.continuation.fill(-9);
+        hist.continuation_correction.fill(-31);
+        hist.tt_move.update(5000);
+        hist.shared.fill_correction(-400);
+        hist.shared.fill_pawn(321);
+        assert_ne!(hist.tt_move.get(), fresh.tt_move.get());
+
+        hist.clear();
+        hist.shared.clear();
+
+        assert_eq!(hist.main.raw(), fresh.main.raw());
+        assert_eq!(hist.low_ply.raw(), fresh.low_ply.raw());
+        assert_eq!(hist.capture.raw(), fresh.capture.raw());
+        assert_eq!(hist.continuation.raw(), fresh.continuation.raw());
+        assert_eq!(
+            hist.continuation_correction.raw(),
+            fresh.continuation_correction.raw()
+        );
+        assert_eq!(hist.tt_move.get(), fresh.tt_move.get());
+        assert_eq!(hist.shared.raw(), fresh.shared.raw());
     }
 
     // ---- fixtures for the update-function scenarios -----------------------
