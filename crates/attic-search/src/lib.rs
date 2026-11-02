@@ -9,9 +9,7 @@
 
 use std::path::Path;
 
-use attic_eval::{
-    Accumulator, NnueError, NnueNetwork, evaluate_with, load_network, load_network_with_warnings,
-};
+use attic_eval::{Accumulator, NnueError, NnueNetwork, evaluate_with, load_network};
 use attic_state::{Move, Position};
 
 pub mod book;
@@ -126,7 +124,7 @@ impl Search {
             feature = "sym_kp_128x2_512",
             feature = "sym_halfkp_128x2_512"
         ))]
-        let (net, warnings) = load_network_with_warnings(path)?;
+        let (net, warnings) = attic_eval::load_network_with_warnings(path)?;
 
         // The 2304 shape reads its layer-stack coefficients from a
         // `progress.bin` next to `nn.bin` rather than from inside it, so the
@@ -230,7 +228,16 @@ impl Search {
     }
 }
 
-#[cfg(test)]
+// These build a HalfKA_hm2 network by hand: feature-plane geometry below, and a
+// shortcut row in fc_0 that only the SFNN shapes have. The standard shapes have
+// neither (`HIDDEN1_DIMS` is all of fc_0), and Manaka's have no builder at all.
+#[cfg(all(
+    test,
+    any(
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+    )
+))]
 mod tests {
     use super::*;
     use attic_eval::{

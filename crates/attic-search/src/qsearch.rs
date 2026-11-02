@@ -1105,7 +1105,10 @@ impl<'a> QSearch<'a> {
     /// It generates and matches, which reconstructs the full move and proves
     /// legality in one step. Both forms are repetition-blind, so the two agree
     /// even on a move that continues a perpetual check.
-    #[cfg(test)]
+    #[cfg(all(
+        test,
+        not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512"))
+    ))]
     fn widen_tt_move(pos: &Position, move16: u16) -> Option<Move> {
         if move16 == 0 {
             return None;
@@ -1119,7 +1122,10 @@ impl<'a> QSearch<'a> {
     /// `Move16` equals `move16`. A total comparison: no bit of the fragment is
     /// decoded into a `Move`. Split out from [`widen_tt_move`] so that the
     /// torn-entry test can drive all 65536 fragments against one generated list.
-    #[cfg(test)]
+    #[cfg(all(
+        test,
+        not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512"))
+    ))]
     fn select_tt_move(legal: &[Move], move16: u16) -> Option<Move> {
         legal.iter().copied().find(|&m| move16_of(m) == move16)
     }
@@ -3443,37 +3449,32 @@ impl QSearch<'_> {
     }
 }
 
-#[cfg(test)]
+// Manaka's shapes have no synthetic-network builder: their networks exist only
+// as trained `MNW1` files, so there is nothing for these tests to evaluate with.
+#[cfg(all(
+    test,
+    not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512"))
+))]
 mod tests {
     use super::*;
-    use attic_eval::{
-        FC_0_PADDED_INPUT_DIMS, HIDDEN_SIZE, HIDDEN1_DIMS, NetHeader, NnueNetwork,
-        NnueNetworkBuilder,
-    };
+    use attic_eval::{NetHeader, NnueNetwork, NnueNetworkBuilder};
     use attic_state::{Piece, PieceKind, Square, parse_sfen};
     use attic_storage::{Bound, TTData, TranspositionTable};
 
     // A network whose every position evaluates to 0, so that the qsearch
     // arithmetic can be exercised against a known static eval.
-    const LANE_A: usize = 0;
-    const LANE_B: usize = HIDDEN_SIZE / 2;
-
     fn zero_net() -> NnueNetwork {
-        // The FT stays zero, and each stack routes the two live lanes to the
-        // score through the fc_0 shortcut row.
+        // Every array starts zeroed and the builder is given nothing else, so no
+        // position can evaluate to anything but 0 — in every shape. (There used
+        // to be a pair of fc_0 weights here routing two accumulator lanes to the
+        // score; those lanes are zero too, so they never contributed, and the
+        // row they wrote exists only in the SFNN shapes.)
         let header = NetHeader {
             version: 0,
             hash: 0,
             arch_id: "synthetic".to_string(),
         };
-        let mut b = NnueNetworkBuilder::new(header, [0u8; 32]);
-        let row = HIDDEN1_DIMS * FC_0_PADDED_INPUT_DIMS;
-        for s in 0..b.layer_stacks() {
-            let w = b.fc_0_weights_mut(s);
-            w[row + LANE_A] = 1;
-            w[row + LANE_B] = 1;
-        }
-        b.build()
+        NnueNetworkBuilder::new(header, [0u8; 32]).build()
     }
 
     fn pos(sfen: &str) -> Position {
