@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, master, develop]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -30,6 +30,16 @@ env:
   # they still run on a runner that has the instructions.
   RUSTFLAGS: "-C target-cpu=x86-64-v3"
 
+# The network shape is a build-time feature and exactly one must be selected
+# (`attic-eval` refuses to compile with none or two), so `--all-features` can
+# neither build nor test anything. Each job below runs once per shape instead.
+# `args` is what follows `cargo <verb>` to pick it; the seventh entry is the
+# build that must match YaneuraOu node for node (`ref_check_time` moves the
+# time checks to where the reference's are), which turns off the defaults.
+#
+# Nothing here has a network file: the tests that read one skip with a notice
+# when it is absent, so a green run says the code builds and its self-contained
+# tests pass, not that the shape evaluates correctly.
 jobs:
   fmt:
     runs-on: ubuntu-latest
@@ -39,26 +49,61 @@ jobs:
       - run: cargo fmt --all --check
 
   clippy:
+    name: clippy (${{ matrix.name }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: &shapes
+          - name: sfnn-1536
+            args: --features sfnn_halfkahm2_1536_15_32_k3k3
+          - name: sfnn-2304
+            args: --features sfnn_halfkahm2_2304_15_64_progress8ek
+          - name: nnue-kp
+            args: --features nnue_kp_256x2_32_32
+          - name: nnue-halfkp
+            args: --features nnue_halfkp_256x2_32_32
+          - name: sym-kp
+            args: --features sym_kp_128x2_512
+          - name: sym-halfkp
+            args: --features sym_halfkp_128x2_512
+          - name: yaneuraou-parity
+            args: --no-default-features --features nnue_kp_256x2_32_32,ref_check_time
     steps:
       - uses: actions/checkout@v4
       - run: cargo --version
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --all-targets --all-features -- -D warnings
+        with:
+          key: ${{ matrix.name }}
+      - run: cargo clippy --workspace --all-targets ${{ matrix.args }} -- -D warnings
 
   build:
+    name: build (${{ matrix.name }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: *shapes
     steps:
       - uses: actions/checkout@v4
       - run: cargo --version
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release
+        with:
+          key: ${{ matrix.name }}
+      - run: cargo build --release -p attic ${{ matrix.args }}
 
   test:
+    name: test (${{ matrix.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include: *shapes
     steps:
       - uses: actions/checkout@v4
       - run: cargo --version
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --all-features
+        with:
+          key: ${{ matrix.name }}
+      - run: cargo test --workspace ${{ matrix.args }}
