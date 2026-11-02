@@ -1,0 +1,227 @@
+name: Deployment
+
+# Builds the `attic` binary for each platform and network shape, and attaches
+# the archives to a GitHub Release.
+#
+#   * push of a tag `v*`            builds everything and creates the release
+#   * workflow_dispatch + release_tag  builds everything and attaches it to the
+#                                      release of that existing tag
+#   * workflow_dispatch, no tag     builds everything and only keeps the
+#                                      artefacts (no release)
+#   * pull_request that touches this file or the composite actions: builds one
+#                                      network on every platform, no release.
+#                                      It exists to check the platform matrix
+#                                      before a tag is cut.
+#
+# What is not here, on purpose:
+#   * WebAssembly (browser and Node). `std::thread::spawn` per `go`, the
+#     file-based `EvalDir` and the mimalloc C dependency do not exist there, so
+#     it needs engine changes and a JS entry point, not a workflow.
+#   * PGO. `cargo xtask build-pgo` runs the instrumented binary against a
+#     network file, which a release job does not have, and cannot do so for a
+#     cross-compiled target. Release binaries are plain `--release` builds,
+#     a few percent slower than the PGO build the README describes.
+#   * Evaluation files. The archives hold the engine only; each network shape
+#     reads its own `nn.bin` (and, for 2304, `progress.bin`).
+
+on:
+  push:
+    tags: ["v[0-9]*"]
+  pull_request:
+    paths:
+      - ".github/workflows/deployment.yaml"
+      - ".github/actions/**"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Attach the builds to the release of this existing tag (e.g. v9.80.0). Empty = build only"
+        required: false
+        default: ""
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  # Which network shapes to build. A pull request builds one, to keep the check
+  # cheap; everything else builds all four YaneuraOu-family shapes. The two
+  # `sym_` shapes are Manaka's own and are not shipped.
+  plan:
+    runs-on: ubuntu-22.04
+    outputs:
+      networks: ${{ steps.plan.outputs.networks }}
+    steps:
+      - id: plan
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo 'networks=[{"name":"kp256","feature":"nnue_kp_256x2_32_32"}]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'networks=[{"name":"kp256","feature":"nnue_kp_256x2_32_32"},{"name":"halfkp256","feature":"nnue_halfkp_256x2_32_32"},{"name":"sfnn1536","feature":"sfnn_halfkahm2_1536_15_32_k3k3"},{"name":"sfnn2304","feature":"sfnn_halfkahm2_2304_15_64_progress8ek"}]' >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: build (${{ matrix.platform }}, ${{ matrix.net.name }})
+    needs: plan
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        net: ${{ fromJSON(needs.plan.outputs.networks) }}
+        platform: [linux-amd64, linux-arm64, macos-amd64, macos-arm64, windows-amd64, windows-arm64]
+        # `platform` is an axis so that each entry below is added to the
+        # combinations of that platform only. An `include` without it would
+        # be applied to every combination and the last entry would win.
+        include:
+          # `.cargo/config.toml` compiles for the host CPU, which is wrong for a
+          # binary that runs elsewhere. `RUSTFLAGS` overrides it, so each
+          # platform names the baseline it needs.
+          #
+          # x86-64-v3 is AVX2, which every x86-64 CPU since Haswell (2013) and
+          # Zen 1 has, and is the level the AVX2 kernels are selected at. It is
+          # not AVX-512: that needs its own build, and is not shipped yet.
+          #
+          # `generic` rather than an empty value, so `.cargo/config.toml`'s
+          # `native` cannot apply to a target the build host is not.
+          #
+          # The arm64 builds have no NEON kernels. Everything outside x86-64
+          # takes the scalar path, so they work and are slow.
+          #
+          # Linux builds on 22.04 so the binary asks for glibc 2.35, not 2.39.
+          - platform: linux-amd64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            rustflags: "-C target-cpu=x86-64-v3"
+            exe: attic
+          - platform: linux-arm64
+            os: ubuntu-22.04
+            target: aarch64-unknown-linux-gnu
+            rustflags: "-C target-cpu=generic"
+            exe: attic
+          - platform: macos-amd64
+            os: macos-latest
+            target: x86_64-apple-darwin
+            rustflags: "-C target-cpu=x86-64-v3"
+            exe: attic
+          - platform: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            rustflags: "-C target-cpu=apple-m1"
+            exe: attic
+          - platform: windows-amd64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            rustflags: "-C target-cpu=x86-64-v3"
+            exe: attic.exe
+          - platform: windows-arm64
+            os: windows-latest
+            target: aarch64-pc-windows-msvc
+            rustflags: "-C target-cpu=generic"
+            exe: attic.exe
+    env:
+      RUSTFLAGS: ${{ matrix.rustflags }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+      - name: Add the target
+        shell: bash
+        run: rustup target add "${{ matrix.target }}"
+      - name: Install the arm64 Linux cross compiler
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          # The linker, and the C compiler mimalloc's build script drives.
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+          echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.platform }}-${{ matrix.net.name }}
+      # The crate's default features stay on (`quick-draw`): the shipped binary
+      # is the tournament-style build, not the YaneuraOu-parity one.
+      - name: Build
+        shell: bash
+        run: cargo build --release -p attic --target "${{ matrix.target }}" --features "${{ matrix.net.feature }}"
+      - name: Package
+        shell: bash
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          tag="${RELEASE_TAG:-$REF_NAME}"
+          case "$tag" in v[0-9]*) version="${tag#v}" ;; *) version="dev-${GITHUB_SHA::7}" ;; esac
+          name="attic-${version}-${{ matrix.platform }}-${{ matrix.net.name }}"
+          mkdir -p "dist/$name"
+          cp "target/${{ matrix.target }}/release/${{ matrix.exe }}" "dist/$name/"
+          cp LICENSE README.md "dist/$name/"
+          tar czf "dist/$name.tar.gz" -C dist "$name"
+          # Linux and Git Bash on Windows have `sha256sum`; macOS has `shasum`.
+          cd dist
+          if command -v sha256sum >/dev/null 2>&1; then sha256sum "$name.tar.gz"; else shasum -a 256 "$name.tar.gz"; fi > "$name.tar.gz.sha256"
+          cd ..
+          ls -l dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: attic-${{ matrix.platform }}-${{ matrix.net.name }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') ||
+      (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Resolve the release tag
+        id: tag
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: echo "tag=${RELEASE_TAG:-$REF_NAME}" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: attic-*
+          path: dist
+          merge-multiple: true
+      - name: Write the release notes
+        run: |
+          cat > notes.md <<'EOF'
+          Engine binaries only. Each archive holds `attic`, the licence and the README.
+
+          Pick the archive whose network matches the evaluation file you have; the engine refuses any other `nn.bin`.
+
+          | network | evaluation file |
+          | --- | --- |
+          | `kp256` | `nn.bin` for `YANEURAOU_ENGINE_NNUE_KP256` |
+          | `halfkp256` | `nn.bin` for `YANEURAOU_ENGINE_NNUE` (HalfKP 256x2-32-32) |
+          | `sfnn1536` | `nn.bin` for `YANEURAOU_ENGINE_SFNN1536` |
+          | `sfnn2304` | `nn.bin` and `progress.bin` for the 2304 shape |
+
+          Evaluation files are not included. Put the file in `eval/` next to where the engine starts, or point `EvalDir` at it.
+
+          Limits:
+
+          - These are plain `--release` builds, not the PGO build the README describes, which is a few percent faster.
+          - x86-64 builds target x86-64-v3 (AVX2). There is no AVX-512 build.
+          - The arm64 builds have no NEON kernels and run the scalar path.
+          - Only the Linux x86-64 and KP256 combination has been checked against YaneuraOu 9.80; see the README for how far.
+          - Verify a download with the matching `.sha256` file.
+          EOF
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: "Attic ${{ steps.tag.outputs.tag }}"
+          body_path: notes.md
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256
