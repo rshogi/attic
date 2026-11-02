@@ -7,11 +7,13 @@
 
 mod common;
 
+#[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
 use common::{
-    TEST_BOOK_SEED, TempDir, bestmove_lines, drive, drive_with_seed, stage_sample_ybb,
-    write_synthetic_nn_bin,
+    TEST_BOOK_SEED, bestmove_lines, drive_with_seed, stage_sample_ybb, write_synthetic_nn_bin,
 };
+use common::{TempDir, drive};
 
+#[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
 const STARTPOS_B: &str = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1";
 
 /// The `BookFile` choices as advertised by the `usi` handshake, in order.
@@ -33,6 +35,7 @@ fn advertised_choices() -> Vec<String> {
 
 /// A session pointing `BookDir` / `EvalDir` at `dir`, selecting `choice`, with
 /// the book filters relaxed so the fixture's top move survives.
+#[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
 fn session_for(dir: &str, choice: &str) -> String {
     format!(
         "usi\n\
@@ -90,6 +93,7 @@ fn every_advertised_choice_is_accepted_by_setoption() {
     }
 }
 
+#[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
 #[test]
 #[cfg_attr(miri, ignore)]
 fn every_advertised_book_choice_loads_from_book_dir() {
@@ -142,6 +146,7 @@ fn every_advertised_book_choice_loads_from_book_dir() {
     }
 }
 
+#[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
 #[test]
 #[cfg_attr(miri, ignore)]
 fn every_advertised_book_choice_drives_its_priority_series() {

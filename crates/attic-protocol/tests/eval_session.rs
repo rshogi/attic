@@ -7,6 +7,10 @@
 //! driver's `bestmove` equals a direct [`QSearch::run_root`] call for the same
 //! network, position, and table sizing.
 
+// Every test here stages `common`'s synthetic nn.bin, which is an SFNN-1536 file;
+// see the note on the constants in `common/mod.rs`.
+#![cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 

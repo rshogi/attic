@@ -14,6 +14,14 @@ use attic_protocol::UsiDriver;
 use attic_state::{Move, Position, parse_sfen, parse_usi_move, sfen_pack};
 
 // SFNN-1536 file-format constants, mirroring `attic-eval`'s loader.
+//
+// This is the one network shape the synthetic `nn.bin` below can be. The other
+// shapes read a different arch string, hashes, widths and stack count (and 2304
+// also wants a `progress.bin` beside the file), so under them `readyok` never
+// arrives and every session that stages this file fails -- 63 tests, measured
+// on the 2304 and KP shapes. Those tests are gated on the 1536 feature rather
+// than given a per-shape writer: a writer is a second copy of each loader's file
+// format, and would need tests of its own to be trusted.
 const NNUE_VERSION: u32 = 0x7AF3_2F16;
 const NNUE_HASH_VALUE: u32 = 0x3C20_3B32;
 const FT_HASH: u32 = 0x5F13_4AB8;
