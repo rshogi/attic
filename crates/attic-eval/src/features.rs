@@ -425,13 +425,21 @@ pub fn active_features_both(pos: &Position) -> [Vec<FeatureIndex>; Color::COUNT]
 /// Whether `perspective`'s accumulator half must be fully refreshed after `mv`
 /// rather than updated incrementally.
 ///
-/// A `HalfKA_hm2` index embeds the perspective's own-king `sq_k_code`, so when
-/// that king moves *every* index shifts — and the mirror flag may flip with it —
-/// and no add/sub delta can express the change. The reference's separate
-/// mirror-boundary case is subsumed here: only a king move can change the
-/// perspective's own-king file.
+/// A `HalfKA_hm2` or HalfKP index embeds the perspective's own-king `sq_k_code`,
+/// so when that king moves *every* index shifts — and the mirror flag may flip
+/// with it — and no add/sub delta can express the change. The reference's
+/// separate mirror-boundary case is subsumed here: only a king move can change
+/// the perspective's own-king file. The KP shapes embed no king, so they never
+/// need this.
 pub fn requires_full_refresh(mv: Move, perspective: Color) -> bool {
-    if mv.is_drop() {
+    // A KP index does not embed the own king at all (`king_code` is a constant
+    // there and the kings are ordinary features of the shared king plane), so
+    // there a king move is an add/sub like any other.
+    const INDEX_EMBEDS_KING: bool = !cfg!(any(
+        feature = "nnue_kp_256x2_32_32",
+        feature = "sym_kp_128x2_512"
+    ));
+    if !INDEX_EMBEDS_KING || mv.is_drop() {
         return false;
     }
     // A king never promotes, so `moved_piece_after` reports it directly.
@@ -1188,7 +1196,13 @@ mod tests {
     fn requires_full_refresh_flags_only_own_king_moves() {
         let pos = parse_sfen("4k4/9/9/9/9/9/9/9/4K4 b - 1").unwrap();
         let king_move = parse_usi_move("5i5h", &pos).unwrap();
-        assert!(requires_full_refresh(king_move, Color::Black));
+        // Where the index embeds the own king the mover's half rebuilds; where
+        // it does not (KP) a king move is an ordinary add/sub.
+        let embeds_king = !cfg!(any(
+            feature = "nnue_kp_256x2_32_32",
+            feature = "sym_kp_128x2_512"
+        ));
+        assert_eq!(requires_full_refresh(king_move, Color::Black), embeds_king);
         assert!(!requires_full_refresh(king_move, Color::White));
 
         let start = parse_sfen(STARTPOS).unwrap();

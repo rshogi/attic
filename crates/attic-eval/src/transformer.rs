@@ -893,8 +893,13 @@ mod tests {
         parent.refresh(&net, &pos);
 
         let delta = MoveDelta::from_move(&pos, mv);
-        assert!(
+        // Only where the index embeds the own king; a KP king move is a delta.
+        assert_eq!(
             delta.half(Color::Black).is_none(),
+            !cfg!(any(
+                feature = "nnue_kp_256x2_32_32",
+                feature = "sym_kp_128x2_512"
+            )),
             "this fixture must exercise the rebuild arm",
         );
         pos.do_move(mv);
@@ -1022,8 +1027,17 @@ mod tests {
             }
         }
 
-        assert!(king_moves > 0, "playout exercised no king move");
-        assert!(warm_hits > 0, "playout never hit a warm cache entry");
+        if cfg!(any(
+            feature = "nnue_kp_256x2_32_32",
+            feature = "sym_kp_128x2_512"
+        )) {
+            // A KP index embeds no king: its king moves are plain deltas (the
+            // drift check above still covered them) and never reach the cache.
+            assert_eq!(king_moves, 0, "a KP king move must be a delta");
+        } else {
+            assert!(king_moves > 0, "playout exercised no king move");
+            assert!(warm_hits > 0, "playout never hit a warm cache entry");
+        }
     }
 
     #[cfg(any(
