@@ -1028,6 +1028,16 @@ impl<'a> QSearch<'a> {
         self.tt
             .prefetch(post_pos.key(), post_pos.side_to_move().index() as u8);
 
+        // The child reads four correction slots in `correction_value`, after
+        // its TT probe and evaluation. Their keys are known now, so the hints
+        // go out here, with that much work to hide the miss behind.
+        let us = post_pos.side_to_move();
+        let shared = &self.histories.shared;
+        shared.correction_prefetch(post_pos.pawn_key(), us);
+        shared.correction_prefetch(post_pos.minor_piece_key(), us);
+        shared.correction_prefetch(post_pos.non_pawn_key(Color::White), us);
+        shared.correction_prefetch(post_pos.non_pawn_key(Color::Black), us);
+
         let net = self.net;
         let d = self.acc_depth;
         let (parent_slots, child_slots) = self.acc_stack.split_at_mut(d + 1);

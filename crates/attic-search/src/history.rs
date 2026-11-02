@@ -492,6 +492,30 @@ impl SharedHistories {
         self.correction[self.corr_index(key, color, channel)].load(Ordering::Relaxed) as i32
     }
 
+    /// Software-prefetch the correction slot keyed by `key` for side-to-move
+    /// `color`. The four channels of one `[color]` row are adjacent `i16`s, so
+    /// one hint covers whichever channel is read. A pure hardware hint with no
+    /// architectural effect, so it cannot change any search result.
+    #[inline]
+    pub fn correction_prefetch(&self, key: u64, color: Color) {
+        #[cfg(target_arch = "x86_64")]
+        {
+            // The checked index keeps the hinted address inside the table.
+            let entry = &self.correction[self.corr_index(key, color, CorrChannel::Pawn)];
+            // SAFETY: `_mm_prefetch` is a hint that neither reads nor writes
+            // the pointed-to memory in any observable way and cannot fault, and
+            // `entry` is a live, in-bounds element of the table.
+            unsafe {
+                use core::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
+                _mm_prefetch::<_MM_HINT_T0>(entry as *const AtomicI16 as *const i8);
+            }
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let _ = (key, color);
+        }
+    }
+
     /// Gravity-update the `channel` entry for side-to-move `color` in the slot
     /// keyed by `key`.
     pub fn correction_update(&self, key: u64, color: Color, channel: CorrChannel, bonus: i32) {
