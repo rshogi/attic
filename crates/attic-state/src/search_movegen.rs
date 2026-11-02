@@ -179,6 +179,61 @@ fn push_plain(from: Square, to: Square, piece: Piece, out: &mut Vec<ExtMove>) {
     });
 }
 
+/// Append `mv` (score `0`) at `dst` and return the next slot.
+///
+/// # Safety
+/// `dst` must point at writable storage for one [`ExtMove`], inside an
+/// allocation that outlives the write.
+#[inline(always)]
+unsafe fn put(dst: *mut ExtMove, mv: Move) -> *mut ExtMove {
+    // SAFETY: the caller guarantees `dst` is valid for one `ExtMove` write.
+    unsafe {
+        dst.write(ExtMove { mv, value: 0 });
+        dst.add(1)
+    }
+}
+
+/// Append the moves `f` writes to `out`, having made room for `room` of them.
+/// `f` receives the first free slot and returns the slot after its last move.
+///
+/// This is how the bulk emitters (the pawns and the drops, which write many
+/// moves per piece) avoid a capacity test and a `Vec` header update per move:
+/// they size their output exactly once, up front.
+#[inline(always)]
+fn append_with(
+    out: &mut Vec<ExtMove>,
+    room: usize,
+    f: impl FnOnce(*mut ExtMove) -> *mut ExtMove,
+) {
+    out.reserve(room);
+    let len = out.len();
+    // SAFETY: `reserve` left at least `room` slots of spare capacity past `len`.
+    // `f` writes at most `room` moves there (each caller derives `room` as an
+    // upper bound on its writes), so the `written` slots are initialised and
+    // within the allocation.
+    unsafe {
+        let start = out.as_mut_ptr().add(len);
+        let end = f(start);
+        let written = end.offset_from(start) as usize;
+        debug_assert!(written <= room);
+        out.set_len(len + written);
+    }
+}
+
+/// The drop of `kind` by `color` with its destination still zero: OR-ing a
+/// square index into it completes the move ([`drop_move`]).
+#[inline(always)]
+fn drop_template(kind: PieceKind, color: Color) -> u32 {
+    let sq0 = Square::from_index(0).expect("square 0 exists");
+    Move::make_drop(kind, color, sq0).to_bits()
+}
+
+/// Complete a [`drop_template`] with its destination.
+#[inline(always)]
+fn drop_move(template: u32, to: Square) -> Move {
+    Move::from_bits(template | u32::from(to.index()))
+}
+
 /// The last rank a piece of `color` can reach — where a pawn / lance
 /// non-promotion is always illegal (Black rank 0, White rank 8).
 fn last_rank(color: Color) -> u8 {
@@ -215,6 +270,10 @@ fn lance_nonpromote_rank_ok(to: Square, color: Color, all: bool) -> bool {
 /// Emit a pawn's move to its single forward `to`. With `All == true` a pawn
 /// pushing into the promotion zone additionally emits its non-promotion, except
 /// on the last rank where it would be stuck.
+///
+/// The production generators emit pawns in bulk ([`emit_pawns`]); this
+/// per-pawn form is the scanning oracle's.
+#[cfg(test)]
 fn emit_pawn(from: Square, targets: Bitboard, piece: Piece, all: bool, out: &mut Vec<ExtMove>) {
     for to in targets.squares() {
         if is_in_promotion_zone(to, piece.color) {
@@ -420,29 +479,11 @@ trait GroupSpec {
 /// Zero-sized group markers, one per emission group. `GoldHdk` is const-generic
 /// over whether the group carries the king; it does not for `EVASIONS`, where
 /// the king was emitted first.
-enum PawnG {}
 enum LanceG {}
 enum KnightG {}
 enum SilverG {}
 enum BishopRookG {}
 enum GoldHdkG<const KING: bool> {}
-
-impl GroupSpec for PawnG {
-    fn pieces(board: &Board, stm: Color) -> Bitboard {
-        board.pieces_pattern(stm, pat::PAWN)
-    }
-    #[inline(always)]
-    fn piece(_board: &Board, stm: Color, _from: Square) -> Piece {
-        Piece::new(PieceKind::Pawn, stm)
-    }
-    #[inline(always)]
-    fn attacks(from: Square, piece: Piece, _occ: Bitboard) -> Bitboard {
-        crate::bitboard::pawn_attacks(piece.color, from)
-    }
-    fn emit(from: Square, targets: Bitboard, piece: Piece, all: bool, out: &mut Vec<ExtMove>) {
-        emit_pawn(from, targets, piece, all, out);
-    }
-}
 
 impl GroupSpec for LanceG {
     fn pieces(board: &Board, stm: Color) -> Bitboard {
@@ -514,6 +555,20 @@ impl GroupSpec for BishopRookG {
 }
 
 impl<const KING: bool> GroupSpec for GoldHdkG<KING> {
+    #[inline(always)]
+    fn attacks(from: Square, piece: Piece, occ: Bitboard) -> Bitboard {
+        use crate::bitboard::{dragon_attacks, gold_attacks, horse_attacks, king_attacks};
+        // The group holds the golds and the promoted minors (all of which move
+        // as a gold), the horses, the dragons and, for `KING`, the king. Its
+        // bishops and rooks are therefore promoted, which spares the dispatch
+        // on the promotion flag that `attacks_bb` makes.
+        match piece.kind {
+            PieceKind::Bishop => horse_attacks(from, occ),
+            PieceKind::Rook => dragon_attacks(from, occ),
+            PieceKind::King => king_attacks(piece.color, from),
+            _ => gold_attacks(piece.color, from),
+        }
+    }
     fn pieces(board: &Board, stm: Color) -> Bitboard {
         let mut bb = board.pieces_pattern(stm, pat::GOLD)
             | board.pieces_pattern(stm, pat::HORSE)
@@ -567,6 +622,54 @@ fn emit_group_masked<G: GroupSpec>(
         }
         G::emit(from, targets, piece, all, out);
     }
+}
+
+/// The pawn group of [`emit_group_masked`], generated in bulk: every pawn steps
+/// exactly one square, so all the destinations come out of one shift of the pawn
+/// set instead of one table lookup per pawn.
+///
+/// The emission is the same list: a pawn's destination is the only square it
+/// attacks, so the destinations and the pawns correspond one to one, and both
+/// ascend together (the pawn's index is its destination's, plus or minus one).
+#[inline(always)]
+fn emit_pawns(
+    board: &Board,
+    stm: Color,
+    target: Target,
+    restrict: Bitboard,
+    all: bool,
+    out: &mut Vec<ExtMove>,
+) {
+    let mask = target_mask(board, stm, target) & restrict;
+    let targets = board.pieces_pattern(stm, pat::PAWN).pawn_advance(stm) & mask;
+    // Most positions have no pawn capture, or pawn move, to make here.
+    if targets.is_empty() {
+        return;
+    }
+    let piece = Piece::new(PieceKind::Pawn, stm);
+    // A destination yields a promotion and, under `All`, a non-promotion.
+    append_with(out, 2 * targets.popcount() as usize, |mut dst| {
+        for to in targets.squares() {
+            // The pawn stands one rank behind its destination.
+            let behind = match stm {
+                Color::Black => to.index() + 1,
+                Color::White => to.index() - 1,
+            };
+            let from = Square::from_index(behind).expect("a pawn destination has a square behind");
+            // SAFETY: at most two moves per destination, within the room above.
+            unsafe {
+                if is_in_promotion_zone(to, stm) {
+                    dst = put(dst, Move::make_promote(from, to, piece));
+                    if all && to.rank() != last_rank(stm) {
+                        dst = put(dst, Move::make(from, to, piece));
+                    }
+                } else {
+                    dst = put(dst, Move::make(from, to, piece));
+                }
+            }
+        }
+        dst
+    });
 }
 
 /// A 0..81 scan form of [`emit_group`], sharing no code with the production
@@ -1347,7 +1450,7 @@ impl Position {
     pub fn generate_captures(&self, all: bool, out: &mut Vec<ExtMove>) {
         let board = self.board();
         let stm = self.side_to_move();
-        emit_group::<PawnG>(board, stm, Target::Captures, all, out);
+        emit_pawns(board, stm, Target::Captures, ALL_SQUARES, all, out);
         emit_group::<LanceG>(board, stm, Target::Captures, all, out);
         emit_group::<KnightG>(board, stm, Target::Captures, all, out);
         emit_group::<SilverG>(board, stm, Target::Captures, all, out);
@@ -1365,7 +1468,7 @@ impl Position {
     pub fn generate_quiets(&self, all: bool, out: &mut Vec<ExtMove>) {
         let board = self.board();
         let stm = self.side_to_move();
-        emit_group::<PawnG>(board, stm, Target::Quiets, all, out);
+        emit_pawns(board, stm, Target::Quiets, ALL_SQUARES, all, out);
         emit_group::<LanceG>(board, stm, Target::Quiets, all, out);
         emit_group::<KnightG>(board, stm, Target::Quiets, all, out);
         emit_group::<SilverG>(board, stm, Target::Quiets, all, out);
@@ -1431,7 +1534,7 @@ impl Position {
         let target2 = target1 | Bitboard::from_square(checksq); // + capture the checker
 
         // The gold-group excludes the king, already emitted above.
-        emit_group_masked::<PawnG>(board, stm, Target::BlockOrCapture, target2, all, out);
+        emit_pawns(board, stm, Target::BlockOrCapture, target2, all, out);
         emit_group_masked::<LanceG>(board, stm, Target::BlockOrCapture, target2, all, out);
         emit_group_masked::<KnightG>(board, stm, Target::BlockOrCapture, target2, all, out);
         emit_group_masked::<SilverG>(board, stm, Target::BlockOrCapture, target2, all, out);
@@ -1452,7 +1555,7 @@ impl Position {
     pub fn generate_non_evasions(&self, all: bool, out: &mut Vec<ExtMove>) {
         let board = self.board();
         let stm = self.side_to_move();
-        emit_group::<PawnG>(board, stm, Target::BlockOrCapture, all, out);
+        emit_pawns(board, stm, Target::BlockOrCapture, ALL_SQUARES, all, out);
         emit_group::<LanceG>(board, stm, Target::BlockOrCapture, all, out);
         emit_group::<KnightG>(board, stm, Target::BlockOrCapture, all, out);
         emit_group::<SilverG>(board, stm, Target::BlockOrCapture, all, out);
@@ -1509,11 +1612,7 @@ impl Position {
         if hand.count(PieceKind::Pawn) > 0 {
             // A tokin lives in the GOLD pattern slot, so it does not block a
             // file for nifu (二歩) purposes.
-            let own_pawns = board.pieces_pattern(stm, crate::board::pat::PAWN);
-            let mut nifu_files = Bitboard::empty();
-            for psq in own_pawns.squares() {
-                nifu_files |= crate::bitboard::file_mask(psq.file());
-            }
+            let nifu_files = board.pieces_pattern(stm, crate::board::pat::PAWN).fill_files();
             // A pawn dropped on the last rank could never move again.
             let mut pawn_target = base & !rank_mask(back_rank) & !nifu_files;
 
@@ -1536,77 +1635,79 @@ impl Position {
                 pawn_target.clear(c);
             }
 
-            for sq in pawn_target.squares() {
-                out.push(ExtMove {
-                    mv: Move::make_drop(PieceKind::Pawn, stm, sq),
-                    value: 0,
-                });
-            }
+            let pawn = drop_template(PieceKind::Pawn, stm);
+            append_with(out, pawn_target.popcount() as usize, |mut dst| {
+                for sq in pawn_target.squares() {
+                    // SAFETY: one move per square of `pawn_target`, the room
+                    // reserved above.
+                    dst = unsafe { put(dst, drop_move(pawn, sq)) };
+                }
+                dst
+            });
         }
 
         // The other kinds are emitted in rank bands, so that lance and knight
         // are excluded from the ranks on which they would be stuck. The scratch
-        // is fixed-capacity to keep the node allocation-free.
-        let mut drops_buf = [PieceKind::Knight; DROP_ORDER.len()];
+        // is fixed-capacity to keep the node allocation-free. Each entry is the
+        // kind's drop with the destination still zero; OR-ing in a square index
+        // completes the move, as the reference's `drops[]` array does.
+        let mut drops = [0u32; DROP_ORDER.len()];
         let mut drops_len = 0usize;
         for &kind in &DROP_ORDER {
             if hand.count(kind) > 0 {
-                drops_buf[drops_len] = kind;
+                drops[drops_len] = drop_template(kind, stm);
                 drops_len += 1;
             }
         }
-        let drops = &drops_buf[..drops_len];
-        if drops.is_empty() {
+        if drops_len == 0 {
             return;
         }
+        let drops = &drops[..drops_len];
         // Knight and lance lead `DROP_ORDER`, so a band that excludes them is a
         // suffix — the reference's `nextToKnight` / `nextToLance`.
-        let next_to_knight = usize::from(drops.first() == Some(&PieceKind::Knight));
-        let next_to_lance =
-            next_to_knight + usize::from(drops.get(next_to_knight) == Some(&PieceKind::Lance));
+        let knight = drop_template(PieceKind::Knight, stm);
+        let lance = drop_template(PieceKind::Lance, stm);
+        let next_to_knight = usize::from(drops.first() == Some(&knight));
+        let next_to_lance = next_to_knight + usize::from(drops.get(next_to_knight) == Some(&lance));
 
-        if next_to_lance == 0 {
-            // With no lance or knight in hand every kind can go on every empty
-            // square.
-            for sq in base.squares() {
-                for &kind in drops {
-                    out.push(ExtMove {
-                        mv: Move::make_drop(kind, stm, sq),
-                        value: 0,
-                    });
+        // Every empty square takes at most one move per kind in hand.
+        let room = drops.len() * base.popcount() as usize;
+        append_with(out, room, |mut dst| {
+            // SAFETY (all `put`s below): the bands partition `base`, and each
+            // square is written once per kind of the slice it is paired with,
+            // which is never longer than `drops`.
+            if next_to_lance == 0 {
+                // With no lance or knight in hand every kind can go on every
+                // empty square.
+                for sq in base.squares() {
+                    for &d in drops {
+                        dst = unsafe { put(dst, drop_move(d, sq)) };
+                    }
+                }
+                return dst;
+            }
+
+            // Own back rank.
+            for sq in (base & rank_mask(back_rank)).squares() {
+                for &d in &drops[next_to_lance..] {
+                    dst = unsafe { put(dst, drop_move(d, sq)) };
                 }
             }
-            return;
-        }
-
-        // Own back rank.
-        for sq in (base & rank_mask(back_rank)).squares() {
-            for &kind in &drops[next_to_lance..] {
-                out.push(ExtMove {
-                    mv: Move::make_drop(kind, stm, sq),
-                    value: 0,
-                });
+            // Own second rank: lance too, but not knight.
+            for sq in (base & rank_mask(second_rank)).squares() {
+                for &d in &drops[next_to_knight..] {
+                    dst = unsafe { put(dst, drop_move(d, sq)) };
+                }
             }
-        }
-        // Own second rank: lance too, but not knight.
-        for sq in (base & rank_mask(second_rank)).squares() {
-            for &kind in &drops[next_to_knight..] {
-                out.push(ExtMove {
-                    mv: Move::make_drop(kind, stm, sq),
-                    value: 0,
-                });
+            // Everywhere else: every kind.
+            let band3 = base & !(rank_mask(back_rank) | rank_mask(second_rank));
+            for sq in band3.squares() {
+                for &d in drops {
+                    dst = unsafe { put(dst, drop_move(d, sq)) };
+                }
             }
-        }
-        // Everywhere else: every kind.
-        let band3 = base & !(rank_mask(back_rank) | rank_mask(second_rank));
-        for sq in band3.squares() {
-            for &kind in drops {
-                out.push(ExtMove {
-                    mv: Move::make_drop(kind, stm, sq),
-                    value: 0,
-                });
-            }
-        }
+            dst
+        });
     }
 
     /// An 81-square band-scanning form of [`Position::emit_drops_masked`],
