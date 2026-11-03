@@ -47,6 +47,36 @@ pub enum RepetitionState {
     Inferior,
 }
 
+/// Which repetition rule a [`Position`] answers [`Position::is_repetition`] by.
+///
+/// The two are the two builds of the reference engine: `ENABLE_QUICK_DRAW`,
+/// which its `FOR_TOURNAMENT` build defines, and the build without it. They
+/// search different trees, so a program that wants to match one of them has to
+/// pick the same one.
+///
+/// A position starts with [`RepetitionRule::DEFAULT`], which the `quick-draw`
+/// feature of this crate decides, so a program that never mentions the rule
+/// behaves as it always has. [`Position::set_repetition_rule`] overrides it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RepetitionRule {
+    /// `ENABLE_QUICK_DRAW`: a walk at query time, the second occurrence
+    /// adjudicates, and there is no `repetition < ply` gate on the root.
+    QuickDraw,
+    /// The build without it: `do_move` precomputes the repetition and stores it
+    /// in the state, and a repetition is reported only when the gate allows it.
+    Precomputed,
+}
+
+impl RepetitionRule {
+    /// What a new [`Position`] uses: [`Self::QuickDraw`] when this crate is
+    /// built with its `quick-draw` feature, [`Self::Precomputed`] when not.
+    pub const DEFAULT: RepetitionRule = if cfg!(feature = "quick-draw") {
+        RepetitionRule::QuickDraw
+    } else {
+        RepetitionRule::Precomputed
+    };
+}
+
 /// `true` iff `superior` holds an equal-or-greater count of **every** hand
 /// piece kind than `inferior` (`hand_is_equal_or_superior`).
 fn hand_is_equal_or_superior(superior: &Hand, inferior: &Hand) -> bool {
@@ -100,12 +130,9 @@ pub(crate) struct StateInfo {
     /// Signed ply distance to the previous occurrence of this position, `0` if
     /// none; negative once `repetition_times` reaches 3, the forced-fourfold
     /// case.
-    #[cfg(not(feature = "quick-draw"))]
     pub repetition: i32,
     /// How many earlier occurrences this position chains to.
-    #[cfg(not(feature = "quick-draw"))]
     pub repetition_times: i32,
-    #[cfg(not(feature = "quick-draw"))]
     pub repetition_type: RepetitionState,
 }
 
@@ -116,6 +143,10 @@ pub struct Position {
     side_to_move: Color,
     ply: u16,
     history: Vec<StateInfo>,
+    /// How [`Self::is_repetition`] answers, and whether `do_move` stores the
+    /// repetition into the state it pushes. Set before the first move; see
+    /// [`Self::set_repetition_rule`].
+    repetition_rule: RepetitionRule,
     /// Snapshot of the position *before the first move of the current line*.
     /// `history` records only post-move states, so the root is not otherwise
     /// recoverable, yet `is_repetition` must reach it: a four-ply cycle can
@@ -179,6 +210,7 @@ impl Position {
             side_to_move: Color::Black,
             ply: 1,
             history: Vec::new(),
+            repetition_rule: RepetitionRule::DEFAULT,
             root: None,
             board_key: 0,
             hand_key: 0,
@@ -547,18 +579,16 @@ impl Position {
             plies_from_null: prev_plies_from_null + 1,
             continuous_check,
             // Filled in by `store_current_repetition` below.
-            #[cfg(not(feature = "quick-draw"))]
             repetition: 0,
-            #[cfg(not(feature = "quick-draw"))]
             repetition_times: 0,
-            #[cfg(not(feature = "quick-draw"))]
             repetition_type: RepetitionState::None,
         });
 
-        // The `quick-draw` build compiles this precompute out and walks the
-        // chain at query time instead.
-        #[cfg(not(feature = "quick-draw"))]
-        self.store_current_repetition();
+        // The quick-draw rule skips this precompute and walks the chain at
+        // query time instead.
+        if self.repetition_rule == RepetitionRule::Precomputed {
+            self.store_current_repetition();
+        }
 
         undo
     }
@@ -572,18 +602,14 @@ impl Position {
             board_key: self.board_key,
             plies_from_null: 0,
             continuous_check: [0; Color::COUNT],
-            #[cfg(not(feature = "quick-draw"))]
             repetition: 0,
-            #[cfg(not(feature = "quick-draw"))]
             repetition_times: 0,
-            #[cfg(not(feature = "quick-draw"))]
             repetition_type: RepetitionState::None,
         }
     }
 
     /// Store [`Self::compute_repetition`]'s result into the top-of-stack
     /// `StateInfo`. Must run after the push, since the walk includes it.
-    #[cfg(not(feature = "quick-draw"))]
     fn store_current_repetition(&mut self) {
         let (repetition, repetition_times, repetition_type) = self.compute_repetition();
         if let Some(top) = self.history.last_mut() {
@@ -717,11 +743,8 @@ impl Position {
             continuous_check,
             // A state reached directly by a null move is never itself a
             // repetition.
-            #[cfg(not(feature = "quick-draw"))]
             repetition: 0,
-            #[cfg(not(feature = "quick-draw"))]
             repetition_times: 0,
-            #[cfg(not(feature = "quick-draw"))]
             repetition_type: RepetitionState::None,
         });
     }
@@ -881,7 +904,6 @@ impl Position {
     /// It reads the *stored* `repetition_times` / `repetition_type` of that
     /// occurrence, so the chain it builds on must already carry them; every
     /// state reached through `do_move` does.
-    #[cfg(not(feature = "quick-draw"))]
     fn compute_repetition(&self) -> (i32, i32, RepetitionState) {
         let end = MAX_REPETITION_PLY.min(self.current_plies_from_null());
         // A repetition needs at least a four-ply cycle to return.
@@ -935,7 +957,39 @@ impl Position {
     }
 
     /// Classify the current position as a repetition, from the search's
-    /// viewpoint at distance `ply` from the root.
+    /// viewpoint at distance `ply` from the root, by this position's
+    /// [`RepetitionRule`].
+    #[inline]
+    pub fn is_repetition(&self, ply: u16) -> RepetitionState {
+        match self.repetition_rule {
+            RepetitionRule::QuickDraw => self.is_repetition_quick_draw(),
+            RepetitionRule::Precomputed => self.is_repetition_precomputed(ply),
+        }
+    }
+
+    /// The rule this position answers [`Self::is_repetition`] by.
+    pub const fn repetition_rule(&self) -> RepetitionRule {
+        self.repetition_rule
+    }
+
+    /// Choose the repetition rule, overriding the build's default.
+    ///
+    /// The precomputing rule reads what `do_move` stored, and the quick-draw
+    /// rule stores nothing, so the two cannot be swapped under a line that has
+    /// already been played. Call this on a position before its first move; a
+    /// position copied from this one keeps the rule.
+    ///
+    /// # Panics
+    /// Panics if the position already has moves on it.
+    pub fn set_repetition_rule(&mut self, rule: RepetitionRule) {
+        assert!(
+            self.history.is_empty(),
+            "the repetition rule is chosen before the first move, not under a played line"
+        );
+        self.repetition_rule = rule;
+    }
+
+    /// [`RepetitionRule::Precomputed`]: the repetition `do_move` stored.
     ///
     /// The `repetition < ply` gate means a **positive** `repetition` (a 2nd or
     /// 3rd occurrence) is reported only when the earlier occurrence lies
@@ -945,31 +999,28 @@ impl Position {
     ///
     /// This is the **non**-`quick-draw` configuration; see the sibling
     /// definition for the one the tournament reference plays.
-    #[cfg(not(feature = "quick-draw"))]
-    pub fn is_repetition(&self, ply: u16) -> RepetitionState {
+    fn is_repetition_precomputed(&self, ply: u16) -> RepetitionState {
         match self.history.last() {
             Some(s) if s.repetition != 0 && s.repetition < ply as i32 => s.repetition_type,
             _ => RepetitionState::None,
         }
     }
 
-    /// Classify the current position as a repetition — the `ENABLE_QUICK_DRAW`
-    /// variant, which the reference's `FOR_TOURNAMENT` build compiles and this
-    /// crate selects by default.
+    /// [`RepetitionRule::QuickDraw`]: the `ENABLE_QUICK_DRAW` variant, which the
+    /// reference's `FOR_TOURNAMENT` build compiles and this crate selects by
+    /// default.
     ///
     /// It differs from the variant above in three ways, each of them upstream's:
     ///
-    /// - **`ply` is ignored.** A repetition whose earlier occurrence lies at or
-    ///   before the search root adjudicates just like one inside the search
-    ///   window; upstream measures that as worth roughly +R5. The parameter
-    ///   stays in the signature so both configurations present one API.
+    /// - **The search `ply` is not an input.** A repetition whose earlier
+    ///   occurrence lies at or before the search root adjudicates just like one
+    ///   inside the search window; upstream measures that as worth roughly +R5.
     /// - **The 2nd occurrence already adjudicates.** The first `board_key` hit
     ///   on the backward walk decides, so there is no fourfold requirement and
     ///   no downgrade to `Draw` for a partly-perpetual cycle.
     /// - **The walk runs at query time**, over the same window, whose cap is a
     ///   literal 16 rather than the search ply.
-    #[cfg(feature = "quick-draw")]
-    pub fn is_repetition(&self, _ply: u16) -> RepetitionState {
+    fn is_repetition_quick_draw(&self) -> RepetitionState {
         let end = MAX_REPETITION_PLY.min(self.current_plies_from_null());
         // A repetition needs at least a four-ply cycle to return to the same
         // position with the same side to move.
@@ -1797,11 +1848,8 @@ mod tests {
             board_key: scratch.board_key(),
             plies_from_null: 0,
             continuous_check: [0; Color::COUNT],
-            #[cfg(not(feature = "quick-draw"))]
             repetition: 0,
-            #[cfg(not(feature = "quick-draw"))]
             repetition_times: 0,
-            #[cfg(not(feature = "quick-draw"))]
             repetition_type: RepetitionState::None,
         }
     }
@@ -2125,6 +2173,127 @@ mod tests {
             p.do_move(Move::make(wmoves[i].0, wmoves[i].1, wk));
         }
         p
+    }
+
+    // ---- the repetition rule, chosen at run time --------------------------
+    //
+    // The tests above run whichever rule the build defaults to. These name the
+    // rule, so both are exercised by every build and a build's feature is shown
+    // to be nothing more than the default.
+
+    /// `setup_king_shuffle_pos` after one four-ply cycle, under `rule`.
+    fn shuffled_once(rule: RepetitionRule) -> Position {
+        let mut p = setup_king_shuffle_pos();
+        p.set_repetition_rule(rule);
+        for m in shuffle_cycle() {
+            p.do_move(m);
+        }
+        p
+    }
+
+    #[test]
+    fn a_new_position_uses_the_rule_the_build_defaults_to() {
+        assert_eq!(
+            RepetitionRule::DEFAULT,
+            if cfg!(feature = "quick-draw") {
+                RepetitionRule::QuickDraw
+            } else {
+                RepetitionRule::Precomputed
+            }
+        );
+        assert_eq!(Position::empty().repetition_rule(), RepetitionRule::DEFAULT);
+        assert_eq!(
+            Position::startpos().repetition_rule(),
+            RepetitionRule::DEFAULT
+        );
+    }
+
+    #[test]
+    fn the_quick_draw_rule_adjudicates_a_two_fold_at_every_ply() {
+        let p = shuffled_once(RepetitionRule::QuickDraw);
+        for ply in [0u16, 1, 4, 5, 16] {
+            assert_eq!(
+                p.is_repetition(ply),
+                RepetitionState::Draw,
+                "the 2nd occurrence adjudicates under the quick-draw rule (ply {ply})",
+            );
+        }
+    }
+
+    #[test]
+    fn the_precomputed_rule_gates_a_two_fold_on_the_search_ply() {
+        let p = shuffled_once(RepetitionRule::Precomputed);
+        for ply in [0u16, 1, 4] {
+            assert_eq!(
+                p.is_repetition(ply),
+                RepetitionState::None,
+                "a two-fold reaching the root is not reported (ply {ply})",
+            );
+        }
+        for ply in [5u16, 16] {
+            assert_eq!(
+                p.is_repetition(ply),
+                RepetitionState::Draw,
+                "with the earlier occurrence strictly after the root it is a draw (ply {ply})",
+            );
+        }
+    }
+
+    #[test]
+    fn only_the_precomputed_rule_stores_the_repetition_in_the_state() {
+        let quick = shuffled_once(RepetitionRule::QuickDraw);
+        let top = quick.history.last().expect("history is non-empty");
+        assert_eq!((top.repetition, top.repetition_times), (0, 0));
+
+        let precomputed = shuffled_once(RepetitionRule::Precomputed);
+        let top = precomputed.history.last().expect("history is non-empty");
+        assert_eq!((top.repetition, top.repetition_times), (4, 1));
+    }
+
+    #[test]
+    fn both_rules_call_a_forced_fourfold_a_draw_at_any_ply() {
+        for rule in [RepetitionRule::QuickDraw, RepetitionRule::Precomputed] {
+            let mut p = setup_king_shuffle_pos();
+            p.set_repetition_rule(rule);
+            for _ in 0..3 {
+                for m in shuffle_cycle() {
+                    p.do_move(m);
+                }
+            }
+            for ply in [1u16, 16] {
+                assert_eq!(
+                    p.is_repetition(ply),
+                    RepetitionState::Draw,
+                    "{rule:?}: fourfold at ply {ply}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_copy_keeps_the_repetition_rule_and_undoing_does_not_change_it() {
+        let other = if RepetitionRule::DEFAULT == RepetitionRule::QuickDraw {
+            RepetitionRule::Precomputed
+        } else {
+            RepetitionRule::QuickDraw
+        };
+        let mut p = setup_king_shuffle_pos();
+        p.set_repetition_rule(other);
+        let mut copy = p.clone();
+        assert_eq!(copy.repetition_rule(), other);
+
+        let cycle = shuffle_cycle();
+        let undo = copy.do_move(cycle[0]);
+        copy.undo_move(cycle[0], undo);
+        assert_eq!(copy.repetition_rule(), other);
+    }
+
+    #[test]
+    #[should_panic(expected = "before the first move")]
+    fn the_rule_cannot_be_changed_under_a_played_line() {
+        let mut p = setup_king_shuffle_pos();
+        p.do_move(shuffle_cycle()[0]);
+        p.set_repetition_rule(RepetitionRule::DEFAULT);
     }
 
     #[cfg(not(feature = "quick-draw"))]
