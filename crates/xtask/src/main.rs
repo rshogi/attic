@@ -6,7 +6,9 @@ use std::process::{Child, Command as ProcessCommand, ExitCode, Stdio};
 use clap::{Parser, Subcommand, ValueEnum};
 
 use attic_state::packed_sfen::sfen_pack;
-use attic_state::{Position, parse_sfen, parse_usi_move};
+use attic_state::{
+    PACKED_SFEN_LEN, Position, format_sfen, parse_sfen, parse_usi_move, sfen_unpack,
+};
 
 mod pgo;
 
@@ -41,6 +43,32 @@ enum Command {
     /// Build `attic` as a profile-guided release build: an instrumented build,
     /// a training run over a fixed set of positions, then the final build.
     BuildPgo(pgo::BuildPgoArgs),
+    /// Turn a file of 32-byte PackedSfen records into an SFEN opening list for
+    /// `attic-gensfen --start-sfens`.
+    UnpackStarts(UnpackStartsArgs),
+}
+
+#[derive(clap::Args, Debug)]
+struct UnpackStartsArgs {
+    /// Input: 32-byte PackedSfen records back to back, no header.
+    ///
+    /// This is what falls out of slicing a `--format pack` corpus: each record
+    /// there begins with the packed position, so a filter that keeps the first
+    /// 32 of every 60 bytes produces this directly.
+    #[arg(long)]
+    input: PathBuf,
+    /// Output: one `sfen ...` line per position, CRLF-terminated to match the
+    /// opening sets already in use.
+    #[arg(long)]
+    output: PathBuf,
+    /// Move number written into every line.
+    ///
+    /// PackedSfen stores board, side and hands but not the ply, so the number
+    /// cannot be recovered from the input and has to be asserted. It is only
+    /// cosmetic for generation — the random-move window counts from the start of
+    /// the game — but it is what tells a later reader where these came from.
+    #[arg(long, default_value_t = 15)]
+    ply: u16,
 }
 
 #[derive(clap::Args, Debug)]
@@ -224,6 +252,16 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Command::UnpackStarts(args) => match unpack_starts(&args) {
+            Ok(count) => {
+                println!("{count} positions written to {}", args.output.display());
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("xtask unpack-starts: {e}");
+                ExitCode::FAILURE
+            }
+        },
         Command::CaptureBook(args) => match capture_book(&args) {
             Ok((ybb, expected)) => {
                 println!("ybb book: {}", ybb.display());
@@ -283,6 +321,64 @@ fn build_reference(args: &BuildReferenceArgs) -> Result<PathBuf, String> {
         ));
     }
     Ok(binary)
+}
+
+/// Decode 32-byte PackedSfen records into an SFEN opening list.
+///
+/// Streamed rather than collected: the input this was written for is millions of
+/// positions, and the text is several times the size of the binary.
+fn unpack_starts(args: &UnpackStartsArgs) -> Result<usize, String> {
+    let bytes =
+        fs::read(&args.input).map_err(|e| format!("cannot read {}: {e}", args.input.display()))?;
+    if bytes.is_empty() {
+        return Err(format!("{} is empty", args.input.display()));
+    }
+    if !bytes.len().is_multiple_of(PACKED_SFEN_LEN) {
+        return Err(format!(
+            "{} is {} bytes, not a whole number of {PACKED_SFEN_LEN}-byte records",
+            args.input.display(),
+            bytes.len()
+        ));
+    }
+
+    let file = fs::File::create(&args.output)
+        .map_err(|e| format!("cannot write {}: {e}", args.output.display()))?;
+    let mut out = std::io::BufWriter::new(file);
+    let mut count = 0usize;
+
+    // The length check above leaves no remainder, so the second half is empty.
+    let (records, _) = bytes.as_chunks::<PACKED_SFEN_LEN>();
+    for (index, packed) in records.iter().enumerate() {
+        let mut pos = sfen_unpack(packed).map_err(|e| format!("record {index}: {e}"))?;
+        // Misalignment is caught by `sfen_unpack` failing, which is what happens to
+        // a file that starts a few bytes late: the king squares come out of range.
+        // The read-back below is a second line, for a record that does decode: its
+        // SFEN must parse and print as itself. It is not a re-pack of the decoded
+        // position against its input, because the bit order of the hands and the
+        // piece box is not unique and a corpus written by another tool packs the
+        // same position into other bytes. On a 9,784-record slice of the NAGISA
+        // corpus, 1,590 records differed that way, and all of them were correct
+        // positions.
+        let text = format_sfen(&pos);
+        let reread = parse_sfen(&text)
+            .map_err(|e| format!("record {index}: decoded position does not read back: {e}"))?;
+        if format_sfen(&reread) != text {
+            return Err(format!(
+                "record {index}: decoded position does not read back as itself; \
+                 the file is probably misaligned"
+            ));
+        }
+        pos.set_ply(args.ply);
+        // CRLF because the opening sets already in use are written that way, and
+        // a reader that hashes the raw line would see a different key otherwise.
+        write!(out, "sfen {}\r\n", format_sfen(&pos))
+            .map_err(|e| format!("cannot write {}: {e}", args.output.display()))?;
+        count += 1;
+    }
+
+    out.flush()
+        .map_err(|e| format!("cannot write {}: {e}", args.output.display()))?;
+    Ok(count)
 }
 
 fn run_make(source_dir: &Path, args: &BuildReferenceArgs, extra: &[&str]) -> Result<(), String> {
@@ -1522,5 +1618,95 @@ bestmove 1g1f\n\
             json.contains("  \"hash_mb\": 256,\n"),
             "missing hash_mb in: {json}"
         );
+    }
+
+    /// A scratch directory that is removed again, so a failed assertion does not
+    /// leave files behind in the temp directory.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("xtask-{tag}-{}", std::process::id()));
+            fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn unpack_args(dir: &Scratch, input: &[u8], ply: u16) -> UnpackStartsArgs {
+        let input_path = dir.0.join("in.bin");
+        fs::write(&input_path, input).unwrap();
+        UnpackStartsArgs {
+            input: input_path,
+            output: dir.0.join("out.txt"),
+            ply,
+        }
+    }
+
+    const UNPACK_SFENS: [&str; 3] = [
+        STARTPOS_SFEN,
+        "l1sgk2nl/6sb1/n1p1pp2p/p1bp2p2/7p1/Pr1P1PP1P/2P1P1N2/1SG2G1R1/LN2K1SGL b 2Pp 35",
+        "4k4/9/9/9/9/9/+P+L+N+S+B+R3/9/4K4 b 2G2S2N2L9PBR2gsnl8p 1",
+    ];
+
+    #[test]
+    fn unpack_starts_writes_crlf_sfen_lines_with_the_given_ply() {
+        let mut bytes = Vec::new();
+        for sfen in UNPACK_SFENS {
+            bytes.extend_from_slice(&sfen_pack(&parse_sfen(sfen).unwrap()));
+        }
+        let dir = Scratch::new("unpack-ok");
+        let args = unpack_args(&dir, &bytes, 15);
+
+        assert_eq!(unpack_starts(&args).unwrap(), 3);
+
+        let out = fs::read_to_string(&args.output).unwrap();
+        let lines: Vec<&str> = out.split("\r\n").collect();
+        // Three lines, and the empty piece after the last terminator.
+        assert_eq!(lines.len(), 4, "got: {out:?}");
+        for (line, sfen) in lines.iter().zip(UNPACK_SFENS) {
+            let want = format_sfen(&{
+                let mut pos = parse_sfen(sfen).unwrap();
+                pos.set_ply(15);
+                pos
+            });
+            assert_eq!(*line, format!("sfen {want}"));
+        }
+    }
+
+    #[test]
+    fn unpack_starts_rejects_a_length_that_is_not_whole_records() {
+        let dir = Scratch::new("unpack-len");
+        let args = unpack_args(&dir, &[0u8; 33], 15);
+        let err = unpack_starts(&args).unwrap_err();
+        assert!(err.contains("not a whole number"), "got: {err}");
+    }
+
+    #[test]
+    fn unpack_starts_rejects_an_empty_file() {
+        let dir = Scratch::new("unpack-empty");
+        let args = unpack_args(&dir, &[], 15);
+        assert!(unpack_starts(&args).unwrap_err().contains("is empty"));
+    }
+
+    /// A file that starts a few bytes late is the failure the check exists for.
+    #[test]
+    fn unpack_starts_rejects_a_misaligned_file() {
+        let mut bytes = Vec::new();
+        for sfen in UNPACK_SFENS {
+            bytes.extend_from_slice(&sfen_pack(&parse_sfen(sfen).unwrap()));
+        }
+        // Drop the first five bytes and the tail to keep whole 32-byte records.
+        let shifted: Vec<u8> = bytes[5..].to_vec();
+        let whole = shifted.len() / PACKED_SFEN_LEN * PACKED_SFEN_LEN;
+        let dir = Scratch::new("unpack-shift");
+        let args = unpack_args(&dir, &shifted[..whole], 15);
+        let err = unpack_starts(&args).unwrap_err();
+        assert!(err.contains("record"), "got: {err}");
     }
 }
