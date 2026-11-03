@@ -23,6 +23,12 @@ impl Square {
     }
 
     pub const fn index(self) -> u8 {
+        // SAFETY: the tuple field is private to this module and both
+        // constructors ([`Self::new`], [`Self::from_index`]) only build values
+        // below `COUNT`, so `self.0 < 81` always holds. Stating it lets the
+        // optimizer drop the bounds check on every 81-entry table indexed by a
+        // square.
+        unsafe { core::hint::assert_unchecked((self.0 as usize) < Self::COUNT) };
         self.0
     }
 
