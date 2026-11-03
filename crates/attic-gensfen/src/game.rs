@@ -157,11 +157,11 @@ impl Resignation {
             Some(side) => {
                 self.losing = Some(side);
                 self.streak = 1;
-            },
+            }
             None => {
                 self.losing = None;
                 self.streak = 0;
-            },
+            }
         }
         // `max(1)` so a count of zero resigns on the first losing ply rather
         // than on the position before it was ever judged.
@@ -257,10 +257,10 @@ pub fn play_game(
                     // Every line was parsed when the file was read, so a failure
                     // here would mean the list was corrupted after startup.
                     parse_sfen(sfen).expect("start positions are validated at startup")
-                },
+                }
             };
             (pos, 0)
-        },
+        }
     };
     // The entering-king thresholds are a snapshot of the root's material, so
     // they are taken once per game — and, for the `_H` rules, they have to be
@@ -312,10 +312,8 @@ pub fn play_game(
             break (if side_to_move_is_black { -1 } else { 1 }, "mated");
         }
 
-        let candidates: Vec<(Move, i32)> = lines
-            .iter()
-            .map(|info| (info.pv[0], i32::from(info.score)))
-            .collect();
+        let candidates: Vec<(Move, i32)> =
+            lines.iter().map(|info| (info.pv[0], info.score)).collect();
 
         let root_cp = outcome.score;
 
@@ -637,7 +635,11 @@ mod resignation_tests {
         let mut resignation = Resignation::default();
         resignation.update(-3100, BLACK, &options);
         resignation.update(3100, WHITE, &options);
-        assert_eq!(resignation.update(-100, BLACK, &options), None, "level again");
+        assert_eq!(
+            resignation.update(-100, BLACK, &options),
+            None,
+            "level again"
+        );
 
         // Counting starts over, so the next three plies are not enough.
         assert_eq!(resignation.update(3100, WHITE, &options), None);

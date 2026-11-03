@@ -205,11 +205,11 @@ pub fn sfen_pack(pos: &Position) -> PackedSfen {
     for index in 0..Square::COUNT as u8 {
         let sq = Square::from_index(index).expect("index < COUNT");
         match pos.board().get(sq) {
-            Some(p) if p.kind == PieceKind::King => {},
+            Some(p) if p.kind == PieceKind::King => {}
             Some(p) => {
                 write_board_piece(&mut w, p);
                 box_count[p.kind.index()] -= 1;
-            },
+            }
             None => w.write_one_bit(false),
         }
     }
@@ -402,7 +402,7 @@ pub fn sfen_unpack(packed: &PackedSfen) -> Result<Position, SfenError> {
     let mut box_count = PIECE_BOX_START;
     for index in 0..Square::COUNT as u8 {
         let sq = Square::from_index(index).expect("index < COUNT");
-        if kings.iter().any(|k| *k == Some(sq)) {
+        if kings.contains(&Some(sq)) {
             continue;
         }
         if let Some(piece) = read_board_piece(&mut r)? {
@@ -423,7 +423,7 @@ pub fn sfen_unpack(packed: &PackedSfen) -> Result<Position, SfenError> {
             OffBoard::Hand(kind, color) => {
                 pos.hand_mut(color).increment(kind);
                 kind
-            },
+            }
             OffBoard::Box(kind) => kind,
         };
         let slot = &mut box_count[kind.index()];

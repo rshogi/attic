@@ -102,13 +102,13 @@ fn main() {
                         dir.display()
                     );
                     Some(source)
-                },
+                }
                 Err(err) => {
                     eprintln!("{err}");
                     std::process::exit(1);
-                },
+                }
             }
-        },
+        }
     };
     let source = source.as_ref();
 

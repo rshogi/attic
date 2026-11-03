@@ -113,10 +113,10 @@ fn cut_at(records: &[u8], record_len: usize) -> usize {
     let mut previous = None;
     for (index, record) in records.chunks_exact(record_len).enumerate() {
         let ply = record_ply(record);
-        if let Some(previous) = previous {
-            if ply > previous + 1 {
-                return index;
-            }
+        if let Some(previous) = previous
+            && ply > previous + 1
+        {
+            return index;
         }
         previous = Some(ply);
     }
@@ -222,7 +222,7 @@ impl Shard {
                     }
                     previous = ply;
                     game.extend_from_slice(&record);
-                },
+                }
             }
         }
     }
@@ -369,7 +369,10 @@ mod tests {
         rewrite_results(&mut prefix, 1, record_len(MULTIPV));
 
         let len = record_len(MULTIPV);
-        assert_eq!(prefix[RESULT_OFF] as i8, 1, "Black to move keeps the result");
+        assert_eq!(
+            prefix[RESULT_OFF] as i8, 1,
+            "Black to move keeps the result"
+        );
         assert_eq!(
             prefix[len + RESULT_OFF] as i8,
             -1,
@@ -386,7 +389,11 @@ mod tests {
         let resume = resume_from(&records, record_len(MULTIPV))
             .expect("the game has records")
             .expect("they decode");
-        assert_eq!(resume.position.ply(), 3, "resumed from the last kept record");
+        assert_eq!(
+            resume.position.ply(),
+            3,
+            "resumed from the last kept record"
+        );
         assert_eq!(
             resume.prefix.len(),
             2 * record_len(MULTIPV),

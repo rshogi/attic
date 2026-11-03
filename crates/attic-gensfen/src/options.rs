@@ -204,13 +204,13 @@ usage: attic-gensfen --eval-dir DIR --out FILE
                 "--format" => format = parse_field(&value()?, "--format")?,
                 "--random-move-count" => {
                     random_move_count = parse_field(&value()?, "--random-move-count")?;
-                },
+                }
                 "--random-move-minply" => {
                     random_move_minply = parse_field(&value()?, "--random-move-minply")?;
-                },
+                }
                 "--random-move-maxply" => {
                     random_move_maxply = parse_field(&value()?, "--random-move-maxply")?;
-                },
+                }
                 "--start-sfens" => start_sfens = Some(PathBuf::from(value()?)),
                 "--recover-from" => recover_from = Some(PathBuf::from(value()?)),
                 "--seed" => seed = parse_field(&value()?, "--seed")?,
@@ -266,14 +266,14 @@ usage: attic-gensfen --eval-dir DIR --out FILE
                 .and_then(|path| path.parent())
                 .map(|parent| parent.to_path_buf())
                 .unwrap_or_else(|| PathBuf::from("."));
-            if let (Ok(input), Ok(output)) = (dir.canonicalize(), out_dir.canonicalize()) {
-                if input == output {
-                    return Err(format!(
-                        "--recover-from and --out share the directory {}; the output is opened \
-                         for append and would grow the shards being read",
-                        input.display()
-                    ));
-                }
+            if let (Ok(input), Ok(output)) = (dir.canonicalize(), out_dir.canonicalize())
+                && input == output
+            {
+                return Err(format!(
+                    "--recover-from and --out share the directory {}; the output is opened \
+                     for append and would grow the shards being read",
+                    input.display()
+                ));
             }
         }
 
@@ -336,6 +336,36 @@ fn parse_entering_king(raw: &str) -> Result<attic_search::EnteringKingRule, Stri
 fn parse_field<T: std::str::FromStr>(raw: &str, flag: &str) -> Result<T, String> {
     raw.parse()
         .map_err(|_| format!("{flag}: cannot parse {raw:?}"))
+}
+
+/// Read a starting-position file: one sfen per line, blank lines skipped.
+///
+/// The published opening sets carry a `sfen ` prefix and CRLF line endings, so
+/// both are accepted and stripped here — the stored strings are sfen bodies,
+/// which is what `parse_sfen` wants. Every line is parsed now rather than at
+/// first use: a typo in a file of millions should stop the run before a
+/// hundred workers have been started, not one game into whichever shard drew it.
+fn load_start_sfens(path: &std::path::Path) -> Result<Vec<String>, String> {
+    let display = path.display();
+    let text = std::fs::read_to_string(path)
+        .map_err(|err| format!("--start-sfens: cannot read {display}: {err}"))?;
+
+    let mut out = Vec::new();
+    for (index, raw) in text.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let body = line.strip_prefix("sfen ").unwrap_or(line);
+        attic_state::parse_sfen(body)
+            .map_err(|err| format!("--start-sfens: {display} line {}: {err}", index + 1))?;
+        out.push(body.to_string());
+    }
+
+    if out.is_empty() {
+        return Err(format!("--start-sfens: no positions in {display}"));
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -468,34 +498,4 @@ mod start_sfen_tests {
             .expect("must not parse");
         assert!(err.contains("cannot read"), "unexpected error {err:?}");
     }
-}
-
-/// Read a starting-position file: one sfen per line, blank lines skipped.
-///
-/// The published opening sets carry a `sfen ` prefix and CRLF line endings, so
-/// both are accepted and stripped here — the stored strings are sfen bodies,
-/// which is what `parse_sfen` wants. Every line is parsed now rather than at
-/// first use: a typo in a file of millions should stop the run before a
-/// hundred workers have been started, not one game into whichever shard drew it.
-fn load_start_sfens(path: &std::path::Path) -> Result<Vec<String>, String> {
-    let display = path.display();
-    let text = std::fs::read_to_string(path)
-        .map_err(|err| format!("--start-sfens: cannot read {display}: {err}"))?;
-
-    let mut out = Vec::new();
-    for (index, raw) in text.lines().enumerate() {
-        let line = raw.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let body = line.strip_prefix("sfen ").unwrap_or(line);
-        attic_state::parse_sfen(body)
-            .map_err(|err| format!("--start-sfens: {display} line {}: {err}", index + 1))?;
-        out.push(body.to_string());
-    }
-
-    if out.is_empty() {
-        return Err(format!("--start-sfens: no positions in {display}"));
-    }
-    Ok(out)
 }

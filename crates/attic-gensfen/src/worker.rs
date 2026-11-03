@@ -189,7 +189,7 @@ fn next_resume(source: &Source, shard: &mut Option<Shard>, index: usize) -> Opti
                 Err(err) => {
                     eprintln!("worker {index}: {err}");
                     continue;
-                },
+                }
             }
         }
         let open = shard.as_mut().expect("a shard was just opened");
@@ -198,11 +198,11 @@ fn next_resume(source: &Source, shard: &mut Option<Shard>, index: usize) -> Opti
             Some(Err(err)) => {
                 eprintln!("worker {index}: {err}");
                 *shard = None;
-            },
+            }
             Some(Ok(records)) => match resume_from(&records, len) {
                 Some(Ok(resume)) => return Some(resume),
                 Some(Err(err)) => eprintln!("worker {index}: {err}"),
-                None => {},
+                None => {}
             },
         }
     }
