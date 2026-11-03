@@ -130,11 +130,12 @@ pub fn evaluate_with(net: &NnueNetwork, acc: &Accumulator, pos: &Position) -> i3
 /// Layer-stack forward pass over the transformed byte buffer, returning the raw
 /// network output before [`fv_scale`].
 ///
-/// A build with AVX-512 F + BW + VNNI runs the whole chain through the fused
-/// kernel; otherwise the per-layer flow below runs. The two are byte-for-byte
-/// equivalent.
+/// A 1536 build with AVX-512 F + BW + VNNI runs the whole chain through the
+/// fused kernel; otherwise the per-layer flow below runs. The two are
+/// byte-for-byte equivalent. The fused kernel exists for that shape alone: the
+/// 64-wide shapes end their chain in a packed tail it has no port of.
 #[cfg(all(
-    feature = "sfnn",
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
     target_arch = "x86_64",
     target_feature = "avx512f",
     target_feature = "avx512bw",
@@ -162,10 +163,11 @@ fn per_layer_flow(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> 
     }
 }
 
-/// Layer-stack forward pass, non-VNNI arm.
+/// Layer-stack forward pass, every other SFNN build.
 #[cfg(all(
     feature = "sfnn",
     not(all(
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
         target_arch = "x86_64",
         target_feature = "avx512f",
         target_feature = "avx512bw",

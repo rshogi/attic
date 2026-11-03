@@ -69,11 +69,16 @@ pub enum Backend {
 /// without VNNI, where the feature transformer is SIMD but the layer stack is
 /// not. The eval-parity test reads this to catch a build that silently compiled
 /// scalar on a VNNI-capable host.
+///
+/// Only the shape that has the AVX-512 kernels reports [`Backend::Avx512Vnni`]:
+/// every other shape, on the same target features, runs the AVX2 or scalar
+/// kernels and says so.
 #[cfg(all(
     target_arch = "x86_64",
     target_feature = "avx512f",
     target_feature = "avx512bw",
-    target_feature = "avx512vnni"
+    target_feature = "avx512vnni",
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3"
 ))]
 pub const fn active_backend() -> Backend {
     Backend::Avx512Vnni
@@ -84,17 +89,22 @@ pub const fn active_backend() -> Backend {
     target_arch = "x86_64",
     target_feature = "avx512f",
     target_feature = "avx512bw",
-    target_feature = "avx512vnni"
+    target_feature = "avx512vnni",
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3"
 )))]
 pub const fn active_backend() -> Backend {
     Backend::Scalar
 }
 
 /// Feature-transformer accumulate/update kernels, selected at compile time.
+///
+/// The AVX-512 arm is the one shape that has the module. A build for any other
+/// shape on an AVX-512 target falls to the AVX2 arm below, which every shape has.
 #[cfg(all(
     target_arch = "x86_64",
     target_feature = "avx512f",
-    target_feature = "avx512bw"
+    target_feature = "avx512bw",
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3"
 ))]
 pub mod transformer_kernel {
     use super::avx512;
@@ -165,7 +175,11 @@ pub mod transformer_kernel {
 #[cfg(all(
     target_arch = "x86_64",
     target_feature = "avx2",
-    not(all(target_feature = "avx512f", target_feature = "avx512bw"))
+    not(all(
+        target_feature = "avx512f",
+        target_feature = "avx512bw",
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3"
+    ))
 ))]
 pub mod transformer_kernel {
     use super::avx2;
@@ -247,7 +261,8 @@ pub mod transformer_kernel {
 #[cfg(all(
     target_arch = "x86_64",
     target_feature = "avx512f",
-    target_feature = "avx512bw"
+    target_feature = "avx512bw",
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3"
 ))]
 pub mod post_ft_kernel {
     use super::{avx512_post_ft, scalar_post_ft};
@@ -340,7 +355,11 @@ pub mod post_ft_kernel {
 #[cfg(all(
     target_arch = "x86_64",
     target_feature = "avx2",
-    not(all(target_feature = "avx512f", target_feature = "avx512bw"))
+    not(all(
+        target_feature = "avx512f",
+        target_feature = "avx512bw",
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3"
+    ))
 ))]
 pub mod post_ft_kernel {
     // Used by the SFNN chains only.
