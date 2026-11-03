@@ -23,26 +23,18 @@ use crate::types::{NetDims, NetHeader, NnueError, NnueNetwork, NnueNetworkBuilde
 // and never the shape — which is why the hashes below have to.
 const NNUE_VERSION: u32 = 0x7AF3_2F16;
 
-#[cfg(any(
-    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-))]
+#[cfg(feature = "sfnn")]
 const NNUE_HASH_VALUE: u32 = 0x3C20_3B32;
-#[cfg(any(
-    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-))]
+#[cfg(feature = "sfnn")]
 const FT_HASH: u32 = 0x5F13_4AB8;
-#[cfg(any(
-    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-))]
+#[cfg(feature = "sfnn")]
 const NET_HASH: u32 = 0x6333_718A;
-#[cfg(any(
-    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-))]
+#[cfg(feature = "sfnn")]
 const ARCH_STRING: &str = "ModelType=SFNNWithoutPsqt;Features=HalfKA_hm(Friend)[73305->1536x2],Network=AffineTransform[1<-32](ClippedReLU[32](AffineTransform[32<-15](ClippedReLU[15](AffineTransform[15<-3072](InputSlice[3072(0:3072)]))))){LayerStack=9}";
+// The four SFNN constants above are the 1536 network's, and every SFNN shape
+// shares them: the 1024 file carries these same hashes, which is why a clean
+// load of it has no warning to report. Only the architecture string differs
+// between the files, and it is read and never compared.
 
 // The standard shapes' hashes were read out of files YaneuraOu itself wrote —
 // `external/kp256.zip` and `assets/eval/halfkp256/hao/nn.bin` — rather than
@@ -117,7 +109,8 @@ pub fn load_network_with_warnings(path: &Path) -> Result<(NnueNetwork, Vec<Strin
 ///
 /// The serialization is the same for every SFNN shape — header, feature
 /// transformer, then one block per layer stack — so only the read sizes change.
-/// [`NetDims::HALFKA2304`] loads the network NAGISA V4 ships.
+/// [`NetDims::HALFKA2304`] loads the network NAGISA V4 ships, and
+/// [`NetDims::HALFKA1024`] the one NAGISA V3 does.
 pub fn load_network_with_dims(
     path: &Path,
     dims: &NetDims,
@@ -253,10 +246,7 @@ fn read_leb128_i16_into(reader: &mut ByteReader, out: &mut [i16]) -> Result<(), 
 }
 
 /// No-op for the shapes whose `ReadParameters` takes the plain `#else` arm.
-#[cfg(not(any(
-    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-)))]
+#[cfg(not(feature = "sfnn"))]
 fn scale_ft_i16_x2_in_place(_values: &mut [i16]) -> Result<(), NnueError> {
     Ok(())
 }
@@ -278,10 +268,7 @@ fn scale_ft_i16_x2_in_place(_values: &mut [i16]) -> Result<(), NnueError> {
 /// position at 90 where YaneuraOu says 125, and each of the four bench
 /// positions off by more — every accumulator lane exactly twice the reference
 /// value, which is the shape of the bug rather than a rounding difference.
-#[cfg(any(
-    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-))]
+#[cfg(feature = "sfnn")]
 fn scale_ft_i16_x2_in_place(values: &mut [i16]) -> Result<(), NnueError> {
     for slot in values.iter_mut() {
         let scaled = (*slot as i32) * 2;
@@ -636,10 +623,7 @@ mod tests {
 
     // The four helpers below only feed the FT-scale tests, and the standard
     // shapes scale nothing (`ft_scale_is_a_no_op_for_the_standard_shapes`).
-    #[cfg(any(
-        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-    ))]
+    #[cfg(feature = "sfnn")]
     fn append_signed_leb128_block(out: &mut Vec<u8>, values: &[i16]) {
         out.extend_from_slice(LEB128_MAGIC);
         let len_pos = out.len();
@@ -652,10 +636,7 @@ mod tests {
         out[len_pos..len_pos + 4].copy_from_slice(&bytes_left.to_le_bytes());
     }
 
-    #[cfg(any(
-        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-    ))]
+    #[cfg(feature = "sfnn")]
     fn encode_signed_leb128(out: &mut Vec<u8>, mut value: i64) {
         loop {
             let byte = (value as u8) & 0x7F;
@@ -671,10 +652,7 @@ mod tests {
         }
     }
 
-    #[cfg(any(
-        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-    ))]
+    #[cfg(feature = "sfnn")]
     fn build_bytes_with_ft(dims: &NetDims, arch: &str, biases: &[i16], weights: &[i16]) -> Vec<u8> {
         assert_eq!(biases.len(), dims.hidden_size);
         assert_eq!(weights.len(), dims.hidden_size * dims.num_features);
@@ -698,10 +676,7 @@ mod tests {
         out
     }
 
-    #[cfg(any(
-        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-    ))]
+    #[cfg(feature = "sfnn")]
     const SCALE_DIMS: NetDims = NetDims {
         hidden_size: 5,
         num_features: 2,
@@ -877,10 +852,7 @@ mod tests {
         assert_eq!(net.stacks.len(), TEST_DIMS.layer_stacks);
     }
 
-    #[cfg(any(
-        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-    ))]
+    #[cfg(feature = "sfnn")]
     #[test]
     fn corrupted_leb128_magic_is_rejected() {
         let mut bytes = build_valid_bytes(&TEST_DIMS, ARCH_STRING);
@@ -894,10 +866,7 @@ mod tests {
         );
     }
 
-    #[cfg(any(
-        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-    ))]
+    #[cfg(feature = "sfnn")]
     #[test]
     fn ft_scale_doubles_biases_and_weights() {
         let biases: [i16; 5] = [0, 1, -1, 16_383, -16_384];
@@ -919,10 +888,7 @@ mod tests {
         }
     }
 
-    #[cfg(any(
-        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-    ))]
+    #[cfg(feature = "sfnn")]
     #[test]
     fn ft_scale_rejects_overflow_bias() {
         let biases: [i16; 5] = [16_384, 0, 0, 0, 0];
@@ -958,10 +924,7 @@ mod tests {
     /// doubled every shape, so a KP256 accumulator saturated where the
     /// reference's did not and the start position evaluated to 90 where
     /// YaneuraOu says 125.
-    #[cfg(not(any(
-        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-    )))]
+    #[cfg(not(feature = "sfnn"))]
     #[test]
     fn ft_scale_is_a_no_op_for_the_standard_shapes() {
         let mut values: [i16; 5] = [0, 1, -1, 16_383, -16_384];
@@ -1036,5 +999,32 @@ mod tests {
         );
         // Hash mismatch is expected: NNUE_HASH_VALUE is the 1536 constant.
         eprintln!("warnings={warnings:?} arch={}", net.header.arch_id);
+    }
+
+    /// The NAGISA V3 counterpart: reads a real 1024 `nn.bin` end to end.
+    ///
+    /// Skipped unless `ATTIC_HALFKA1024_NN` names a file (78,442,142 bytes in
+    /// the copy this was written against). `load_network_with_dims` ends in an
+    /// end-of-file check, so a layout that is off by a byte anywhere fails here
+    /// rather than loading short.
+    #[cfg(feature = "sfnn")]
+    #[test]
+    fn loads_sfnn_halfkahm2_1024_15_64_progress8kpabs_network() {
+        let Ok(path) = std::env::var("ATTIC_HALFKA1024_NN") else {
+            return;
+        };
+        let (net, warnings) =
+            super::load_network_with_dims(std::path::Path::new(&path), &NetDims::HALFKA1024)
+                .expect("HALFKA1024 network should parse");
+        assert_eq!(net.header.version, 0x7AF3_2F16);
+        // The arch string is the one place the file names its own shape. Fail
+        // loudly if we were handed a 1536 or a 2304.
+        assert!(
+            net.header.arch_id.contains("1024x2"),
+            "arch_id={}",
+            net.header.arch_id
+        );
+        assert_eq!(net.stacks.len(), 9);
+        assert!(warnings.is_empty(), "hash mismatches: {warnings:?}");
     }
 }
