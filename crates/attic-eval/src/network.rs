@@ -181,7 +181,73 @@ fn per_layer_flow(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> 
     ))
 ))]
 fn per_layer_flow(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> i32 {
-    per_layer_flow_unfused(transformed, stack)
+    per_layer_flow_u7(transformed, stack)
+}
+
+/// The SFNN layer-stack forward pass on the 7-bit kernels.
+///
+/// Every byte this chain feeds a layer is at most 127: fc_0 reads the
+/// element-wise multiply, whose lane product `254 * 254 >> 9` tops out at 126,
+/// and fc_1 and fc_2 read a clipped or squared-clipped ReLU, both clamped to
+/// `[0, 127]`. That is the bound `affine_u7` needs (`maddubs` saturates above
+/// it), so the chain can use the AVX2 and AVX-VNNI kernels instead of the
+/// general scalar `affine` it was written against. The result is bit for bit
+/// that of [`per_layer_flow_unfused`], which stays as the reference.
+///
+/// fc_1 is handed the padded width, as the standard shapes' flow does: the two
+/// bytes between `FC_1_INPUT_DIMS` and the padded width are zero, so they add
+/// nothing whatever the file holds in the padding columns of the weights, and
+/// the kernel, which takes whole 32-byte chunks, still applies.
+#[cfg(any(
+    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+))]
+#[allow(dead_code)]
+fn per_layer_flow_u7(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> i32 {
+    let mut fc_0_out = [0i32; FC_0_OUTPUT_DIMS];
+    post_ft_kernel::affine_u7(
+        &mut fc_0_out,
+        &stack.fc_0_biases,
+        &stack.fc_0_weights,
+        transformed,
+        FC_0_INPUT_DIMS,
+        FC_0_PADDED_INPUT_DIMS,
+    );
+
+    // The first HIDDEN1_DIMS outputs feed both activations; the next is reserved
+    // for the post-fc_2 shortcut.
+    let mut fc_1_in = [0u8; FC_1_PADDED_INPUT_DIMS];
+    post_ft_kernel::sqr_clipped_relu(&fc_0_out[..HIDDEN1_DIMS], &mut fc_1_in[..HIDDEN1_DIMS]);
+    post_ft_kernel::clipped_relu(
+        &fc_0_out[..HIDDEN1_DIMS],
+        &mut fc_1_in[HIDDEN1_DIMS..2 * HIDDEN1_DIMS],
+    );
+
+    let mut fc_1_out = [0i32; FC_1_OUTPUT_DIMS];
+    post_ft_kernel::affine_u7(
+        &mut fc_1_out,
+        &stack.fc_1_biases,
+        &stack.fc_1_weights,
+        &fc_1_in,
+        FC_1_PADDED_INPUT_DIMS,
+        FC_1_PADDED_INPUT_DIMS,
+    );
+
+    let mut ac_1 = [0u8; FC_1_OUTPUT_DIMS];
+    post_ft_kernel::clipped_relu(&fc_1_out, &mut ac_1);
+
+    let mut fc_2_out = [0i32; FC_2_OUTPUT_DIMS];
+    post_ft_kernel::affine_u7(
+        &mut fc_2_out,
+        &stack.fc_2_biases,
+        &stack.fc_2_weights,
+        &ac_1,
+        FC_2_INPUT_DIMS,
+        FC_2_PADDED_INPUT_DIMS,
+    );
+
+    // The shortcut output is raw, pre-ReLU, and can be negative.
+    fc_2_out[0].wrapping_add(fc_0_out[HIDDEN1_DIMS])
 }
 
 /// The unfused layer-stack forward pass. Compiled unconditionally so that the
@@ -440,14 +506,92 @@ mod tests {
         let stack = &net.stacks[0];
 
         for seed in [0u32, 1, 97] {
+            // 0..=126 is what the output transform can produce: its lane
+            // product `254 * 254 >> 9` is 126 at most. The selected path may
+            // rely on that bound, so a byte above it is not a case it owes an
+            // answer for.
             let mut transformed = [0u8; FC_0_INPUT_DIMS];
             for (i, slot) in transformed.iter_mut().enumerate() {
-                *slot = ((i as u32).wrapping_mul(11).wrapping_add(seed) % 256) as u8;
+                *slot = ((i as u32).wrapping_mul(11).wrapping_add(seed) % 127) as u8;
             }
             assert_eq!(
                 per_layer_flow(&transformed, stack),
                 per_layer_flow_unfused(&transformed, stack),
                 "selected path disagrees with the unfused reference (seed {seed})",
+            );
+        }
+    }
+
+    /// The 7-bit flow against the general one over the whole `i8` weight range
+    /// and the whole input range the output transform can reach, at the edges
+    /// where `maddubs` is closest to saturating: weights of `-128` and `127`
+    /// under inputs of `126`.
+    #[cfg(any(
+        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
+    ))]
+    #[test]
+    fn the_7_bit_flow_matches_the_unfused_one_over_the_whole_weight_range() {
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+
+        for round in 0..24 {
+            let mut b = builder_1stack_std();
+            for w in b.fc_0_weights_mut(0).iter_mut() {
+                *w = match round % 4 {
+                    0 => next() as i8,
+                    1 => i8::MIN,
+                    2 => i8::MAX,
+                    _ => {
+                        if next() & 1 == 0 {
+                            i8::MIN
+                        } else {
+                            i8::MAX
+                        }
+                    }
+                };
+            }
+            for bias in b.fc_0_biases_mut(0).iter_mut() {
+                *bias = (next() % 200_001) as i32 - 100_000;
+            }
+            for w in b.fc_1_weights_mut(0).iter_mut() {
+                *w = next() as i8;
+            }
+            for bias in b.fc_1_biases_mut(0).iter_mut() {
+                *bias = (next() % 20_001) as i32 - 10_000;
+            }
+            for w in b.fc_2_weights_mut(0).iter_mut() {
+                *w = next() as i8;
+            }
+            for bias in b.fc_2_biases_mut(0).iter_mut() {
+                *bias = (next() % 20_001) as i32 - 10_000;
+            }
+            let net = b.build();
+            let stack = &net.stacks[0];
+
+            let mut transformed = [0u8; FC_0_INPUT_DIMS];
+            for slot in transformed.iter_mut() {
+                *slot = match round % 3 {
+                    0 => (next() % 127) as u8,
+                    1 => 126,
+                    _ => {
+                        if next() & 1 == 0 {
+                            0
+                        } else {
+                            126
+                        }
+                    }
+                };
+            }
+            assert_eq!(
+                per_layer_flow_u7(&transformed, stack),
+                per_layer_flow_unfused(&transformed, stack),
+                "the 7-bit flow disagrees with the unfused reference (round {round})",
             );
         }
     }
