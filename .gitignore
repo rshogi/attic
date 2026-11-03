@@ -27,3 +27,6 @@ target
 # Evaluation network files placed at the repository root. `nn.bin` is obtained
 # out-of-band and must never be committed.
 /eval/
+
+# Local notes: verification results and the changelog. Not committed.
+/NOTE.md
