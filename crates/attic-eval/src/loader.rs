@@ -69,6 +69,32 @@ const FT_HASH: u32 = 0x5D69_D7B8;
 const NET_HASH: u32 = 0x6333_7156;
 #[cfg(feature = "nnue_halfkp_256x2_32_32")]
 const ARCH_STRING: &str = "Features=HalfKP(Friend)[125388->256x2],Network=AffineTransform[1<-32](ClippedReLU[32](AffineTransform[32<-32](ClippedReLU[32](AffineTransform[32<-512](InputSlice[512(0:512)])))))";
+
+// The two files below were checked against the reference's own formulas: the
+// feature-transformer hash is `0x5D69D5B8 ^ (2 * width)`, the network hash folds
+// the layer widths into a chain, and the header hash is their xor. The hashes in
+// `halfkp128/kiouai/nn.bin` and `halfkp768/aoba/nn.bin` come out as written here.
+#[cfg(feature = "nnue_halfkp_128x2_32_32")]
+const NNUE_HASH_VALUE: u32 = 0x3E5A_A58E;
+#[cfg(feature = "nnue_halfkp_128x2_32_32")]
+const FT_HASH: u32 = 0x5D69_D4B8;
+#[cfg(feature = "nnue_halfkp_128x2_32_32")]
+const NET_HASH: u32 = 0x6333_7136;
+#[cfg(feature = "nnue_halfkp_128x2_32_32")]
+const ARCH_STRING: &str = "Features=HalfKP(Friend)[125388->128x2],Network=AffineTransform[1<-32](ClippedReLU[32](AffineTransform[32<-32](ClippedReLU[32](AffineTransform[32<-256](InputSlice[256(0:256)])))))";
+
+// The architecture string in AobaNNUE's file still says `256x2` and 256-wide
+// layers, a leftover of the network it was trained from. It is read and never
+// compared, so nothing here depends on it; the hashes and the size are what say
+// 768x2-16-64.
+#[cfg(feature = "nnue_halfkp_768x2_16_64")]
+const NNUE_HASH_VALUE: u32 = 0x3E5A_A222;
+#[cfg(feature = "nnue_halfkp_768x2_16_64")]
+const FT_HASH: u32 = 0x5D69_D3B8;
+#[cfg(feature = "nnue_halfkp_768x2_16_64")]
+const NET_HASH: u32 = 0x6333_719A;
+#[cfg(feature = "nnue_halfkp_768x2_16_64")]
+const ARCH_STRING: &str = "Features=HalfKP(Friend)[125388->768x2],Network=AffineTransform[1<-64](ClippedReLU[64](AffineTransform[64<-16](ClippedReLU[16](AffineTransform[16<-1536](InputSlice[1536(0:1536)])))))";
 const LEB128_MAGIC: &[u8; 17] = b"COMPRESSED_LEB128";
 
 /// Warning body for a feature-transformer or layer-stack hash mismatch,

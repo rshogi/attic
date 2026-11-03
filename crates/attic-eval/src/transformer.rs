@@ -245,7 +245,7 @@ impl Accumulator {
     /// clamps to `[0, 127]` with no shift, and fc_0 reads both halves, which is
     /// why [`FT_OUTPUT_DIMS`] is twice [`HIDDEN_SIZE`] here and equal to it for
     /// the SFNN shapes above.
-    #[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
+    #[cfg(feature = "nnue_standard")]
     pub fn output_transform(&self, stm: Color, out: &mut [u8; FT_OUTPUT_DIMS]) {
         let halves = [
             &self.perspectives[stm.index()],

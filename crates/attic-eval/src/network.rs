@@ -26,7 +26,7 @@ use crate::features::king_square;
 use crate::scale::fv_scale;
 use crate::simd::post_ft_kernel;
 use crate::transformer::{Accumulator, FT_OUTPUT_DIMS};
-#[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
+#[cfg(feature = "nnue_standard")]
 use crate::types::FcKernels;
 #[cfg(any(
     feature = "sfnn_halfkahm2_1536_15_32_k3k3",
@@ -69,7 +69,7 @@ pub fn layer_stack_index(pos: &Position) -> usize {
 /// file has a single set of dense weights and there is no bucket to pick. The
 /// position is still taken, so that callers need not know which shape they
 /// were built for.
-#[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
+#[cfg(feature = "nnue_standard")]
 pub fn layer_stack_index(_pos: &Position) -> usize {
     0
 }
@@ -187,7 +187,7 @@ fn per_layer_flow(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> 
 /// The unfused layer-stack forward pass. Compiled unconditionally so that the
 /// equivalence tests can hold it against the fused chain, which leaves it
 /// caller-less outside `cfg(test)` on a VNNI build.
-#[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
+#[cfg(feature = "nnue_standard")]
 fn per_layer_flow(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> i32 {
     let mut fc_0_out = [0i32; FC_0_OUTPUT_DIMS];
     // The kernels below load by pointer and trust the layer sizes, which
@@ -215,15 +215,21 @@ fn per_layer_flow(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> 
             panic!("the network's dense layers are not the sizes this build's shape needs")
         }
     }
-    let mut act_0 = [0u8; FC_1_INPUT_DIMS];
-    post_ft_kernel::clipped_relu(&fc_0_out, &mut act_0);
+    // fc_1 is handed the padded width, not the live one. The bytes between the
+    // two stay zero, so they add nothing whatever the file holds in the padding
+    // columns of the weights, and the AVX2 kernel, which only takes inputs that
+    // are whole 32-byte chunks, still applies when fc_0 is narrower than that.
+    // The two are the same number for every shape but the 768, whose fc_0 has
+    // sixteen outputs.
+    let mut act_0 = [0u8; FC_1_PADDED_INPUT_DIMS];
+    post_ft_kernel::clipped_relu(&fc_0_out, &mut act_0[..FC_1_INPUT_DIMS]);
     let mut fc_1_out = [0i32; FC_1_OUTPUT_DIMS];
     post_ft_kernel::affine_u7(
         &mut fc_1_out,
         &stack.fc_1_biases,
         &stack.fc_1_weights,
         &act_0,
-        FC_1_INPUT_DIMS,
+        FC_1_PADDED_INPUT_DIMS,
         FC_1_PADDED_INPUT_DIMS,
     );
     let mut act_1 = [0u8; FC_2_INPUT_DIMS];
@@ -448,7 +454,7 @@ mod tests {
 
     /// The layer chain written out with the always-scalar kernels, as a
     /// reference for whichever kernels `per_layer_flow` selects.
-    #[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
+    #[cfg(feature = "nnue_standard")]
     fn scalar_reference_flow(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> i32 {
         use crate::simd::scalar_post_ft as sc;
         let mut fc_0_out = [0i32; FC_0_OUTPUT_DIMS];
@@ -488,7 +494,7 @@ mod tests {
     /// Both fc_0 paths -- the `i16`-accumulating one that small weights qualify
     /// for and the plain one that large weights fall back to -- agree with the
     /// scalar chain, on random inputs and on the extreme all-127 / all-0 ones.
-    #[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
+    #[cfg(feature = "nnue_standard")]
     #[test]
     fn standard_flow_matches_the_scalar_chain_on_both_fc_0_paths() {
         let mut state = 0x2545_F491_4F6C_DD1Du64;
@@ -556,7 +562,7 @@ mod tests {
     /// A network whose dense layers are not the build's sizes (the loader tests
     /// build such networks, which is legitimate) must refuse to evaluate: the
     /// AVX2 kernels load by pointer and trust the sizes `NetworkStack` proved.
-    #[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
+    #[cfg(feature = "nnue_standard")]
     #[test]
     #[should_panic(expected = "not the sizes")]
     fn a_network_with_other_dense_sizes_refuses_to_evaluate() {

@@ -20,10 +20,19 @@ quick-draw = ["attic-state/quick-draw"]
 # use the dimensions as array lengths, so the choice is a build-time one.
 sfnn_halfkahm2_1536_15_32_k3k3 = []
 sfnn_halfkahm2_2304_15_64_progress8ek = []
-# YaneuraOu's two standard shapes. One dense stack, no bucketing, and the
-# perspectives concatenated rather than multiplied — see `NetDims::KP256`.
-nnue_kp_256x2_32_32 = []
-nnue_halfkp_256x2_32_32 = []
+# YaneuraOu's standard shapes. One dense stack, no bucketing, and the
+# perspectives concatenated rather than multiplied — see `NetDims::KP256`. The
+# name spells the architecture the way YaneuraOu does: feature set, transformer
+# width by two perspectives, then the two hidden widths.
+nnue_kp_256x2_32_32 = ["nnue_standard"]
+nnue_halfkp_256x2_32_32 = ["nnue_standard", "nnue_halfkp"]
+nnue_halfkp_128x2_32_32 = ["nnue_standard", "nnue_halfkp"]
+nnue_halfkp_768x2_16_64 = ["nnue_standard", "nnue_halfkp"]
+# Internal. Each standard shape turns these on so that the code they share can be
+# gated once instead of listing every shape. Neither selects a network by itself:
+# the guard in `types.rs` only counts the shapes above.
+nnue_standard = []
+nnue_halfkp = []
 # Manaka's own shapes, spelled the way YaneuraOu spells its architectures:
 # feature space, transformer width by two perspectives, then the dense width.
 # `SYM` is the prefix Manaka's `network_type` already uses. Both are order

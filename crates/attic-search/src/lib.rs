@@ -114,13 +114,15 @@ impl Search {
     /// [`Search::from_network_file`] returning the loader's non-fatal warning
     /// bodies too; an empty vector means a clean load.
     pub fn from_network_file_with_warnings(path: &Path) -> Result<(Self, Vec<String>), NnueError> {
-        // One call for every shape whose file is self-contained: the four
+        // One call for every shape whose file is self-contained: the ones
         // below keep their whole network in `nn.bin`, and the loader picks the
         // dimensions from the feature the crate was built with.
         #[cfg(any(
             feature = "sfnn_halfkahm2_1536_15_32_k3k3",
             feature = "nnue_kp_256x2_32_32",
             feature = "nnue_halfkp_256x2_32_32",
+            feature = "nnue_halfkp_128x2_32_32",
+            feature = "nnue_halfkp_768x2_16_64",
             feature = "sym_kp_128x2_512",
             feature = "sym_halfkp_128x2_512"
         ))]
