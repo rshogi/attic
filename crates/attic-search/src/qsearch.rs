@@ -1107,7 +1107,11 @@ impl<'a> QSearch<'a> {
     /// even on a move that continues a perpetual check.
     #[cfg(all(
         test,
-        not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512"))
+        not(any(
+            feature = "sym_kp_128x2_512",
+            feature = "sym_halfkp_128x2_512",
+            feature = "hce"
+        ))
     ))]
     fn widen_tt_move(pos: &Position, move16: u16) -> Option<Move> {
         if move16 == 0 {
@@ -1124,7 +1128,11 @@ impl<'a> QSearch<'a> {
     /// torn-entry test can drive all 65536 fragments against one generated list.
     #[cfg(all(
         test,
-        not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512"))
+        not(any(
+            feature = "sym_kp_128x2_512",
+            feature = "sym_halfkp_128x2_512",
+            feature = "hce"
+        ))
     ))]
     fn select_tt_move(legal: &[Move], move16: u16) -> Option<Move> {
         legal.iter().copied().find(|&m| move16_of(m) == move16)
@@ -3451,9 +3459,15 @@ impl QSearch<'_> {
 
 // Manaka's shapes have no synthetic-network builder: their networks exist only
 // as trained `MNW1` files, so there is nothing for these tests to evaluate with.
+// The hand-crafted shapes have no network to build at all, and the evaluation
+// they would give these tests is not zero.
 #[cfg(all(
     test,
-    not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512"))
+    not(any(
+        feature = "sym_kp_128x2_512",
+        feature = "sym_halfkp_128x2_512",
+        feature = "hce"
+    ))
 ))]
 mod tests {
     use super::*;

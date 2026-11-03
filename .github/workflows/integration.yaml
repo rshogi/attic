@@ -38,16 +38,20 @@ env:
 # The network shape is a build-time feature and exactly one must be selected
 # (`attic-eval` refuses to compile with none or two), so `--all-features` can
 # neither build nor test anything. Each job below runs once per shape instead.
-# `args` is what follows `cargo <verb>` to pick it; the tenth entry is the
+# `args` is what follows `cargo <verb>` to pick it; the twelfth entry is the
 # build that must match YaneuraOu node for node (`ref_check_time` moves the
 # time checks to where the reference's are), which turns off the defaults.
-# The list is written out in each job on purpose: it is the same ten entries
+# The list is written out in each job on purpose: it is the same twelve entries
 # three times, and kept that way rather than behind a YAML anchor so that no
 # workflow parser has to support one for CI to start at all.
 #
 # Nothing here has a network file: the tests that read one skip with a notice
 # when it is absent, so a green run says the code builds and its self-contained
-# tests pass, not that the shape evaluates correctly.
+# tests pass, not that the shape evaluates correctly. The two hce shapes are the
+# exception, because they read no file at all: `hce_golden` runs in full and
+# holds their feature vectors to the reference engine's own. Their fit variant
+# (`hce_fit_qsearched`) changes only the coefficients, which that test does not
+# read, so it is not a row of its own.
 jobs:
   fmt:
     runs-on: ubuntu-latest
@@ -81,6 +85,10 @@ jobs:
             args: --features sym_kp_128x2_512
           - name: sym-halfkp
             args: --features sym_halfkp_128x2_512
+          - name: hce-material
+            args: --features hce_material_17
+          - name: hce-mobility
+            args: --features hce_mobility_107_57
           - name: yaneuraou-parity
             args: --no-default-features --features nnue_kp_256x2_32_32,ref_check_time
     steps:
@@ -116,6 +124,10 @@ jobs:
             args: --features sym_kp_128x2_512
           - name: sym-halfkp
             args: --features sym_halfkp_128x2_512
+          - name: hce-material
+            args: --features hce_material_17
+          - name: hce-mobility
+            args: --features hce_mobility_107_57
           - name: yaneuraou-parity
             args: --no-default-features --features nnue_kp_256x2_32_32,ref_check_time
     steps:
@@ -152,6 +164,10 @@ jobs:
             args: --features sym_kp_128x2_512
           - name: sym-halfkp
             args: --features sym_halfkp_128x2_512
+          - name: hce-material
+            args: --features hce_material_17
+          - name: hce-mobility
+            args: --features hce_mobility_107_57
           - name: yaneuraou-parity
             args: --no-default-features --features nnue_kp_256x2_32_32,ref_check_time
     steps:

@@ -2745,6 +2745,9 @@ mod tests {
         assert_eq!(run_with(""), "");
     }
 
+    // A hand-crafted shape reads no file, so there is nothing for this to fail
+    // on; `isready_needs_no_network_file` is its counterpart.
+    #[cfg(not(feature = "hce"))]
     #[test]
     #[cfg_attr(miri, ignore)]
     fn isready_without_network_reports_load_failure() {
@@ -2759,6 +2762,28 @@ mod tests {
             "readyok must not appear on a failed load: {out:?}"
         );
         // At the default cadence the first keep-alive tick never elapses.
+        assert_eq!(
+            bare_newline_count(&out),
+            0,
+            "a fast isready must emit no keep-alive newline: {out:?}"
+        );
+    }
+
+    // The coefficients are compiled in, so the same missing `EvalDir` is no
+    // obstacle and `isready` answers.
+    #[cfg(feature = "hce")]
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn isready_needs_no_network_file() {
+        let out = run_with("isready\nquit\n");
+        assert!(
+            out.contains("readyok\n"),
+            "expected readyok with no file to load, got: {out:?}"
+        );
+        assert!(
+            !out.contains("eval load failed"),
+            "a shape with no file cannot fail to load one: {out:?}"
+        );
         assert_eq!(
             bare_newline_count(&out),
             0,
