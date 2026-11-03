@@ -66,13 +66,14 @@ YaneuraOu を 1 とした比です。YaneuraOu 側も同じ評価関数で動か
 
 ## 対応している評価関数
 
-| type | feature                            |
-| ---- | ---------------------------------- |
-| SFNN | `halfkahm2_1536_15_32_k3k3`        |
-| SFNN | `halfkahm2_2304_15_64_progress8ek` |
-| NNUE | `kp_256x2_32_32`                   |
-| NNUE | `halfkp_256x2_32_32`               |
-| NNUE | `halfkp_128x2_32_32`               |
-| NNUE | `halfkp_768x2_16_64`               |
-| SYM  | `kp_128x2_512`                     |
-| SYM  | `halfkp_128x2_512`                 |
+| type | feature                               |
+| ---- | ------------------------------------- |
+| SFNN | `halfkahm2_1536_15_32_k3k3`           |
+| SFNN | `halfkahm2_1024_15_64_progress8kpabs` |
+| SFNN | `halfkahm2_2304_15_64_progress8ek`    |
+| NNUE | `kp_256x2_32_32`                      |
+| NNUE | `halfkp_256x2_32_32`                  |
+| NNUE | `halfkp_128x2_32_32`                  |
+| NNUE | `halfkp_768x2_16_64`                  |
+| SYM  | `kp_128x2_512`                        |
+| SYM  | `halfkp_128x2_512`                    |

@@ -39,13 +39,14 @@ pub mod avx2;
 #[cfg(target_arch = "x86_64")]
 pub mod avx2_post_ft;
 
-// Excluded under `sfnn_halfkahm2_2304_15_64_progress8ek`: the post-FT chain there ends in `affine_padded32`
-// helpers that take a fixed `[u8; 32]`, and fc_1's output is 64 in that shape.
-// Upstream C++ takes a separate `kUsePackedTail` path for exactly this case
-// (`AVX512 && kHidden2Dims == 64`), which has no port here yet. The target for
-// the 2304 shape is Zen2, which has no AVX-512 at all, so nothing is lost by
-// not compiling it — write the packed-tail kernels before running 2304 on an
-// AVX-512 host.
+// Excluded under `sfnn_halfkahm2_2304_15_64_progress8ek` and
+// `sfnn_halfkahm2_1024_15_64_progress8kpabs`: the post-FT chain there ends in
+// `affine_padded32` helpers that take a fixed `[u8; 32]`, and fc_1's output is 64
+// in those shapes. Upstream C++ takes a separate `kUsePackedTail` path for
+// exactly this case (`AVX512 && kHidden2Dims == 64`), which has no port here yet.
+// The target for the 2304 shape is Zen2, which has no AVX-512 at all, so nothing
+// is lost by not compiling it — write the packed-tail kernels before running
+// either 64-wide shape on an AVX-512 host.
 #[allow(dead_code)]
 #[cfg(all(target_arch = "x86_64", feature = "sfnn_halfkahm2_1536_15_32_k3k3"))]
 pub mod avx512;

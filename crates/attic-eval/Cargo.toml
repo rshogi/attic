@@ -18,8 +18,16 @@ default = ["quick-draw"]
 quick-draw = ["attic-state/quick-draw"]
 # Exactly one network shape must be selected; there is no default. The kernels
 # use the dimensions as array lengths, so the choice is a build-time one.
-sfnn_halfkahm2_1536_15_32_k3k3 = []
-sfnn_halfkahm2_2304_15_64_progress8ek = []
+#
+# SFNN shapes: HalfKA_hm2, the two perspectives multiplied element-wise, nine
+# layer stacks in the file. The name ends with the rule that picks a stack for a
+# position. `k3k3` is the two kings' ranks. `progress8ek` and `progress8kpabs`
+# are game progress cut into eight buckets (the coefficients are in a
+# `progress.bin` beside `nn.bin`), and they differ in one thing: `ek` sends
+# mutual entering kings to the ninth stack, `kpabs` has no such case.
+sfnn_halfkahm2_1536_15_32_k3k3 = ["sfnn"]
+sfnn_halfkahm2_1024_15_64_progress8kpabs = ["sfnn_progress"]
+sfnn_halfkahm2_2304_15_64_progress8ek = ["sfnn_progress_ek"]
 # YaneuraOu's standard shapes. One dense stack, no bucketing, and the
 # perspectives concatenated rather than multiplied — see `NetDims::KP256`. The
 # name spells the architecture the way YaneuraOu does: feature set, transformer
@@ -28,9 +36,19 @@ nnue_kp_256x2_32_32 = ["nnue_standard"]
 nnue_halfkp_256x2_32_32 = ["nnue_standard", "nnue_halfkp"]
 nnue_halfkp_128x2_32_32 = ["nnue_standard", "nnue_halfkp"]
 nnue_halfkp_768x2_16_64 = ["nnue_standard", "nnue_halfkp"]
-# Internal. Each standard shape turns these on so that the code they share can be
-# gated once instead of listing every shape. Neither selects a network by itself:
-# the guard in `types.rs` only counts the shapes above.
+# Internal. Each shape turns on the ones that describe it so that the code they
+# share can be gated once instead of listing every shape. None selects a network
+# by itself: the guard in `types.rs` only counts the shapes above.
+#   sfnn                 every SFNN shape
+#   sfnn_progress        ... whose stack is picked by game progress
+#   sfnn_progress_ek     ... and which also sends mutual entering kings to the ninth
+#                        stack (NAGISA V4). Without it the ninth is read and
+#                        never used, because V3 was trained with eight buckets.
+#   nnue_standard        every YaneuraOu standard shape
+#   nnue_halfkp          ... whose features are `HalfKP` (the other is K+P)
+sfnn = []
+sfnn_progress = ["sfnn"]
+sfnn_progress_ek = ["sfnn_progress"]
 nnue_standard = []
 nnue_halfkp = []
 # Manaka's own shapes, spelled the way YaneuraOu spells its architectures:

@@ -46,10 +46,7 @@ pub use types::{NUM_FEATURES, NnueError};
 
 // `FEATURE_DIMENSION` is HalfKA_hm2's own product and means nothing to the
 // shapes that do not cross a piece on a mirrored king.
-#[cfg(any(
-    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-))]
+#[cfg(feature = "sfnn")]
 pub use features::FEATURE_DIMENSION;
 
 pub use features::{MoveDelta, PerspectiveDelta};

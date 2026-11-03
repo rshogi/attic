@@ -48,7 +48,7 @@ env:
 
 jobs:
   # Which network shapes to build. A pull request builds one, to keep the check
-  # cheap; everything else builds all four YaneuraOu-family shapes. The two
+  # cheap; everything else builds all five YaneuraOu-family shapes. The two
   # `sym_` shapes are Manaka's own and are not shipped.
   plan:
     runs-on: ubuntu-22.04
@@ -60,7 +60,7 @@ jobs:
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             echo 'networks=[{"name":"kp256","feature":"nnue_kp_256x2_32_32"}]' >> "$GITHUB_OUTPUT"
           else
-            echo 'networks=[{"name":"kp256","feature":"nnue_kp_256x2_32_32"},{"name":"halfkp256","feature":"nnue_halfkp_256x2_32_32"},{"name":"sfnn1536","feature":"sfnn_halfkahm2_1536_15_32_k3k3"},{"name":"sfnn2304","feature":"sfnn_halfkahm2_2304_15_64_progress8ek"}]' >> "$GITHUB_OUTPUT"
+            echo 'networks=[{"name":"kp256","feature":"nnue_kp_256x2_32_32"},{"name":"halfkp256","feature":"nnue_halfkp_256x2_32_32"},{"name":"sfnn1536","feature":"sfnn_halfkahm2_1536_15_32_k3k3"},{"name":"sfnn1024","feature":"sfnn_halfkahm2_1024_15_64_progress8kpabs"},{"name":"sfnn2304","feature":"sfnn_halfkahm2_2304_15_64_progress8ek"}]' >> "$GITHUB_OUTPUT"
           fi
 
   build:
@@ -205,6 +205,7 @@ jobs:
           | `kp256` | `nn.bin` for `YANEURAOU_ENGINE_NNUE_KP256` |
           | `halfkp256` | `nn.bin` for `YANEURAOU_ENGINE_NNUE` (HalfKP 256x2-32-32) |
           | `sfnn1536` | `nn.bin` for `YANEURAOU_ENGINE_SFNN1536` |
+          | `sfnn1024` | `nn.bin` and `progress.bin` for the 1024 shape |
           | `sfnn2304` | `nn.bin` and `progress.bin` for the 2304 shape |
 
           Evaluation files are not included. Put the file in `eval/` next to where the engine starts, or point `EvalDir` at it.
