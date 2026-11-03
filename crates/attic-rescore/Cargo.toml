@@ -1,0 +1,52 @@
+[package]
+name = "attic-rescore"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+# Puts a fixed-depth MultiPV search score on every record of a PSV file, and
+# walks a position to the leaf of its quiescence search. Drives the search
+# in-process like `attic-gensfen`: one copy of the network per NUMA node, shared
+# by that node's workers.
+#
+# `serde_json` and `sha2` keep the checkpoint and the receipts of a resumable
+# part; `zstd` compresses the raw search output that is kept beside it.
+[dependencies]
+attic-eval = { path = "../attic-eval", default-features = false }
+attic-search = { path = "../attic-search", default-features = false }
+attic-state = { path = "../attic-state", default-features = false }
+attic-storage = { path = "../attic-storage" }
+attic-numa = { path = "../attic-numa" }
+serde = { version = "~1.0", features = ["derive"] }
+serde_json = "~1.0"
+sha2 = "~0.10"
+zstd = "~0.13"
+
+[features]
+default = ["quick-draw"]
+quick-draw = [
+    "attic-eval/quick-draw",
+    "attic-search/quick-draw",
+    "attic-state/quick-draw",
+]
+
+# Network selection, passed through like `attic-gensfen` does: exactly one
+# shape must be chosen and `attic-eval` refuses to compile with none.
+sfnn_halfkahm2_1536_15_32_k3k3 = ["attic-eval/sfnn_halfkahm2_1536_15_32_k3k3", "attic-search/sfnn_halfkahm2_1536_15_32_k3k3"]
+sfnn_halfkahm2_1024_15_64_progress8kpabs = ["attic-eval/sfnn_halfkahm2_1024_15_64_progress8kpabs", "attic-search/sfnn_halfkahm2_1024_15_64_progress8kpabs"]
+sfnn_halfkahm2_1024_15_64_progress8ek = ["attic-eval/sfnn_halfkahm2_1024_15_64_progress8ek", "attic-search/sfnn_halfkahm2_1024_15_64_progress8ek"]
+sfnn_halfkahm2_2304_15_64_progress8ek = ["attic-eval/sfnn_halfkahm2_2304_15_64_progress8ek", "attic-search/sfnn_halfkahm2_2304_15_64_progress8ek"]
+nnue_kp_256x2_32_32 = ["attic-eval/nnue_kp_256x2_32_32", "attic-search/nnue_kp_256x2_32_32"]
+nnue_halfkp_256x2_32_32 = ["attic-eval/nnue_halfkp_256x2_32_32", "attic-search/nnue_halfkp_256x2_32_32"]
+nnue_halfkp_128x2_32_32 = ["attic-eval/nnue_halfkp_128x2_32_32", "attic-search/nnue_halfkp_128x2_32_32"]
+nnue_halfkp_768x2_16_64 = ["attic-eval/nnue_halfkp_768x2_16_64", "attic-search/nnue_halfkp_768x2_16_64"]
+sym_kp_128x2_512 = ["attic-eval/sym_kp_128x2_512", "attic-search/sym_kp_128x2_512"]
+sym_halfkp_128x2_512 = ["attic-eval/sym_halfkp_128x2_512", "attic-search/sym_halfkp_128x2_512"]
+hce_material_17 = ["attic-eval/hce_material_17", "attic-search/hce_material_17", "hce"]
+hce_mobility_107_57 = ["attic-eval/hce_mobility_107_57", "attic-search/hce_mobility_107_57", "hce"]
+# Qualifies one of the two shapes above; it is not a shape of its own.
+hce_fit_qsearched = ["attic-eval/hce_fit_qsearched", "attic-search/hce_fit_qsearched"]
+# Internal: every hand-crafted shape turns it on. A `cfg` cannot see another
+# crate's features, so the tests that need a synthetic network, which an HCE
+# shape does not have, are gated on this crate's own copy.
+hce = []
