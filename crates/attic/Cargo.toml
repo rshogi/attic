@@ -27,6 +27,7 @@ quick-draw = ["attic-protocol/quick-draw", "attic-state/quick-draw"]
 # Network selection; exactly one is required. See attic-eval's features.
 sfnn_halfkahm2_1536_15_32_k3k3 = ["attic-protocol/sfnn_halfkahm2_1536_15_32_k3k3"]
 sfnn_halfkahm2_1024_15_64_progress8kpabs = ["attic-protocol/sfnn_halfkahm2_1024_15_64_progress8kpabs"]
+sfnn_halfkahm2_1024_15_64_progress8ek = ["attic-protocol/sfnn_halfkahm2_1024_15_64_progress8ek"]
 sfnn_halfkahm2_2304_15_64_progress8ek = ["attic-protocol/sfnn_halfkahm2_2304_15_64_progress8ek"]
 nnue_kp_256x2_32_32 = ["attic-protocol/nnue_kp_256x2_32_32"]
 nnue_halfkp_256x2_32_32 = ["attic-protocol/nnue_halfkp_256x2_32_32"]

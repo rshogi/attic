@@ -1003,6 +1003,10 @@ mod tests {
 
     /// The NAGISA V3 counterpart: reads a real 1024 `nn.bin` end to end.
     ///
+    /// The two 1024 shapes (`progress8kpabs` and `progress8ek`) share this layout
+    /// and this test; they differ in the stack-selection rule, which loading does
+    /// not touch.
+    ///
     /// Skipped unless `ATTIC_HALFKA1024_NN` names a file (78,442,142 bytes in
     /// the copy this was written against). `load_network_with_dims` ends in an
     /// end-of-file check, so a layout that is off by a byte anywhere fails here

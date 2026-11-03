@@ -39,8 +39,8 @@ pub mod avx2;
 #[cfg(target_arch = "x86_64")]
 pub mod avx2_post_ft;
 
-// Excluded under `sfnn_halfkahm2_2304_15_64_progress8ek` and
-// `sfnn_halfkahm2_1024_15_64_progress8kpabs`: the post-FT chain there ends in
+// Excluded under `sfnn_halfkahm2_2304_15_64_progress8ek` and the two 1024 shapes
+// (`..._progress8kpabs`, `..._progress8ek`): the post-FT chain there ends in
 // `affine_padded32` helpers that take a fixed `[u8; 32]`, and fc_1's output is 64
 // in those shapes. Upstream C++ takes a separate `kUsePackedTail` path for
 // exactly this case (`AVX512 && kHidden2Dims == 64`), which has no port here yet.
