@@ -32,10 +32,7 @@ use crate::features::{
     FeatureIndex, MoveDelta, active_features, changed_indices, requires_full_refresh,
 };
 use crate::finny::FinnyCache;
-#[cfg(any(
-    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-))]
+#[cfg(feature = "sfnn")]
 use crate::simd::post_ft_kernel;
 use crate::simd::transformer_kernel;
 use crate::types::{FC_0_INPUT_DIMS, HIDDEN_SIZE, NnueNetwork};
@@ -226,10 +223,7 @@ impl Accumulator {
 
     /// Pack the accumulator into `out`, the byte input buffer for L1, as the
     /// module head describes.
-    #[cfg(any(
-        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-    ))]
+    #[cfg(feature = "sfnn")]
     pub fn output_transform(&self, stm: Color, out: &mut [u8; FT_OUTPUT_DIMS]) {
         const HALF: usize = HIDDEN_SIZE / 2;
         let stm_half = &self.perspectives[stm.index()];
@@ -314,23 +308,14 @@ mod tests {
     use attic_state::{Move, PieceKind, format_usi_move, parse_sfen, parse_usi_move};
 
     const STARTPOS: &str = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1";
-    #[cfg(any(
-        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-    ))]
+    #[cfg(feature = "sfnn")]
     const HALF: usize = HIDDEN_SIZE / 2;
 
     // Mirrored from the scalar kernel, so that these tests can transcribe the
     // reference formula independently.
-    #[cfg(any(
-        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-    ))]
+    #[cfg(feature = "sfnn")]
     const EWM_CLAMP: i32 = 127 * 2;
-    #[cfg(any(
-        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-    ))]
+    #[cfg(feature = "sfnn")]
     const EWM_SHIFT: i32 = 9;
 
     #[test]
@@ -1058,10 +1043,7 @@ mod tests {
         }
     }
 
-    #[cfg(any(
-        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-    ))]
+    #[cfg(feature = "sfnn")]
     #[test]
     fn output_transform_lays_out_stm_then_other() {
         let mut acc = Accumulator::new();
@@ -1083,10 +1065,7 @@ mod tests {
         assert_eq!(out_w[HALF], 39);
     }
 
-    #[cfg(any(
-        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-    ))]
+    #[cfg(feature = "sfnn")]
     #[test]
     fn output_transform_clamps_min_zero_and_max() {
         let mut acc = Accumulator::new();
@@ -1111,10 +1090,7 @@ mod tests {
         assert_eq!(out[4], 9, "mid-range pair");
     }
 
-    #[cfg(any(
-        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-    ))]
+    #[cfg(feature = "sfnn")]
     #[test]
     fn output_transform_full_row_matches_scalar_formula() {
         // Cross-checked against a direct transcription of the reference formula.

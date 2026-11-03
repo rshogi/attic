@@ -114,29 +114,21 @@ impl Search {
     /// [`Search::from_network_file`] returning the loader's non-fatal warning
     /// bodies too; an empty vector means a clean load.
     pub fn from_network_file_with_warnings(path: &Path) -> Result<(Self, Vec<String>), NnueError> {
-        // One call for every shape whose file is self-contained: the ones
-        // below keep their whole network in `nn.bin`, and the loader picks the
-        // dimensions from the feature the crate was built with.
-        #[cfg(any(
-            feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-            feature = "nnue_kp_256x2_32_32",
-            feature = "nnue_halfkp_256x2_32_32",
-            feature = "nnue_halfkp_128x2_32_32",
-            feature = "nnue_halfkp_768x2_16_64",
-            feature = "sym_kp_128x2_512",
-            feature = "sym_halfkp_128x2_512"
-        ))]
+        // The loader picks the dimensions from the feature the crate was built
+        // with, so one call serves every shape, and for most of them it is the
+        // whole job: their network is in `nn.bin`.
+        #[cfg(not(feature = "sfnn_progress"))]
         let (net, warnings) = attic_eval::load_network_with_warnings(path)?;
 
-        // The 2304 shape reads its layer-stack coefficients from a
-        // `progress.bin` next to `nn.bin` rather than from inside it, so the
-        // load is two files. A missing or malformed one is reported as a
-        // warning and leaves every position in bucket 0 — wrong, but wrong
-        // consistently and visibly, rather than failing after `readyok`.
-        #[cfg(feature = "sfnn_halfkahm2_2304_15_64_progress8ek")]
+        // The progress shapes (1024 and 2304) read their layer-stack
+        // coefficients from a `progress.bin` next to `nn.bin` rather than from
+        // inside it, so the load is two files. A missing or malformed one is
+        // reported as a warning and leaves every position in bucket 0 — wrong,
+        // but wrong consistently and visibly, rather than failing after
+        // `readyok`.
+        #[cfg(feature = "sfnn_progress")]
         let (net, warnings) = {
-            let (net, mut warnings) =
-                attic_eval::load_network_with_dims(path, &attic_eval::NetDims::HALFKA2304)?;
+            let (net, mut warnings) = attic_eval::load_network_with_warnings(path)?;
             let coefficients = path.with_file_name("progress.bin");
             if let Err(err) = attic_eval::progress::load_parameters(&coefficients) {
                 warnings.push(format!(
@@ -233,13 +225,7 @@ impl Search {
 // These build a HalfKA_hm2 network by hand: feature-plane geometry below, and a
 // shortcut row in fc_0 that only the SFNN shapes have. The standard shapes have
 // neither (`HIDDEN1_DIMS` is all of fc_0), and Manaka's have no builder at all.
-#[cfg(all(
-    test,
-    any(
-        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-    )
-))]
+#[cfg(all(test, feature = "sfnn"))]
 mod tests {
     use super::*;
     use attic_eval::{

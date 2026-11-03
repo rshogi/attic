@@ -27,10 +27,7 @@ use crate::types::NUM_FEATURES;
 // in a test: under `kp256` the table is 1,710 rows and an index that still
 // reached past 73,000 would be read, not rejected. `features.rs`'s own bound
 // check is a `debug_assert!` and disappears from the builds that matter.
-#[cfg(any(
-    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-))]
+#[cfg(feature = "sfnn")]
 const _: () = assert!(FEATURE_DIMENSION == NUM_FEATURES);
 #[cfg(feature = "nnue_kp_256x2_32_32")]
 const _: () = assert!(NUM_FEATURES == FE_END + 2 * SQ_NB);
@@ -98,25 +95,18 @@ const SQ_NB: usize = Square::COUNT;
 const E_KING: usize = FE_END + SQ_NB;
 
 /// Number of distinct mirrored king squares (files 1–5 × 9 ranks).
-#[cfg(any(
-    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-))]
+#[cfg(feature = "sfnn")]
 const SQ_K_COUNT: usize = 5 * 9;
 
 /// Total `HalfKA_hm2` feature dimension, kept equal to
 /// [`crate::types::NUM_FEATURES`].
-#[cfg(any(
-    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-))]
+#[cfg(feature = "sfnn")]
 pub const FEATURE_DIMENSION: usize = SQ_K_COUNT * E_KING;
 
 /// Maximum number of simultaneously active features (`PIECE_NUMBER_NB`). Every
 /// legal shogi position has exactly 40 pieces across board and hands.
 #[cfg(any(
-    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-    feature = "sfnn_halfkahm2_2304_15_64_progress8ek",
+    feature = "sfnn",
     feature = "nnue_kp_256x2_32_32",
     feature = "sym_kp_128x2_512",
     feature = "sym_halfkp_128x2_512"
@@ -157,10 +147,7 @@ pub(crate) fn from_persp(sq: Square, persp: Color) -> Square {
 
 /// The `hm` trigger: mirror when the (perspective-relative) king sits on files
 /// 6–9, i.e. file index `>= 5`. Matches the C++ `sq_k >= SQ_61` test.
-#[cfg(any(
-    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-))]
+#[cfg(feature = "sfnn")]
 #[inline]
 fn needs_mirror(king_sq_persp: Square) -> bool {
     king_sq_persp.file() >= 5
@@ -233,10 +220,7 @@ pub(crate) fn hand_plane(kind: PieceKind, is_friend: bool) -> usize {
 }
 
 /// Combine the mirrored king code with a plane-adjusted piece code.
-#[cfg(any(
-    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-))]
+#[cfg(feature = "sfnn")]
 #[inline]
 fn encode_feature(sq_k_code: usize, p_adj: usize) -> FeatureIndex {
     debug_assert!(sq_k_code < SQ_K_COUNT);
@@ -265,10 +249,7 @@ fn encode_feature(_sq_k_code: usize, p_adj: usize) -> FeatureIndex {
 
 /// The king code pieces are crossed on, and whether the board is mirrored to
 /// keep that king on the left five files.
-#[cfg(any(
-    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-))]
+#[cfg(feature = "sfnn")]
 fn king_code(pos: &Position, perspective: Color) -> (usize, bool) {
     let own = from_persp(king_square(pos, perspective), perspective);
     let mirror = needs_mirror(own);
@@ -292,10 +273,7 @@ fn king_code(_pos: &Position, _perspective: Color) -> (usize, bool) {
 /// Above the piece-code level because not every shape's king lands somewhere
 /// `encode_feature` can reach: Manaka's HalfKP points both kings at a padding
 /// row past the end of the crossed table, which is an index and not a plane.
-#[cfg(any(
-    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-))]
+#[cfg(feature = "sfnn")]
 #[inline]
 fn king_feature(_is_friend: bool, sq_code: usize, sq_k_code: usize) -> Option<FeatureIndex> {
     Some(encode_feature(sq_k_code, FE_END + sq_code))
@@ -998,10 +976,7 @@ mod tests {
     /// Only `HalfKA_hm2` canonicalizes on the mirror; K, P and HalfKP all
     /// number the squares absolutely, so a mirrored position is simply a
     /// different position to them.
-    #[cfg(any(
-        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-    ))]
+    #[cfg(feature = "sfnn")]
     fn mirror_position(pos: &Position) -> Position {
         let mut mirrored = Position::empty();
         for index in 0..Square::COUNT as u8 {
@@ -1047,10 +1022,7 @@ mod tests {
         // `FEATURE_DIMENSION` is the crossed `HalfKA_hm2` table, so only that
         // shape's `NUM_FEATURES` is it. The other three size their tables in
         // `types.rs`, and `num_features_matches_shape` there pins each one.
-        #[cfg(any(
-            feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-            feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-        ))]
+        #[cfg(feature = "sfnn")]
         {
             assert_eq!(FEATURE_DIMENSION, NUM_FEATURES);
             assert_eq!(FEATURE_DIMENSION, SQ_K_COUNT * E_KING);
@@ -1076,10 +1048,7 @@ mod tests {
         }
     }
 
-    #[cfg(any(
-        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-    ))]
+    #[cfg(feature = "sfnn")]
     #[test]
     fn startpos_both_kings_share_one_plane() {
         let pos = parse_sfen(STARTPOS).unwrap();
@@ -1210,10 +1179,7 @@ mod tests {
         }
     }
 
-    #[cfg(any(
-        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-    ))]
+    #[cfg(feature = "sfnn")]
     #[test]
     fn mirror_property_preserves_feature_set() {
         // Both kings sit off the centre file, so the mirror flag flips between
@@ -1515,10 +1481,7 @@ mod tests {
         assert!(removed.is_empty() && added.is_empty());
     }
 
-    #[cfg(any(
-        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-    ))]
+    #[cfg(feature = "sfnn")]
     #[test]
     fn mirror_property_needs_mirror_flag_actually_flips() {
         // Exactly one of the two positions must trigger the mirror path for each

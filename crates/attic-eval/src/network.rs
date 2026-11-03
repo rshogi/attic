@@ -28,10 +28,7 @@ use crate::simd::post_ft_kernel;
 use crate::transformer::{Accumulator, FT_OUTPUT_DIMS};
 #[cfg(feature = "nnue_standard")]
 use crate::types::FcKernels;
-#[cfg(any(
-    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-))]
+#[cfg(feature = "sfnn")]
 use crate::types::HIDDEN1_DIMS;
 #[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
 use crate::types::LAYER_STACKS;
@@ -48,17 +45,10 @@ const F_RANK_TO_INDEX: [usize; 9] = [0, 0, 0, 3, 3, 3, 6, 6, 6];
 #[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
 const E_RANK_TO_INDEX: [usize; 9] = [0, 0, 0, 1, 1, 1, 2, 2, 2];
 
-/// Select the layer-stack (bucket) index for `pos`.
-///
-/// `stack_index_for_nnue`: the own-king rank is taken in the side-to-move's
-/// forward frame and the enemy-king rank in the opposite one, then combined
-/// through the `k*ToIndex` tables and clamped to `[0, LAYER_STACKS)`.
-///
-/// # Panics
-/// Panics if either king is missing.
-/// Layer-stack selection for the 2304 shape, which buckets by game progress
-/// rather than by the kings' ranks — see [`crate::progress`].
-#[cfg(feature = "sfnn_halfkahm2_2304_15_64_progress8ek")]
+/// Layer-stack selection for the progress shapes, which bucket by game progress
+/// rather than by the kings' ranks — see [`crate::progress`], which also holds
+/// the one place the 1024 and 2304 shapes part ways.
+#[cfg(feature = "sfnn_progress")]
 pub fn layer_stack_index(pos: &Position) -> usize {
     crate::progress::bucket_index(pos)
 }
@@ -74,6 +64,14 @@ pub fn layer_stack_index(_pos: &Position) -> usize {
     0
 }
 
+/// Select the layer-stack (bucket) index for `pos`.
+///
+/// `stack_index_for_nnue`: the own-king rank is taken in the side-to-move's
+/// forward frame and the enemy-king rank in the opposite one, then combined
+/// through the `k*ToIndex` tables and clamped to `[0, LAYER_STACKS)`.
+///
+/// # Panics
+/// Panics if either king is missing.
 #[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]
 pub fn layer_stack_index(pos: &Position) -> usize {
     let stm = pos.side_to_move();
@@ -136,10 +134,7 @@ pub fn evaluate_with(net: &NnueNetwork, acc: &Accumulator, pos: &Position) -> i3
 /// kernel; otherwise the per-layer flow below runs. The two are byte-for-byte
 /// equivalent.
 #[cfg(all(
-    any(
-        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-    ),
+    feature = "sfnn",
     target_arch = "x86_64",
     target_feature = "avx512f",
     target_feature = "avx512bw",
@@ -169,10 +164,7 @@ fn per_layer_flow(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> 
 
 /// Layer-stack forward pass, non-VNNI arm.
 #[cfg(all(
-    any(
-        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-    ),
+    feature = "sfnn",
     not(all(
         target_arch = "x86_64",
         target_feature = "avx512f",
@@ -198,10 +190,7 @@ fn per_layer_flow(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> 
 /// bytes between `FC_1_INPUT_DIMS` and the padded width are zero, so they add
 /// nothing whatever the file holds in the padding columns of the weights, and
 /// the kernel, which takes whole 32-byte chunks, still applies.
-#[cfg(any(
-    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-))]
+#[cfg(feature = "sfnn")]
 #[allow(dead_code)]
 fn per_layer_flow_u7(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> i32 {
     let mut fc_0_out = [0i32; FC_0_OUTPUT_DIMS];
@@ -311,10 +300,7 @@ fn per_layer_flow(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> 
     );
     fc_2_out[0]
 }
-#[cfg(any(
-    feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-    feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-))]
+#[cfg(feature = "sfnn")]
 #[allow(dead_code)]
 fn per_layer_flow_unfused(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> i32 {
     let mut fc_0_out = [0i32; FC_0_OUTPUT_DIMS];
@@ -441,10 +427,7 @@ mod tests {
         assert_eq!(per_layer_flow(&transformed, &net.stacks[0]), 0);
     }
 
-    #[cfg(any(
-        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-    ))]
+    #[cfg(feature = "sfnn")]
     #[test]
     fn forward_wires_shortcut_and_chain() {
         // The reference's `classic_chain_with_ewm_and_shortcut` wiring:
@@ -474,10 +457,7 @@ mod tests {
         );
     }
 
-    #[cfg(any(
-        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-    ))]
+    #[cfg(feature = "sfnn")]
     #[test]
     fn selected_forward_path_matches_the_unfused_reference() {
         // Whichever path this build compiled must agree bit-for-bit with the
@@ -526,10 +506,7 @@ mod tests {
     /// and the whole input range the output transform can reach, at the edges
     /// where `maddubs` is closest to saturating: weights of `-128` and `127`
     /// under inputs of `126`.
-    #[cfg(any(
-        feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-        feature = "sfnn_halfkahm2_2304_15_64_progress8ek"
-    ))]
+    #[cfg(feature = "sfnn")]
     #[test]
     fn the_7_bit_flow_matches_the_unfused_one_over_the_whole_weight_range() {
         let mut state = 0x9e37_79b9_7f4a_7c15_u64;
@@ -781,8 +758,8 @@ mod tests {
     ];
 
     // The three below pin `layer_stack_index` to the kings' ranks. That is the
-    // 1536 shape's rule; the 2304 shape buckets by game progress instead and
-    // never looks at the kings, so these say nothing there. `oracle_bucket`
+    // 1536 shape's rule; the progress shapes (1024 and 2304) bucket by game
+    // progress instead and never look at the kings, so these say nothing there. `oracle_bucket`
     // itself stays valid as a statement about the reference's king rule — it is
     // the *binding* to `layer_stack_index` that is shape-specific.
     #[cfg(feature = "sfnn_halfkahm2_1536_15_32_k3k3")]

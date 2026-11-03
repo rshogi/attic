@@ -1,4 +1,5 @@
-//! Progress-bucket selection for the `progress8ek` layer-stack mode.
+//! Progress-bucket selection for the `progress8ek` and `progress8kpabs`
+//! layer-stack modes.
 //!
 //! Stock SFNN-1536 picks its layer stack from the two kings' ranks
 //! (`king3_by_king3`, nine buckets). The shape NAGISA V4 ships declares
@@ -6,9 +7,22 @@
 //! `NNUE_SFNN_PROGRESS_BUCKETS 9`, which collapses `stack_index_for_nnue` to
 //! the progress bucket alone — the kings' ranks never enter it.
 //!
-//! Buckets 0..=7 are a game-progress estimate; bucket 8 is reserved for mutual
-//! entering-king positions, which have a different material and progress
-//! profile from everything else and were trained as their own stack.
+//! Buckets 0..=7 are a game-progress estimate in both modes. They part ways on
+//! mutual entering-king positions, which have a different material and progress
+//! profile from everything else:
+//!
+//! - `progress8ek` (NAGISA V4, 2304) trained them as their own stack, bucket 8.
+//! - `progress8kpabs` (NAGISA V3, 1024) did not. V3 was trained with eight
+//!   buckets, so it never looks for entering kings; those positions get the
+//!   progress bucket like any other, and the ninth stack is in the file but
+//!   nothing selects it. Sending them to bucket 8 anyway would evaluate them
+//!   with weights that were never trained.
+//!
+//! The two rules are separate pure functions below, [`bucket_progress8ek`] and
+//! [`bucket_progress8kpabs`], so that both are compiled and tested in every
+//! build. [`ProgressParameters::bucket_index`] is the only place that chooses
+//! between them, by the `sfnn_progress_ek` feature, rather than being split into
+//! one method per mode.
 //!
 //! The coefficients live outside `nn.bin` (`NNUE_SFNN_PROGRESS_EXTERNAL 1`), in
 //! a `progress.bin` alongside it: a raw `f64[81][1548]` with no header and no
@@ -40,8 +54,13 @@ const BONA_PIECE_ZERO: usize = 0;
 /// How many distinct progress values `Value0To255` can return.
 const PROGRESS_VALUE_COUNT: i64 = 256;
 
-/// Number of progress buckets, the last of which is the entering-king stack.
+/// Layer stacks in a progress network's file. The last is the entering-king
+/// stack under `progress8ek`; under `progress8kpabs` it is present and unused.
 pub const PROGRESS_BUCKETS: usize = 9;
+
+/// The buckets game progress alone is cut into, in both modes: every stack but
+/// the last.
+const PROGRESS_ONLY_BUCKETS: usize = PROGRESS_BUCKETS - 1;
 
 /// Q16 fixed-point coefficients, `[square][bona_piece]`.
 ///
@@ -162,19 +181,54 @@ impl ProgressParameters {
             + empty * (self.weight(sq_bk, BONA_PIECE_ZERO) + self.weight(sq_wk, BONA_PIECE_ZERO))
     }
 
-    /// The layer-stack index under `progress8ek`.
+    /// The layer-stack index for `pos`.
     ///
-    /// Mutual entering king takes the last stack outright; everything else is
-    /// split across the remaining eight by progress.
+    /// Under `sfnn_progress_ek` ([`bucket_progress8ek`]) mutual entering king
+    /// takes the last stack outright and everything else is split across the
+    /// remaining eight by progress. Otherwise ([`bucket_progress8kpabs`]) there
+    /// is no entering-king case at all and progress alone decides.
+    ///
+    /// `cfg!` rather than `#[cfg]`: both arms stay compiled, and so type-checked
+    /// and tested, in every build, and the dead one costs nothing.
     pub fn bucket_index(&self, pos: &Position) -> usize {
-        if is_mutual_entering_king(pos) {
-            return PROGRESS_BUCKETS - 1;
+        if cfg!(feature = "sfnn_progress_ek") {
+            // The entering-king test comes first and the progress sum is only
+            // taken when it fails: the sum is the expensive half.
+            bucket_progress8ek(is_mutual_entering_king(pos), || self.value_0_to_255(pos))
+        } else {
+            bucket_progress8kpabs(self.value_0_to_255(pos))
         }
-        let usable = PROGRESS_BUCKETS - 1;
-        let progress = self.value_0_to_255(pos) as i64;
-        let bucket = progress * usable as i64 / PROGRESS_VALUE_COUNT;
-        (bucket.clamp(0, usable as i64 - 1)) as usize
     }
+}
+
+/// `Parameters::BucketIndex(pos, bucket_count)` once the progress is known:
+/// `progress * bucket_count / 256`, clamped into `0..bucket_count`.
+///
+/// Both modes cut progress into [`PROGRESS_ONLY_BUCKETS`] buckets with this.
+fn bucket_by_progress(progress: usize, bucket_count: usize) -> usize {
+    let bucket = progress as i64 * bucket_count as i64 / PROGRESS_VALUE_COUNT;
+    bucket.clamp(0, bucket_count as i64 - 1) as usize
+}
+
+/// The layer-stack index under `progress8ek`.
+///
+/// Mutual entering king takes the last stack outright; everything else is
+/// split across the remaining eight by progress. `progress` is a closure so
+/// that an entering-king position, which never needs it, does not pay for the
+/// sum.
+pub fn bucket_progress8ek(mutual_entering_king: bool, progress: impl FnOnce() -> usize) -> usize {
+    if mutual_entering_king {
+        return PROGRESS_BUCKETS - 1;
+    }
+    bucket_by_progress(progress(), PROGRESS_ONLY_BUCKETS)
+}
+
+/// The layer-stack index under `progress8kpabs`.
+///
+/// Progress alone, in `0..=7`. Whether the kings have entered each other's camp
+/// is not asked, and the ninth stack is never returned.
+pub fn bucket_progress8kpabs(progress: usize) -> usize {
+    bucket_by_progress(progress, PROGRESS_ONLY_BUCKETS)
 }
 
 /// Both kings past the middle rank, in opposite directions.
@@ -278,6 +332,7 @@ pub fn bucket_index(pos: &Position) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use attic_state::parse_sfen;
 
     #[test]
     fn thresholds_are_ascending_and_centred() {
@@ -353,6 +408,109 @@ mod tests {
                 "single-pass sum disagrees with the slot arrays for {sfen}",
             );
         }
+    }
+
+    /// Black's king on the fifth rank and White's on the ninth: past the middle
+    /// in opposite directions, which [`is_mutual_entering_king`] counts.
+    const MUTUAL_ENTERING_KING: &str = "9/9/9/9/4K4/9/9/9/4k4 b - 1";
+
+    /// A table that gives every piece slot the same weight, so the progress sum
+    /// is `76 * weight` for any position and the result does not depend on where
+    /// the pieces are. The weights decide the progress: `i32::MIN` clears no
+    /// threshold (progress 0), zero clears the 128 up to and including the one
+    /// at log-odds 0 (progress 128), and `i32::MAX` clears all 255 (progress 255).
+    fn flat_table(weight: i32) -> ProgressParameters {
+        ProgressParameters {
+            weights_q16: vec![weight; ProgressParameters::WEIGHT_COUNT].into_boxed_slice(),
+        }
+    }
+
+    #[test]
+    fn mutual_entering_king_is_told_from_startpos() {
+        assert!(is_mutual_entering_king(
+            &parse_sfen(MUTUAL_ENTERING_KING).unwrap()
+        ));
+        assert!(!is_mutual_entering_king(&Position::startpos()));
+    }
+
+    /// `progress8kpabs` is `progress * 8 / 256` and nothing else: eight buckets
+    /// of 32, none of them the ninth.
+    #[test]
+    fn kpabs_cuts_progress_into_eight_and_never_returns_the_ninth() {
+        for progress in 0..PROGRESS_VALUE_COUNT as usize {
+            let bucket = bucket_progress8kpabs(progress);
+            assert_eq!(bucket, progress / 32, "progress {progress}");
+            assert!(bucket <= 7, "progress {progress} gave bucket {bucket}");
+        }
+    }
+
+    /// The same cut under `progress8ek` for everything that is not a mutual
+    /// entering king, so the two modes agree wherever the ninth stack is not in
+    /// play and a 2304 position outside it reads what it always did.
+    #[test]
+    fn ek_agrees_with_kpabs_when_the_kings_have_not_entered() {
+        for progress in 0..PROGRESS_VALUE_COUNT as usize {
+            assert_eq!(
+                bucket_progress8ek(false, || progress),
+                bucket_progress8kpabs(progress),
+                "progress {progress}"
+            );
+        }
+    }
+
+    /// The case the two modes exist to differ on: a mutual entering king is the
+    /// ninth stack under `ek` whatever its progress, and under `kpabs` it is
+    /// bucketed by progress like any other position and stays in `0..=7`.
+    #[test]
+    fn mutual_entering_king_is_bucket_8_under_ek_and_not_under_kpabs() {
+        let pos = parse_sfen(MUTUAL_ENTERING_KING).unwrap();
+        assert!(is_mutual_entering_king(&pos));
+        for progress in 0..PROGRESS_VALUE_COUNT as usize {
+            assert_eq!(
+                bucket_progress8ek(is_mutual_entering_king(&pos), || progress),
+                PROGRESS_BUCKETS - 1,
+                "ek, progress {progress}"
+            );
+            let kpabs = bucket_progress8kpabs(progress);
+            assert!(
+                (0..=7).contains(&kpabs),
+                "kpabs, progress {progress} gave {kpabs}"
+            );
+        }
+    }
+
+    /// A mutual entering king never needs its progress under `ek`, and the sum is
+    /// the expensive half of a bucket lookup.
+    #[test]
+    fn ek_does_not_compute_progress_for_a_mutual_entering_king() {
+        let bucket = bucket_progress8ek(true, || panic!("progress was computed"));
+        assert_eq!(bucket, PROGRESS_BUCKETS - 1);
+    }
+
+    /// `bucket_index` end to end on a position the two modes disagree about,
+    /// through a table whose progress is known. This is the one test here that
+    /// follows the build: the expected bucket is the mode's, and picking the
+    /// wrong arm of the `cfg!` shows up as the other number.
+    #[test]
+    fn bucket_index_follows_the_mode_of_the_build() {
+        let pos = parse_sfen(MUTUAL_ENTERING_KING).unwrap();
+        let ek = cfg!(feature = "sfnn_progress_ek");
+
+        // Progress 128: bucket 4 by progress, 8 when the kings have entered.
+        let mid = flat_table(0).bucket_index(&pos);
+        assert_eq!(mid, if ek { 8 } else { 4 });
+
+        // The extremes of progress, where `kpabs` has to stay inside 0..=7.
+        let lowest = flat_table(i32::MIN).bucket_index(&pos);
+        assert_eq!(lowest, if ek { 8 } else { 0 });
+        let highest = flat_table(i32::MAX).bucket_index(&pos);
+        assert_eq!(highest, if ek { 8 } else { 7 });
+
+        // An ordinary position is bucketed by progress in either mode.
+        let startpos = Position::startpos();
+        assert_eq!(flat_table(0).bucket_index(&startpos), 4);
+        assert_eq!(flat_table(i32::MIN).bucket_index(&startpos), 0);
+        assert_eq!(flat_table(i32::MAX).bucket_index(&startpos), 7);
     }
 
     /// Prints what a real `progress.bin` makes of a few positions.
