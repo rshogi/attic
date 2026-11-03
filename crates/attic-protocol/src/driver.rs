@@ -2784,11 +2784,10 @@ mod tests {
             !out.contains("eval load failed"),
             "a shape with no file cannot fail to load one: {out:?}"
         );
-        assert_eq!(
-            bare_newline_count(&out),
-            0,
-            "a fast isready must emit no keep-alive newline: {out:?}"
-        );
+        // No check on keep-alive newlines here. The test above has one because
+        // its load fails before the transposition table is sized. This `isready`
+        // succeeds and goes on to size it, and how long that takes depends on
+        // the machine. CI saw one bare newline, so the first tick had elapsed.
     }
 
     /// Count bare keep-alive newlines. Splitting on `\n` yields one trailing
