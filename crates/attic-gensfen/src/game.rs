@@ -700,7 +700,13 @@ mod resignation_tests {
     }
 }
 
-#[cfg(test)]
+// These tests play real games on a network of zeros, and the zero network is
+// built with `NnueNetworkBuilder`, which the Manaka shapes (`sym_*`) do not have:
+// their weights are f32 and arrive as `MNW1`, so there is no builder to reach for.
+#[cfg(all(
+    test,
+    not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512"))
+))]
 mod resumed_budget_tests {
     use std::time::{Duration, Instant};
 
@@ -872,7 +878,10 @@ mod resumed_budget_tests {
 /// These share the zero-eval network of [`resumed_budget_tests`]: a search that
 /// prefers nothing still has to be *stopped* by something, and what stops it is
 /// exactly what is under test.
-#[cfg(test)]
+#[cfg(all(
+    test,
+    not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512"))
+))]
 mod played_ending_tests {
     use super::resumed_budget_tests::{options, play};
     use super::*;
