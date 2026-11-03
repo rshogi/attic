@@ -73,8 +73,15 @@ fn main() {
     let extra = options.threads % nodes;
 
     eprintln!(
-        "gensfen: numa_nodes={nodes} threads={} depth={} multipv={} fv_scale={}",
-        options.threads, options.depth, options.multipv, options.fv_scale
+        "gensfen: numa_nodes={nodes} threads={} depth={} multipv={} fv_scale={} quick_draw={}",
+        options.threads,
+        options.depth,
+        options.multipv,
+        options.fv_scale,
+        match options.repetition_rule {
+            attic_state::RepetitionRule::QuickDraw => "on",
+            attic_state::RepetitionRule::Precomputed => "off",
+        }
     );
 
     // `--threads` is the ceiling; the governor decides how much of it to use.

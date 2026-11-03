@@ -67,6 +67,18 @@ pub struct Options {
     /// Defaults to `CSARule27`, which is the engine's default and the law
     /// ordinary tournament play uses.
     pub entering_king: attic_search::EnteringKingRule,
+    /// Which repetition rule the search plays by: the quick-draw one the
+    /// tournament build of the reference uses (`--quick-draw on`), or the one it
+    /// has without it (`--quick-draw off`).
+    ///
+    /// The two search different trees, so this decides what the teacher data is
+    /// a record *of*: with it on, a position repeated once is already a draw
+    /// and the search never looks past it. It is a property of the search and
+    /// does not change how a *game* is scored, which always waits for the fourth
+    /// occurrence. Defaults to what this binary was built to do
+    /// ([`RepetitionRule::DEFAULT`], from the `quick-draw` feature), so a run
+    /// that never says is the run it always was.
+    pub repetition_rule: attic_state::RepetitionRule,
     /// Resign once one side has been worse than this for `resign_count` plies
     /// in a row. Without it a lost game plays on to `max_ply` or to mate, and
     /// those positions teach nothing that the resignation itself does not.
@@ -148,6 +160,7 @@ usage: attic-gensfen --eval-dir DIR --out FILE
                      [--depth 9] [--nodes N] [--multipv 5] [--threads N]
                      [--games N] [--positions N]
                      [--max-ply 320] [--entering-king CSARule27]
+                     [--quick-draw on|off]
                      [--resign-cp 3000] [--resign-count 1]
                      [--fv-scale 28] [--format jsonl|psv|pack]
                      [--headroom 8] [--governor-secs 30] [--eval-limit N]
@@ -166,6 +179,7 @@ usage: attic-gensfen --eval-dir DIR --out FILE
         let mut positions = 0u64;
         let mut max_ply = 320u16;
         let mut entering_king = attic_search::EnteringKingRule::Point27;
+        let mut repetition_rule = attic_state::RepetitionRule::DEFAULT;
         let mut resign_cp = 3000;
         let mut resign_count = 1;
         let mut headroom = 8usize;
@@ -195,6 +209,7 @@ usage: attic-gensfen --eval-dir DIR --out FILE
                 "--positions" => positions = parse_field(&value()?, "--positions")?,
                 "--max-ply" => max_ply = parse_field(&value()?, "--max-ply")?,
                 "--entering-king" => entering_king = parse_entering_king(&value()?)?,
+                "--quick-draw" => repetition_rule = parse_quick_draw(&value()?)?,
                 "--resign-cp" => resign_cp = parse_field(&value()?, "--resign-cp")?,
                 "--resign-count" => resign_count = parse_field(&value()?, "--resign-count")?,
                 "--headroom" => headroom = parse_field(&value()?, "--headroom")?,
@@ -293,6 +308,7 @@ usage: attic-gensfen --eval-dir DIR --out FILE
             positions,
             max_ply,
             entering_king,
+            repetition_rule,
             resign_cp,
             resign_count,
             headroom,
@@ -331,6 +347,18 @@ fn parse_entering_king(raw: &str) -> Result<attic_search::EnteringKingRule, Stri
                 EnteringKingRule::STRINGS.join(", ")
             )
         })
+}
+
+/// `on` or `off`, and nothing else: a typo that fell back to a default would
+/// generate a whole run under the rule the caller was trying to avoid.
+fn parse_quick_draw(raw: &str) -> Result<attic_state::RepetitionRule, String> {
+    use attic_state::RepetitionRule;
+
+    match raw {
+        "on" => Ok(RepetitionRule::QuickDraw),
+        "off" => Ok(RepetitionRule::Precomputed),
+        _ => Err(format!("unknown --quick-draw {raw:?} (on, off)")),
+    }
 }
 
 fn parse_field<T: std::str::FromStr>(raw: &str, flag: &str) -> Result<T, String> {
@@ -395,6 +423,34 @@ mod start_sfen_tests {
         let mut args = vec!["--eval-dir", "eval", "--out", "out"];
         args.extend_from_slice(extra);
         Options::parse(args.into_iter().map(String::from))
+    }
+
+    #[test]
+    fn the_repetition_rule_is_the_builds_unless_told_otherwise() {
+        use attic_state::RepetitionRule;
+
+        assert_eq!(
+            parse_with(&[]).expect("parses").repetition_rule,
+            RepetitionRule::DEFAULT,
+            "a run that never says gets what the binary was built to do",
+        );
+        for (spelling, rule) in [
+            ("on", RepetitionRule::QuickDraw),
+            ("off", RepetitionRule::Precomputed),
+        ] {
+            let options = parse_with(&["--quick-draw", spelling]).expect("parses");
+            assert_eq!(options.repetition_rule, rule, "--quick-draw {spelling}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_quick_draw_setting_is_refused_rather_than_defaulted() {
+        for spelling in ["", "true", "ON", "0", "no-quick-draw"] {
+            let err = parse_with(&["--quick-draw", spelling])
+                .err()
+                .unwrap_or_else(|| panic!("--quick-draw {spelling:?} was accepted"));
+            assert!(err.contains("--quick-draw"), "{err}");
+        }
     }
 
     #[test]

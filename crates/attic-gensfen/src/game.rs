@@ -262,6 +262,11 @@ pub fn play_game(
             (pos, 0)
         }
     };
+    // Before the first move, which is the only time the rule can be chosen. A
+    // position reaches here with no moves on it either way -- an opening drawn
+    // from the list, the start position, or a record unpacked for recovery --
+    // and the searches copy it, so the rule travels into every one of them.
+    pos.set_repetition_rule(options.repetition_rule);
     // The entering-king thresholds are a snapshot of the root's material, so
     // they are taken once per game — and, for the `_H` rules, they have to be
     // taken from *this* position rather than left at the default.
@@ -409,6 +414,7 @@ mod random_ply_tests {
             positions: 0,
             max_ply: 320,
             entering_king: attic_search::EnteringKingRule::Point27,
+            repetition_rule: attic_state::RepetitionRule::DEFAULT,
             resign_cp: 3000,
             resign_count: 4,
             headroom: 0,
