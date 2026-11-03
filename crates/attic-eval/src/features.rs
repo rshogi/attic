@@ -34,7 +34,7 @@ use crate::types::NUM_FEATURES;
 const _: () = assert!(FEATURE_DIMENSION == NUM_FEATURES);
 #[cfg(feature = "nnue_kp_256x2_32_32")]
 const _: () = assert!(NUM_FEATURES == FE_END + 2 * SQ_NB);
-#[cfg(feature = "nnue_halfkp_256x2_32_32")]
+#[cfg(feature = "nnue_halfkp")]
 const _: () = assert!(NUM_FEATURES == SQ_NB * FE_END);
 
 /// A single active input-feature index into the `HalfKA_hm2` feature space.
@@ -130,7 +130,7 @@ pub const MAX_ACTIVE_FEATURES: usize = 40;
 /// king, so the reference walks thirty-eight and leaves them out. Manaka
 /// numbers forty and points both kings at a padding row, which is the row its
 /// table has and this one does not — see [`crate::types::NUM_FEATURES`].
-#[cfg(feature = "nnue_halfkp_256x2_32_32")]
+#[cfg(feature = "nnue_halfkp")]
 pub const MAX_ACTIVE_FEATURES: usize = 38;
 
 /// The seven piece kinds that can sit in a hand, in `BonaPiece` plane order.
@@ -247,7 +247,7 @@ fn encode_feature(sq_k_code: usize, p_adj: usize) -> FeatureIndex {
 }
 
 /// Locate `color`'s king.
-#[cfg(any(feature = "nnue_halfkp_256x2_32_32", feature = "sym_halfkp_128x2_512"))]
+#[cfg(any(feature = "nnue_halfkp", feature = "sym_halfkp_128x2_512"))]
 #[inline]
 fn encode_feature(sq_k_code: usize, p_adj: usize) -> FeatureIndex {
     debug_assert!(sq_k_code < SQ_NB);
@@ -274,7 +274,7 @@ fn king_code(pos: &Position, perspective: Color) -> (usize, bool) {
     let mirror = needs_mirror(own);
     (mirror_if_needed(own, mirror).index() as usize, mirror)
 }
-#[cfg(any(feature = "nnue_halfkp_256x2_32_32", feature = "sym_halfkp_128x2_512"))]
+#[cfg(any(feature = "nnue_halfkp", feature = "sym_halfkp_128x2_512"))]
 fn king_code(pos: &Position, perspective: Color) -> (usize, bool) {
     (
         from_persp(king_square(pos, perspective), perspective).index() as usize,
@@ -306,7 +306,7 @@ fn king_feature(is_friend: bool, sq_code: usize, sq_k_code: usize) -> Option<Fea
     let side = if is_friend { 0 } else { SQ_NB };
     Some(encode_feature(sq_k_code, FE_END + side + sq_code))
 }
-#[cfg(feature = "nnue_halfkp_256x2_32_32")]
+#[cfg(feature = "nnue_halfkp")]
 #[inline]
 fn king_feature(_is_friend: bool, _sq_code: usize, _sq_k_code: usize) -> Option<FeatureIndex> {
     None
@@ -963,9 +963,9 @@ mod tests {
     /// How many distinct feature values those twelve pieces produce. The two
     /// that move between shapes are the kings: YaneuraOu's HalfKP has no row
     /// for them at all, and Manaka's HalfKP sends both to the same padding row.
-    #[cfg(not(any(feature = "nnue_halfkp_256x2_32_32", feature = "sym_halfkp_128x2_512")))]
+    #[cfg(not(any(feature = "nnue_halfkp", feature = "sym_halfkp_128x2_512")))]
     const DISTINCT_REAL_IN_DROP_HEAVY: usize = 12;
-    #[cfg(feature = "nnue_halfkp_256x2_32_32")]
+    #[cfg(feature = "nnue_halfkp")]
     const DISTINCT_REAL_IN_DROP_HEAVY: usize = 10;
     #[cfg(feature = "sym_halfkp_128x2_512")]
     const DISTINCT_REAL_IN_DROP_HEAVY: usize = 11;
