@@ -416,13 +416,26 @@ fn many_resizes_do_not_leak_or_corrupt() {
     }
 }
 
-/// A best-effort transparent-huge-page uptake diagnostic, reporting the
-/// `AnonHugePages` figure `/proc/self/smaps` gives for the TT's mapping. It
-/// never fails the suite: THP availability is environmental.
+/// Linux-only THP-uptake check: after a >= 64 MiB resize, scan
+/// `/proc/self/smaps` for the mapping that contains the TT base address and
+/// read its `AnonHugePages` figure.
+///
+/// On a machine whose `transparent_hugepage/enabled` is `[always]` or
+/// `[madvise]` this is a hard gate, because zero there is not a machine
+/// property but a bug: the table is hinted with `MADV_HUGEPAGE`, and the hint
+/// only governs pages faulted in after it, so zeroing the region before the
+/// hint leaves the whole table on 4 KiB pages for its whole life. That is
+/// exactly what happened, and it went unnoticed for as long as this test only
+/// printed the number. The gate is `> 0` rather than the full size: under
+/// memory fragmentation the kernel may back only part of the region with huge
+/// pages, and that is a property of the machine, not of the allocator.
+///
+/// Where THP is off, or the kernel does not account for it, the figure is
+/// reported and nothing is asserted.
 #[test]
 #[cfg(target_os = "linux")]
 #[cfg_attr(miri, ignore)]
-fn thp_uptake_diagnostic_over_64mib() {
+fn thp_uptake_over_64mib() {
     use std::fs;
 
     let mut tt = TranspositionTable::new();
@@ -464,14 +477,24 @@ fn thp_uptake_diagnostic_over_64mib() {
         }
     }
 
+    // `[always]` or `[madvise]` in this file means the kernel would hand out
+    // huge pages for a region hinted the way the table is hinted.
+    let thp_available = fs::read_to_string("/sys/kernel/mm/transparent_hugepage/enabled")
+        .is_ok_and(|s| s.contains("[always]") || s.contains("[madvise]"));
+
     match anon_huge_kb {
-        Some(kb) => eprintln!(
-            "THP diagnostic: TT region at {base:#x} backed by {kb} kB AnonHugePages \
-             (0 means THP disabled or not yet faulted in)"
-        ),
+        Some(kb) => {
+            eprintln!("THP: TT region at {base:#x} backed by {kb} kB AnonHugePages");
+            assert!(
+                !thp_available || kb > 0,
+                "the 64 MiB table is entirely on 4 KiB pages although this machine \
+                 offers transparent huge pages; the region was almost certainly \
+                 written to before it was hinted with MADV_HUGEPAGE"
+            );
+        }
         None => eprintln!(
-            "THP diagnostic: no AnonHugePages line found for TT region at {base:#x} \
-             (kernel without THP accounting); skipping"
+            "THP: no AnonHugePages line for the TT region at {base:#x} \
+             (kernel without THP accounting); nothing asserted"
         ),
     }
 }
