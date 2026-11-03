@@ -116,7 +116,9 @@ impl Search {
     pub fn from_network_file_with_warnings(path: &Path) -> Result<(Self, Vec<String>), NnueError> {
         // The loader picks the dimensions from the feature the crate was built
         // with, so one call serves every shape, and for most of them it is the
-        // whole job: their network is in `nn.bin`.
+        // whole job: their network is in `nn.bin`. The hand-crafted shapes have
+        // their coefficients compiled in, so for them the call ignores `path`
+        // and cannot fail.
         #[cfg(not(feature = "sfnn_progress"))]
         let (net, warnings) = attic_eval::load_network_with_warnings(path)?;
 

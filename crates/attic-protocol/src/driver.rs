@@ -2745,6 +2745,9 @@ mod tests {
         assert_eq!(run_with(""), "");
     }
 
+    // A hand-crafted shape reads no file, so there is nothing for this to fail
+    // on; `isready_needs_no_network_file` is its counterpart.
+    #[cfg(not(feature = "hce"))]
     #[test]
     #[cfg_attr(miri, ignore)]
     fn isready_without_network_reports_load_failure() {
@@ -2764,6 +2767,27 @@ mod tests {
             0,
             "a fast isready must emit no keep-alive newline: {out:?}"
         );
+    }
+
+    // The coefficients are compiled in, so the same missing `EvalDir` is no
+    // obstacle and `isready` answers.
+    #[cfg(feature = "hce")]
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn isready_needs_no_network_file() {
+        let out = run_with("isready\nquit\n");
+        assert!(
+            out.contains("readyok\n"),
+            "expected readyok with no file to load, got: {out:?}"
+        );
+        assert!(
+            !out.contains("eval load failed"),
+            "a shape with no file cannot fail to load one: {out:?}"
+        );
+        // No check on keep-alive newlines here. The test above has one because
+        // its load fails before the transposition table is sized. This `isready`
+        // succeeds and goes on to size it, and how long that takes depends on
+        // the machine. CI saw one bare newline, so the first tick had elapsed.
     }
 
     /// Count bare keep-alive newlines. Splitting on `\n` yields one trailing

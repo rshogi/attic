@@ -34,6 +34,14 @@ nnue_halfkp_128x2_32_32 = ["attic-protocol/nnue_halfkp_128x2_32_32"]
 nnue_halfkp_768x2_16_64 = ["attic-protocol/nnue_halfkp_768x2_16_64"]
 sym_kp_128x2_512 = ["attic-protocol/sym_kp_128x2_512"]
 sym_halfkp_128x2_512 = ["attic-protocol/sym_halfkp_128x2_512"]
+hce_material_17 = ["attic-protocol/hce_material_17", "hce"]
+hce_mobility_107_57 = ["attic-protocol/hce_mobility_107_57", "hce"]
+# Qualifies one of the two shapes above; it is not a shape of its own.
+hce_fit_qsearched = ["attic-protocol/hce_fit_qsearched"]
+# Internal: every hand-crafted shape turns it on. They read no `nn.bin`, so the
+# tests that expect a missing one to fail the load are gated on it. A `cfg`
+# cannot see another crate's features, hence one copy per crate.
+hce = []
 ref_check_time = ["attic-protocol/ref_check_time"]
 
 [dev-dependencies]
