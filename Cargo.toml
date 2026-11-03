@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/attic", "crates/attic-eval", "crates/attic-gensfen", "crates/attic-numa", "crates/attic-protocol", "crates/attic-search", "crates/attic-state", "crates/attic-storage", "crates/xtask"]
+members = ["crates/attic", "crates/attic-eval", "crates/attic-gensfen", "crates/attic-numa", "crates/attic-protocol", "crates/attic-rescore", "crates/attic-search", "crates/attic-state", "crates/attic-storage", "crates/xtask"]
 
 [workspace.package]
 edition = "2024"
