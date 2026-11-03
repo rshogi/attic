@@ -184,6 +184,12 @@ impl CapturePieceToHistory {
         self.table.iter_mut().for_each(|e| *e = v);
     }
 
+    /// The whole table, for tests comparing a reset table against a fresh one.
+    #[cfg(test)]
+    pub(crate) fn raw(&self) -> &[i16] {
+        &self.table
+    }
+
     fn index(moved: Piece, to: Square, captured: Piece) -> usize {
         (piece_code(moved) * SQ_NB + to.index() as usize) * CAPTURED_NB + captured_code(captured)
     }
@@ -230,6 +236,12 @@ impl ButterflyHistory {
     /// Overwrite every entry with `v`; the reference's init is `0`.
     pub fn fill(&mut self, v: i16) {
         self.table.iter_mut().for_each(|e| *e = v);
+    }
+
+    /// The whole table, for tests comparing a reset table against a fresh one.
+    #[cfg(test)]
+    pub(crate) fn raw(&self) -> &[i16] {
+        &self.table
     }
 
     fn index(us: Color, m: Move) -> usize {
@@ -327,6 +339,12 @@ impl LowPlyHistory {
     /// Overwrite every entry with `v`; the reference's init is `98`.
     pub fn fill(&mut self, v: i16) {
         self.table.iter_mut().for_each(|e| *e = v);
+    }
+
+    /// The whole table, for tests comparing a reset table against a fresh one.
+    #[cfg(test)]
+    pub(crate) fn raw(&self) -> &[i16] {
+        &self.table
     }
 
     fn index(ply: usize, m: Move) -> usize {
@@ -445,9 +463,16 @@ impl SharedHistories {
         };
         // The correction fill of `0` is a no-op on the zeroed allocation, but is
         // written explicitly so that every page is first-touched on the node.
-        out.fill_correction(CORRECTION_INIT);
-        out.fill_pawn(PAWN_INIT);
+        out.clear();
         out
+    }
+
+    /// Reset both tables in place to the reference `clear()` init — correction
+    /// `0`, pawn `-1238` — the state [`Self::new`] builds. A new game reuses the
+    /// node's tables this way, their pages staying where they were first touched.
+    pub fn clear(&self) {
+        self.fill_correction(CORRECTION_INIT);
+        self.fill_pawn(PAWN_INIT);
     }
 
     /// The node's thread count (the slot multiplier).
@@ -477,6 +502,14 @@ impl SharedHistories {
         for e in self.pawn.iter() {
             e.store(v, Ordering::Relaxed);
         }
+    }
+
+    /// Snapshots of both tables, for tests comparing a reset set against a fresh
+    /// one.
+    #[cfg(test)]
+    pub(crate) fn raw(&self) -> (Vec<i16>, Vec<i16>) {
+        let load = |t: &[AtomicI16]| t.iter().map(|e| e.load(Ordering::Relaxed)).collect();
+        (load(&self.correction), load(&self.pawn))
     }
 
     /// Flat index of the `channel` entry for side-to-move `color` in the slot
@@ -598,6 +631,13 @@ impl ContinuationCorrectionHistory {
             .for_each(|e| *e = v);
     }
 
+    /// The whole table flattened, for tests comparing a reset table against a
+    /// fresh one.
+    #[cfg(test)]
+    pub(crate) fn raw(&self) -> &[i16] {
+        self.table[..].as_flattened().as_flattened()
+    }
+
     /// The plane index selected by the outer `[pc][to]`.
     pub fn plane_index(pc: Piece, to: Square) -> usize {
         piece_code(pc) * SQ_NB + to.index() as usize
@@ -646,6 +686,12 @@ impl ContinuationHistory {
     /// Overwrite every entry with `v`; the reference's init is `-523`.
     pub fn fill(&mut self, v: i16) {
         self.table.iter_mut().for_each(|e| *e = v);
+    }
+
+    /// The whole table, for tests comparing a reset table against a fresh one.
+    #[cfg(test)]
+    pub(crate) fn raw(&self) -> &[i16] {
+        &self.table
     }
 
     /// The plane index selected by `(in_check, capture, pc, to)`.

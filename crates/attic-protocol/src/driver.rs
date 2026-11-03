@@ -213,8 +213,9 @@ pub struct UsiDriver<R: BufRead, W: Write + Send + 'static> {
     /// The worker thread pool: a main-worker slot plus `Threads − 1` persistent
     /// helper threads following the reference `idle_loop` (park → receive job →
     /// run → report → park). The main worker is the per-`go` coordinator thread
-    /// [`Self::handle_go`] spawns. Helpers own game-scoped histories, reset by
-    /// recreating the pool on `usinewgame` or a `Threads` resize.
+    /// [`Self::handle_go`] spawns. Helpers own game-scoped histories, reset in
+    /// place on `usinewgame` and dropped by recreating the pool on a `Threads`
+    /// resize.
     pool: ThreadPool,
     /// The active NUMA layout, detected once at construction from the engine
     /// default policy and replaced by every `setoption name NumaPolicy`.
@@ -854,11 +855,13 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         Arc::get_mut(&mut self.tt)
             .expect("no search worker holds the TT during usinewgame")
             .clear();
-        // `rebuild_pool` below swaps in the freshly built node table set, so
-        // cloning the current handle here avoids a throwaway allocation.
-        self.histories = Some(WorkerHistories::with_shared(Arc::clone(
-            &self.worker_shared[0],
-        )));
+        // The coordinator's per-worker tables are reset in place rather than
+        // reallocated: a fresh allocation would page-fault, zero and miss in the
+        // TLB all over again inside the next `go`.
+        self.histories
+            .as_mut()
+            .expect("session histories present when idle")
+            .clear();
         // The first-move-of-a-game sentinels.
         self.best_previous_score = VALUE_INFINITE;
         self.best_previous_average_score = VALUE_INFINITE;
@@ -867,10 +870,43 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         self.last_game_ply = 0;
         self.last_position = (PositionSfen::StartPos, Vec::new());
         self.last_go = None;
-        // The helper workers' game-scoped histories live in the pool threads, so
-        // recreating the pool is what gives them the fresh tables the reference
-        // `search_clear` provides.
-        self.rebuild_pool();
+        // Every `Threads` / `NumaPolicy` change already rebuilt the pool, so the
+        // layout normally still matches and the live pool and tables are reset
+        // in place, as the reference `Worker::clear()` does. A mismatch would
+        // mean a change that skipped the rebuild; rebuild then, which builds
+        // every table fresh.
+        if self.pool_layout_is_current() {
+            self.clear_worker_tables();
+        } else {
+            self.rebuild_pool();
+        }
+    }
+
+    /// Whether the live pool, binding and shared tables were built for the
+    /// current `Threads` / `NumaPolicy` options — what [`Self::rebuild_pool`]
+    /// would build now.
+    fn pool_layout_is_current(&self) -> bool {
+        let requested = self.options.threads();
+        let policy = self.options.text("NumaPolicy");
+        self.pool.size() == requested.max(1)
+            && self.numa_bound == compute_numa_binding(&self.numa_config, policy, requested)
+    }
+
+    /// Reset the node-shared tables and every helper's game-scoped histories in
+    /// place, leaving them exactly as a fresh [`Self::rebuild_pool`] would. The
+    /// caller resets the coordinator's own per-worker tables, and must have
+    /// joined any running search, so every helper is parked.
+    fn clear_worker_tables(&mut self) {
+        // Several workers share one node's set; reset each set once.
+        for (i, shared) in self.worker_shared.iter().enumerate() {
+            if !self.worker_shared[..i]
+                .iter()
+                .any(|seen| Arc::ptr_eq(seen, shared))
+            {
+                shared.clear();
+            }
+        }
+        self.pool.clear_workers();
     }
 
     /// Snapshot the book-selection options into a [`BookConfig`] for one `go`.
@@ -1786,9 +1822,10 @@ struct HelperJob {
 
 /// The state of one helper's coordination slot. The coordinator drives
 /// `Parked → Assigned` and `Finished → Parked`; the helper thread drives
-/// `Assigned → Running → Finished`. The pool sets `Exit`, only ever over
-/// `Parked`: every teardown path first joins the coordinator, which has
-/// returned every helper to `Parked`.
+/// `Assigned → Running → Finished`. The pool sets `Exit` and `Clear`, only ever
+/// over `Parked`: every teardown path first joins the coordinator, which has
+/// returned every helper to `Parked`. The helper answers `Clear` by resetting
+/// its histories and going back to `Parked`.
 enum SlotState {
     Parked,
     /// A job the coordinator posted, not yet picked up. Boxed because a
@@ -1797,6 +1834,9 @@ enum SlotState {
     Assigned(Box<HelperJob>),
     Running,
     Finished(WorkerResult),
+    /// Reset the helper's game-scoped histories in place (the reference
+    /// `Thread::clear_worker`).
+    Clear,
     Exit,
 }
 
@@ -1843,8 +1883,8 @@ impl HelperSlot {
 }
 
 /// The persistent helper thread body (the reference `idle_loop`). The
-/// game-scoped histories persist across jobs; the pool is recreated to reset
-/// them.
+/// game-scoped histories persist across jobs and are reset in place on a
+/// `Clear` request, which `usinewgame` posts.
 fn helper_loop(slot: Arc<HelperSlot>) {
     // Built lazily from the first job's `shared` handle, so the helper never
     // allocates a throwaway single-thread set before its node's real one
@@ -1857,6 +1897,15 @@ fn helper_loop(slot: Arc<HelperSlot>) {
                 match &*st {
                     SlotState::Assigned(_) => break,
                     SlotState::Exit => return,
+                    SlotState::Clear => {
+                        // Not built yet means no job has run since the pool was
+                        // built, and the first job builds them fresh anyway.
+                        if let Some(h) = histories.as_mut() {
+                            h.clear();
+                        }
+                        *st = SlotState::Parked;
+                        slot.cv.notify_all();
+                    }
                     _ => st = slot.cv.wait(st).unwrap_or_else(|e| e.into_inner()),
                 }
             }
@@ -1967,6 +2016,25 @@ impl ThreadPool {
                 helper_loop(slot_for_thread);
             }));
             self.slots.push(slot);
+        }
+    }
+
+    /// Reset every helper's game-scoped histories in place and wait until all
+    /// have done so — the reference `ThreadPool::clear`, which runs
+    /// `Worker::clear()` on each worker's own thread. Every helper must be parked
+    /// first, as for [`Self::shutdown`].
+    fn clear_workers(&self) {
+        for slot in &self.slots {
+            let mut st = slot.lock();
+            debug_assert!(matches!(&*st, SlotState::Parked), "helper must be parked");
+            *st = SlotState::Clear;
+            slot.cv.notify_all();
+        }
+        for slot in &self.slots {
+            let mut st = slot.lock();
+            while matches!(&*st, SlotState::Clear) {
+                st = slot.cv.wait(st).unwrap_or_else(|e| e.into_inner());
+            }
         }
     }
 
@@ -3113,6 +3181,86 @@ mod tests {
         assert_eq!(pool.size(), 4);
         pool.set(4);
         assert_eq!(pool.size(), 4, "a same-size set still rebuilds cleanly");
+    }
+
+    #[test]
+    fn thread_pool_clear_workers_returns_with_helpers_parked() {
+        // A parked helper answers `Clear` and goes back to `Parked`; with no
+        // helpers there is nothing to wait for. Neither may block, and the pool
+        // must stay usable afterwards.
+        let pool = ThreadPool::new(3);
+        pool.clear_workers();
+        pool.clear_workers();
+        for slot in &pool.slots {
+            assert!(matches!(&*slot.lock(), SlotState::Parked));
+        }
+        ThreadPool::new(1).clear_workers();
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn usinewgame_resets_the_tables_in_place() {
+        use attic_search::CorrChannel;
+        use attic_state::{Color, Move, Piece, PieceKind, Square};
+
+        let output = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let mut driver = UsiDriver::new(&b""[..], Arc::clone(&output));
+        driver.handle_setoption("Threads", "2").unwrap();
+        assert_eq!(driver.pool.size(), 2);
+
+        let shared = Arc::clone(&driver.worker_shared[0]);
+        let key = 0x1234_5678_9abc_def0_u64;
+        let pc = Piece::new(PieceKind::Silver, Color::White);
+        let sq = Square::new(4, 3).unwrap();
+        let mv = Move::make(Square::new(4, 4).unwrap(), sq, pc);
+        let fresh_pawn = shared.pawn_get(key, pc, sq);
+        shared.pawn_update(key, pc, sq, 500);
+        shared.correction_update(key, Color::Black, CorrChannel::Pawn, 500);
+        driver
+            .histories
+            .as_mut()
+            .unwrap()
+            .main
+            .update(Color::Black, mv, 500);
+        assert_ne!(shared.pawn_get(key, pc, sq), fresh_pawn);
+
+        driver.handle_usinewgame();
+
+        assert_eq!(driver.pool.size(), 2, "the pool survives usinewgame");
+        assert!(
+            Arc::ptr_eq(&shared, &driver.worker_shared[0]),
+            "the node-shared tables are reset in place, not reallocated"
+        );
+        assert_eq!(shared.pawn_get(key, pc, sq), fresh_pawn);
+        assert_eq!(
+            shared.correction_get(key, Color::Black, CorrChannel::Pawn),
+            0
+        );
+        let h = driver.histories.as_ref().unwrap();
+        assert!(Arc::ptr_eq(&h.shared, &shared));
+        assert_eq!(h.main.get(Color::Black, mv), 0);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn usinewgame_after_a_threads_change_still_matches_the_pool() {
+        let output = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let mut driver = UsiDriver::new(&b""[..], Arc::clone(&output));
+        for threads in ["3", "1", "2"] {
+            driver.handle_setoption("Threads", threads).unwrap();
+            let want: usize = threads.parse().unwrap();
+            assert_eq!(driver.pool.size(), want);
+            assert!(driver.pool_layout_is_current());
+            let shared = Arc::clone(&driver.worker_shared[0]);
+            driver.handle_usinewgame();
+            assert_eq!(driver.pool.size(), want);
+            assert_eq!(driver.worker_shared.len(), want);
+            assert!(Arc::ptr_eq(&shared, &driver.worker_shared[0]));
+            assert!(Arc::ptr_eq(
+                &driver.histories.as_ref().unwrap().shared,
+                &driver.worker_shared[0]
+            ));
+        }
     }
 
     #[test]
