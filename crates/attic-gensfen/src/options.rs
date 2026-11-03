@@ -22,6 +22,17 @@ pub enum Format {
     Pack,
 }
 
+impl Format {
+    /// The spelling `--format` takes, for the startup log.
+    pub fn name(self) -> &'static str {
+        match self {
+            Format::Jsonl => "jsonl",
+            Format::Psv => "psv",
+            Format::Pack => "pack",
+        }
+    }
+}
+
 impl std::str::FromStr for Format {
     type Err = String;
 
@@ -154,19 +165,125 @@ pub struct Options {
     pub hash_mb: usize,
 }
 
+/// What the command line asked for.
+///
+/// `--help` and `--version` are answers rather than settings, and they are not
+/// errors either: they belong on stdout with an exit status of 0, which is what
+/// `command --help | less` and every packaging check expect.
+pub enum Invocation {
+    Run(Box<Options>),
+    Help,
+    Version,
+}
+
+/// The build this binary came from, stamped in by `build.rs`.
+///
+/// The workspace version tracks upstream and does not move for a fix, so it
+/// cannot tell two builds apart on its own. Every `--version` and every run's
+/// first log line carries this, so a corpus can be traced to the code that
+/// wrote it.
+pub const BUILD: &str = env!("ATTIC_GENSFEN_BUILD");
+
+/// `attic-gensfen 9.70.0 (1fc9e08)`.
+pub fn version_line() -> String {
+    format!("attic-gensfen {} ({BUILD})", env!("CARGO_PKG_VERSION"))
+}
+
+/// Read the command line, answering `--help` and `--version` before anything
+/// else so they work without `--eval-dir` and `--out`.
+pub fn parse(args: impl Iterator<Item = String>) -> Result<Invocation, String> {
+    let args: Vec<String> = args.collect();
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        return Ok(Invocation::Help);
+    }
+    if args.iter().any(|arg| arg == "--version" || arg == "-V") {
+        return Ok(Invocation::Version);
+    }
+    Options::parse(args.into_iter()).map(|options| Invocation::Run(Box::new(options)))
+}
+
 impl Options {
+    /// The first line of `--help`, and what a bad flag is answered with.
     pub const USAGE: &'static str = "\
-usage: attic-gensfen --eval-dir DIR --out FILE
-                     [--depth 9] [--nodes N] [--multipv 5] [--threads N]
-                     [--games N] [--positions N]
-                     [--max-ply 320] [--entering-king CSARule27]
-                     [--quick-draw on|off]
-                     [--resign-cp 3000] [--resign-count 1]
-                     [--fv-scale 28] [--format jsonl|psv|pack]
-                     [--headroom 8] [--governor-secs 30] [--eval-limit N]
-                     [--random-move-count 5] [--random-move-minply 16]
-                     [--random-move-maxply 32] [--start-sfens FILE]
-                     [--recover-from DIR] [--seed 1] [--hash 16]";
+usage: attic-gensfen --eval-dir DIR --out FILE [options]
+       attic-gensfen --help | --version";
+
+    /// The full option table.
+    ///
+    /// Every flag is listed with the value it takes and the default it has,
+    /// because the defaults are what bite: `--random-move-count` is 5, not 0,
+    /// and a corpus meant to be all best moves comes out with five random
+    /// plies a game if the flag is left off. Nothing here is a substitute for
+    /// the notes at the end, which are the things that are not visible in the
+    /// output when they go wrong.
+    pub const HELP: &'static str = "\
+Generate NNUE teacher data by self-play, driving the search in-process.
+
+required:
+  --eval-dir DIR         directory holding nn.bin
+  --out FILE             where to write; opened for APPEND, never truncated
+
+search:
+  --depth N              search depth                              [9]
+  --nodes N              node ceiling per search, 0 for none       [0]
+  --multipv N            candidates recorded per position          [5]
+  --fv-scale N           evaluation scale; NAGISA V4 wants 28      [28]
+  --hash MB              transposition table PER WORKER            [16]
+
+how much:
+  --games N              stop after N games, 0 to run until killed [0]
+  --positions N          stop after N positions instead, 0 for off [0]
+  --threads N            worker threads, 0 for every system thread [0]
+  --headroom N           threads left to the rest of the machine   [8]
+  --governor-secs N      how often to re-read the load, 0 to pin   [30]
+
+how a game ends:
+  --max-ply N            hard cap on the length of a game          [320]
+  --entering-king RULE   NoEnteringKing, CSARule24, CSARule24H,
+                         CSARule27, CSARule27H, TryRule            [CSARule27]
+  --quick-draw on|off    repetition rule of the search: on adjudicates a
+                         second occurrence, off waits for the fourth in
+                         the stored chain. A game is scored on the fourth
+                         either way                       [the build's default]
+  --resign-cp N          resign at this score, 0 to play on        [3000]
+  --resign-count N       plies at that score before resigning      [1]
+
+what gets written:
+  --format F             jsonl, psv, or pack                       [jsonl]
+  --eval-limit N         drop records past this score, 0 for none  [0]
+
+where a game starts:
+  --start-sfens FILE     draw openings from this file, one per line
+  --random-move-count N  random plies played per game, 0 for none  [5]
+  --random-move-minply N first ply that may be random              [16]
+  --random-move-maxply N last ply that may be random               [32]
+  --recover-from DIR     resume the games in this corpus instead of
+                         drawing openings; refuses --start-sfens and
+                         a non-zero --random-move-count
+  --seed N               base for the random number generator      [1]
+
+  -h, --help             this text
+  -V, --version          version and the commit it was built from
+
+notes:
+  --random-move-count defaults to 5. A corpus of nothing but search best
+  moves needs --random-move-count 0 stated; leaving the flag off does not
+  give it. The ply window counts plies played in THIS game, so with an
+  opening at move 37 the random plies land at moves 53 to 69, not 16 to 32.
+
+  --out is opened for append. Re-running with the same --out and the same
+  --seed writes the same games again, into the same file.
+
+  --eval-limit drops records without shortening the game, so a corpus
+  written with it has games whose tails are missing rather than games that
+  ended early. --recover-from is what plays those tails.
+
+  Repetition and the entering-king law end games; a game that reaches
+  --max-ply is recorded as a draw.
+
+  --hash is per worker, not per process and not per NUMA node. The workers
+  on a NUMA node share one table sized --hash times their number, so 256
+  threads over 8 NUMA nodes at the default hold 512 MB a node, 4 GB in all.";
 
     pub fn parse(args: impl Iterator<Item = String>) -> Result<Self, String> {
         let mut eval_dir = None;
@@ -327,6 +444,25 @@ usage: attic-gensfen --eval-dir DIR --out FILE
     }
 }
 
+/// The spelling `--entering-king` would have taken for this rule.
+///
+/// The inverse of [`parse_entering_king`], for the startup log. `Debug` names
+/// the variant (`Point27`), which is not the name the caller typed
+/// (`CSARule27`) and would send a reader looking for a flag value that does not
+/// exist.
+pub fn entering_king_name(rule: attic_search::EnteringKingRule) -> &'static str {
+    use attic_search::EnteringKingRule;
+
+    match rule {
+        EnteringKingRule::None => "NoEnteringKing",
+        EnteringKingRule::Point24 => "CSARule24",
+        EnteringKingRule::Point24H => "CSARule24H",
+        EnteringKingRule::Point27 => "CSARule27",
+        EnteringKingRule::Point27H => "CSARule27H",
+        EnteringKingRule::Try => "TryRule",
+    }
+}
+
 /// `--entering-king`, taking the engine's own option spellings.
 ///
 /// Deliberately not [`EnteringKingRule::from_option`], which answers an
@@ -394,6 +530,81 @@ fn load_start_sfens(path: &std::path::Path) -> Result<Vec<String>, String> {
         return Err(format!("--start-sfens: no positions in {display}"));
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod help_tests {
+    use super::*;
+
+    fn parse_of(args: &[&str]) -> Result<Invocation, String> {
+        parse(args.iter().map(|arg| arg.to_string()))
+    }
+
+    /// Both answers have to work on their own. Requiring `--eval-dir` and
+    /// `--out` first would mean the only way to read the option list is to
+    /// already know two of the options.
+    #[test]
+    fn help_and_version_need_no_other_flags() {
+        assert!(matches!(parse_of(&["--help"]), Ok(Invocation::Help)));
+        assert!(matches!(parse_of(&["-h"]), Ok(Invocation::Help)));
+        assert!(matches!(parse_of(&["--version"]), Ok(Invocation::Version)));
+        assert!(matches!(parse_of(&["-V"]), Ok(Invocation::Version)));
+        // And they win over a command line that is otherwise unusable, so a
+        // half-remembered invocation can be fixed by appending `--help`.
+        assert!(matches!(
+            parse_of(&["--depth", "9", "--help"]),
+            Ok(Invocation::Help)
+        ));
+    }
+
+    /// Every flag the help names has to be a flag the parser takes. The two
+    /// drift apart in the direction that matters most — the help is what a
+    /// caller reads, so a flag misspelled here is a command line that fails
+    /// for a reason the reader cannot see.
+    #[test]
+    fn every_flag_named_in_the_help_is_accepted() {
+        let flags: Vec<&str> = Options::HELP
+            .split_whitespace()
+            .filter(|word| word.starts_with("--") && word.len() > 2)
+            // The notes are prose about the same flags, and a sentence can end
+            // in one; strip the punctuation rather than skipping the section.
+            .map(|word| word.trim_end_matches(['.', ',', ';', ':']))
+            // These two are answers, not settings: they parse fine and take no
+            // value, so the "needs a value" check below does not apply.
+            .filter(|word| !matches!(*word, "--help" | "--version"))
+            .collect();
+        assert!(flags.len() > 15, "the help lists {} flags", flags.len());
+
+        for flag in flags {
+            let error = parse_of(&[flag])
+                .err()
+                .unwrap_or_else(|| panic!("{flag} parsed with no value"));
+            assert!(
+                !error.starts_with("unknown flag"),
+                "the help names {flag}, which the parser rejects: {error}"
+            );
+        }
+    }
+
+    /// The build stamp is what tells two binaries apart, so an empty one is a
+    /// silently useless `--version`.
+    #[test]
+    fn the_version_line_carries_a_build() {
+        let line = version_line();
+        assert!(line.starts_with("attic-gensfen "), "{line}");
+        assert!(!BUILD.is_empty(), "the build stamp is empty");
+        assert!(line.contains(BUILD), "{line}");
+    }
+
+    /// `--entering-king` has to round-trip: the log prints what the caller
+    /// would have typed, not the variant's Rust name.
+    #[test]
+    fn every_rule_name_parses_back_to_its_rule() {
+        for spelling in attic_search::EnteringKingRule::STRINGS {
+            let rule = parse_entering_king(spelling).expect("a declared spelling parses");
+            assert_eq!(entering_king_name(rule), spelling);
+        }
+    }
 }
 
 #[cfg(test)]
