@@ -32,3 +32,11 @@ nnue_halfkp_128x2_32_32 = ["attic-eval/nnue_halfkp_128x2_32_32", "attic-search/n
 nnue_halfkp_768x2_16_64 = ["attic-eval/nnue_halfkp_768x2_16_64", "attic-search/nnue_halfkp_768x2_16_64"]
 sym_kp_128x2_512 = ["attic-eval/sym_kp_128x2_512", "attic-search/sym_kp_128x2_512"]
 sym_halfkp_128x2_512 = ["attic-eval/sym_halfkp_128x2_512", "attic-search/sym_halfkp_128x2_512"]
+hce_material_17 = ["attic-eval/hce_material_17", "attic-search/hce_material_17", "hce"]
+hce_mobility_107_57 = ["attic-eval/hce_mobility_107_57", "attic-search/hce_mobility_107_57", "hce"]
+# Qualifies one of the two shapes above; it is not a shape of its own.
+hce_fit_qsearched = ["attic-eval/hce_fit_qsearched", "attic-search/hce_fit_qsearched"]
+# Internal: every hand-crafted shape turns it on. A `cfg` cannot see another
+# crate's features, so the tests that need a synthetic network, which an HCE
+# shape does not have, are gated on this crate's own copy.
+hce = []

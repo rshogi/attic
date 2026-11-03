@@ -64,14 +64,30 @@ fn handshake_round_trip_via_spawned_binary() {
     // No `EvalDir` was set, so `isready` looks for the default `eval/nn.bin`,
     // absent in the spawned binary's CWD: a load-failure notice and no
     // `readyok`.
-    assert!(
-        stdout.contains("info string eval load failed:"),
-        "missing eval-load-failure notice in:\n{stdout}"
-    );
-    assert!(
-        !stdout.contains("readyok"),
-        "readyok must not appear on a failed load in:\n{stdout}"
-    );
+    #[cfg(not(feature = "hce"))]
+    {
+        assert!(
+            stdout.contains("info string eval load failed:"),
+            "missing eval-load-failure notice in:\n{stdout}"
+        );
+        assert!(
+            !stdout.contains("readyok"),
+            "readyok must not appear on a failed load in:\n{stdout}"
+        );
+    }
+    // A hand-crafted shape reads no file, so the same handshake gets as far as
+    // `readyok`.
+    #[cfg(feature = "hce")]
+    {
+        assert!(
+            stdout.contains("readyok\n"),
+            "missing readyok in:\n{stdout}"
+        );
+        assert!(
+            !stdout.contains("eval load failed"),
+            "a shape with no file cannot fail to load one, in:\n{stdout}"
+        );
+    }
     assert!(
         !stdout.contains("rejected"),
         "unexpected rejection in:\n{stdout}"

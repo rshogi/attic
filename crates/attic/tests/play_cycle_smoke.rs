@@ -66,24 +66,53 @@ fn multi_cycle_play_via_spawned_binary() {
     assert!(stdout.contains("usiok\n"), "missing usiok in:\n{stdout}");
     // With no `EvalDir` set the default `eval/nn.bin` is absent in the spawned
     // binary's CWD, so the load fails and each `go` resigns.
-    assert!(
-        stdout.contains("info string eval load failed:"),
-        "missing eval-load-failure notice in:\n{stdout}"
-    );
-    assert!(
-        !stdout.contains("readyok"),
-        "unexpected readyok in:\n{stdout}"
-    );
+    #[cfg(not(feature = "hce"))]
+    {
+        assert!(
+            stdout.contains("info string eval load failed:"),
+            "missing eval-load-failure notice in:\n{stdout}"
+        );
+        assert!(
+            !stdout.contains("readyok"),
+            "unexpected readyok in:\n{stdout}"
+        );
+    }
+    // A hand-crafted shape reads no file: the same session loads, and each `go`
+    // plays a move.
+    #[cfg(feature = "hce")]
+    {
+        assert!(
+            stdout.contains("readyok\n"),
+            "missing readyok in:\n{stdout}"
+        );
+        assert!(
+            !stdout.contains("eval load failed"),
+            "a shape with no file cannot fail to load one, in:\n{stdout}"
+        );
+    }
 
     let bestmoves: Vec<&str> = stdout
         .lines()
         .filter_map(|l| l.strip_prefix("bestmove "))
         .collect();
+    #[cfg(not(feature = "hce"))]
     assert_eq!(
         bestmoves,
         vec!["resign", "resign"],
         "expected two resign bestmoves in:\n{stdout}"
     );
+    #[cfg(feature = "hce")]
+    {
+        assert_eq!(
+            bestmoves.len(),
+            2,
+            "expected one bestmove per go in:\n{stdout}"
+        );
+        assert!(
+            !bestmoves.contains(&"resign"),
+            "a legal move exists, in:\n{stdout}"
+        );
+    }
     for m in &bestmoves {
         assert!(
             is_well_formed_usi_move(m),

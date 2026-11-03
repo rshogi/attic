@@ -1,6 +1,10 @@
 //! Multi-cycle session tests for the driver's behaviour when no evaluation
 //! network is loaded: the session must survive, `isready` must report the load
 //! failure, and every `go` must reply `bestmove resign` with the notice.
+//!
+//! A hand-crafted shape (`hce_*`) loads nothing and so cannot be in that state;
+//! the last test here is its counterpart, and the other three are left out of
+//! its build.
 
 use std::sync::{Arc, Mutex};
 
@@ -38,6 +42,7 @@ fn is_well_formed_usi_move(s: &str) -> bool {
     true
 }
 
+#[cfg(not(feature = "hce"))]
 #[test]
 #[cfg_attr(miri, ignore)]
 fn multi_cycle_without_network_survives_and_resigns() {
@@ -73,6 +78,7 @@ fn multi_cycle_without_network_survives_and_resigns() {
     }
 }
 
+#[cfg(not(feature = "hce"))]
 #[test]
 #[cfg_attr(miri, ignore)]
 fn position_then_go_after_sfen_without_network_resigns() {
@@ -94,6 +100,7 @@ fn position_then_go_after_sfen_without_network_resigns() {
     assert_eq!(bestmoves, vec!["resign"], "in:\n{out}");
 }
 
+#[cfg(not(feature = "hce"))]
 #[test]
 #[cfg_attr(miri, ignore)]
 fn usinewgame_between_cycles_without_network_resigns() {
@@ -111,4 +118,45 @@ fn usinewgame_between_cycles_without_network_resigns() {
         .filter_map(|l| l.strip_prefix("bestmove "))
         .collect();
     assert_eq!(bestmoves, vec!["resign", "resign"], "in:\n{out}");
+}
+
+/// The same session with no `EvalDir` to find: the coefficients are compiled
+/// in, so `isready` answers and every `go` plays a move instead of resigning.
+#[cfg(feature = "hce")]
+#[test]
+#[cfg_attr(miri, ignore)]
+fn multi_cycle_without_a_file_plays_moves() {
+    let session = "usi\n\
+                   isready\n\
+                   position startpos\n\
+                   go depth 1\n\
+                   position startpos moves 7g7f\n\
+                   go depth 1\n\
+                   quit\n";
+    let out = drive(session);
+
+    assert!(out.contains("usiok\n"), "missing usiok in:\n{out}");
+    assert!(out.contains("readyok\n"), "missing readyok in:\n{out}");
+    assert!(
+        !out.contains("eval load failed"),
+        "a shape with no file cannot fail to load one, in:\n{out}"
+    );
+    assert!(
+        !out.contains("no eval network loaded"),
+        "unexpected no-network notice in:\n{out}"
+    );
+
+    let bestmoves: Vec<&str> = out
+        .lines()
+        .filter_map(|l| l.strip_prefix("bestmove "))
+        .collect();
+    assert_eq!(
+        bestmoves.len(),
+        2,
+        "expected one bestmove per go in:\n{out}"
+    );
+    for m in &bestmoves {
+        assert_ne!(*m, "resign", "a legal move exists, in:\n{out}");
+        assert!(is_well_formed_usi_move(m), "malformed bestmove: {m:?}");
+    }
 }

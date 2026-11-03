@@ -52,11 +52,15 @@ nnue_halfkp_768x2_16_64 = ["nnue_standard", "nnue_halfkp"]
 #                        never used, because V3 was trained with eight buckets.
 #   nnue_standard        every YaneuraOu standard shape
 #   nnue_halfkp          ... whose features are `HalfKP` (the other is K+P)
+#   hce                  every hand-crafted shape. Unlike the others it also
+#                        stands for them in the guard's pairwise lists, because
+#                        an HCE shape is exactly what `hce` being on means.
 sfnn = []
 sfnn_progress = ["sfnn"]
 sfnn_progress_ek = ["sfnn_progress"]
 nnue_standard = []
 nnue_halfkp = []
+hce = []
 # Manaka's own shapes, spelled the way YaneuraOu spells its architectures:
 # feature space, transformer width by two perspectives, then the dense width.
 # `SYM` is the prefix Manaka's `network_type` already uses. Both are order
@@ -66,6 +70,24 @@ nnue_halfkp = []
 # `src/manaka.rs`.
 sym_kp_128x2_512 = []
 sym_halfkp_128x2_512 = []
+# The two hand-crafted evaluations (HCE), spelled the same way: how many
+# coefficients, then how they are grouped. Material is 10 board slots and 7
+# hand slots; Mobility is 107 board features and 57 for a piece in hand.
+# Neither reads a file -- the coefficients are a generated source file compiled
+# into the binary -- and neither shares anything with the network shapes: they
+# count pieces and attacks straight off the `Position`, so `features.rs` and
+# everything behind it is left out of the build. See `src/hce.rs`.
+hce_material_17 = ["hce"]
+hce_mobility_107_57 = ["hce"]
+# Which fit of the HCE shape selected above, not a shape of its own. Off is the
+# fit over the teacher as generated; on is the fit over the same teacher moved
+# to its quiescence leaves (`qleap/Training_dataset_qsearched_by_NAGISA_V4`),
+# where a position in the middle of an exchange no longer votes. Same lengths,
+# same extraction, other numbers -- see the two `hce_weights_*_qs.rs` files.
+# It qualifies a shape rather than being one, so the guard in `types.rs` leaves
+# it out of every list: counting it would reject the builds it exists to
+# describe.
+hce_fit_qsearched = []
 
 [dev-dependencies]
 proptest = "~1.11"
