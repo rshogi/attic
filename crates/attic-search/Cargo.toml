@@ -22,6 +22,7 @@ quick-draw = ["attic-state/quick-draw", "attic-eval/quick-draw"]
 # `progress.bin` beside it.
 sfnn_halfkahm2_1536_15_32_k3k3 = ["attic-eval/sfnn_halfkahm2_1536_15_32_k3k3", "sfnn"]
 sfnn_halfkahm2_1024_15_64_progress8kpabs = ["attic-eval/sfnn_halfkahm2_1024_15_64_progress8kpabs", "sfnn_progress"]
+sfnn_halfkahm2_1024_15_64_progress8ek = ["attic-eval/sfnn_halfkahm2_1024_15_64_progress8ek", "sfnn_progress"]
 sfnn_halfkahm2_2304_15_64_progress8ek = ["attic-eval/sfnn_halfkahm2_2304_15_64_progress8ek", "sfnn_progress"]
 nnue_kp_256x2_32_32 = ["attic-eval/nnue_kp_256x2_32_32"]
 nnue_halfkp_256x2_32_32 = ["attic-eval/nnue_halfkp_256x2_32_32"]

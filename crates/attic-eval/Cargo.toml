@@ -25,8 +25,13 @@ quick-draw = ["attic-state/quick-draw"]
 # are game progress cut into eight buckets (the coefficients are in a
 # `progress.bin` beside `nn.bin`), and they differ in one thing: `ek` sends
 # mutual entering kings to the ninth stack, `kpabs` has no such case.
+#
+# The two 1024 shapes read the same file layout and differ in that rule alone. The
+# file does not say which one it was trained for (a net trained with the ninth
+# stack and one trained without carry the same header), so the build does.
 sfnn_halfkahm2_1536_15_32_k3k3 = ["sfnn"]
 sfnn_halfkahm2_1024_15_64_progress8kpabs = ["sfnn_progress"]
+sfnn_halfkahm2_1024_15_64_progress8ek = ["sfnn_progress_ek"]
 sfnn_halfkahm2_2304_15_64_progress8ek = ["sfnn_progress_ek"]
 # YaneuraOu's standard shapes. One dense stack, no bucketing, and the
 # perspectives concatenated rather than multiplied — see `NetDims::KP256`. The
@@ -42,7 +47,8 @@ nnue_halfkp_768x2_16_64 = ["nnue_standard", "nnue_halfkp"]
 #   sfnn                 every SFNN shape
 #   sfnn_progress        ... whose stack is picked by game progress
 #   sfnn_progress_ek     ... and which also sends mutual entering kings to the ninth
-#                        stack (NAGISA V4). Without it the ninth is read and
+#                        stack (NAGISA V4, and the 1024 net tatara trains with the
+#                        entering-king bucket). Without it the ninth is read and
 #                        never used, because V3 was trained with eight buckets.
 #   nnue_standard        every YaneuraOu standard shape
 #   nnue_halfkp          ... whose features are `HalfKP` (the other is K+P)

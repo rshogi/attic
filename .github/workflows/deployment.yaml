@@ -60,7 +60,7 @@ jobs:
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             echo 'networks=[{"name":"kp256","feature":"nnue_kp_256x2_32_32"}]' >> "$GITHUB_OUTPUT"
           else
-            echo 'networks=[{"name":"kp256","feature":"nnue_kp_256x2_32_32"},{"name":"halfkp256","feature":"nnue_halfkp_256x2_32_32"},{"name":"sfnn1536","feature":"sfnn_halfkahm2_1536_15_32_k3k3"},{"name":"sfnn1024","feature":"sfnn_halfkahm2_1024_15_64_progress8kpabs"},{"name":"sfnn2304","feature":"sfnn_halfkahm2_2304_15_64_progress8ek"}]' >> "$GITHUB_OUTPUT"
+            echo 'networks=[{"name":"kp256","feature":"nnue_kp_256x2_32_32"},{"name":"halfkp256","feature":"nnue_halfkp_256x2_32_32"},{"name":"sfnn1536","feature":"sfnn_halfkahm2_1536_15_32_k3k3"},{"name":"sfnn1024","feature":"sfnn_halfkahm2_1024_15_64_progress8kpabs"},{"name":"sfnn1024ek","feature":"sfnn_halfkahm2_1024_15_64_progress8ek"},{"name":"sfnn2304","feature":"sfnn_halfkahm2_2304_15_64_progress8ek"}]' >> "$GITHUB_OUTPUT"
           fi
 
   build:
