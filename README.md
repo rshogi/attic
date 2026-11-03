@@ -38,13 +38,16 @@ USI プロトコルを標準入出力で話します。引数なしで `attic` �
 
 YaneuraOu を 1 とした比です。YaneuraOu 側も同じ評価関数で動かしています。1 スレッドで、1 局面 10 万ノード × 128 局面を交互に測定しました。
 
-| 評価関数                  | `cargo xtask build-pgo` | `cargo build --release` |
-| ------------------------- | ----------------------- | ----------------------- |
-| `nnue_kp_256x2_32_32`     | 1.020                   | 0.976                   |
-| `nnue_halfkp_128x2_32_32` | 1.029                   | 0.999                   |
-| `nnue_halfkp_768x2_16_64` | 1.050                   | 1.042                   |
+| ビルド                    | コマンド                | 速度比 |
+| ------------------------- | ----------------------- | ------ |
+| `nnue_kp_256x2_32_32`     | `cargo xtask build-pgo` | 1.020  |
+| `nnue_kp_256x2_32_32`     | `cargo build --release` | 0.976  |
+| `nnue_halfkp_128x2_32_32` | `cargo xtask build-pgo` | 1.029  |
+| `nnue_halfkp_128x2_32_32` | `cargo build --release` | 0.999  |
+| `nnue_halfkp_768x2_16_64` | `cargo xtask build-pgo` | 1.050  |
+| `nnue_halfkp_768x2_16_64` | `cargo build --release` | 1.042  |
 
-`cargo xtask build-pgo` は 3 つとも YaneuraOu 以上です。`cargo build --release` は `nnue_kp_256x2_32_32` と `nnue_halfkp_128x2_32_32` で 1.000 を下回ります。AVX-512 のカーネルと、表にない評価関数の速度は測っていません。
+AVX-512 のカーネルと、表にない評価関数の速度は測っていません。
 
 ## 対応している評価関数
 
