@@ -45,11 +45,11 @@ PGO ビルドだけが YaneuraOu と同等以上で、通常ビルドは下回�
 
 ## 対応している評価関数
 
-| type | feature                                 |
-| ---- | --------------------------------------- |
-| SFNN | `sfnn_halfkahm2_1536_15_32_k3k3`        |
-| SFNN | `sfnn_halfkahm2_2304_15_64_progress8ek` |
-| NNUE | `nnue_kp_256x2_32_32`                   |
-| NNUE | `nnue_halfkp_256x2_32_32`               |
-| SYM  | `sym_kp_128x2_512`                      |
-| SYM  | `sym_halfkp_128x2_512`                  |
+| type | feature                            |
+| ---- | ---------------------------------- |
+| SFNN | `halfkahm2_1536_15_32_k3k3`        |
+| SFNN | `halfkahm2_2304_15_64_progress8ek` |
+| NNUE | `kp_256x2_32_32`                   |
+| NNUE | `halfkp_256x2_32_32`               |
+| SYM  | `kp_128x2_512`                     |
+| SYM  | `halfkp_128x2_512`                 |
