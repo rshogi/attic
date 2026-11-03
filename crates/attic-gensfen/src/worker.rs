@@ -12,6 +12,7 @@ use crate::game::{Collector, DeepestPvs, Rng, Start, play_game};
 use crate::governor::Governor;
 use crate::options::{Format, Options};
 use crate::recover::{Resume, Shard, Source, record_len, resume_from, rewrite_results};
+use crate::seen::Seen;
 
 /// Each worker writes its own file rather than sharing one behind a lock: a
 /// game is a single long line, and interleaving two writers mid-line corrupts
@@ -26,6 +27,8 @@ pub fn run(
     index: usize,
     games_played: &Arc<AtomicU64>,
     positions_written: &Arc<AtomicU64>,
+    repeats_skipped: &Arc<AtomicU64>,
+    seen: Option<&Seen>,
     source: Option<&Source>,
 ) {
     let suffix = match options.format {
@@ -125,7 +128,7 @@ pub fn run(
             ),
             None => (None, Vec::new()),
         };
-        let game = play_game(&mut qs, &collected, options, &mut rng, start);
+        let game = play_game(&mut qs, &collected, options, &mut rng, start, seen);
         // The kept records carry the original game's results, and the
         // continuation may have ended the other way round, so they are stamped
         // with this game's result before the new records are appended.
@@ -155,6 +158,7 @@ pub fn run(
         mine += 1;
         played += game.records.len() as u64;
         positions_written.fetch_add(game.records.len() as u64, Ordering::Relaxed);
+        repeats_skipped.fetch_add(game.repeats, Ordering::Relaxed);
         let total = games_played.fetch_add(1, Ordering::Relaxed) + 1;
         if mine.is_multiple_of(10) {
             let elapsed = started.elapsed().as_secs_f64();

@@ -20,6 +20,8 @@ mod game;
 mod governor;
 mod options;
 mod recover;
+mod seen;
+mod tree;
 mod worker;
 
 use std::process::ExitCode;
@@ -31,6 +33,8 @@ use attic_search::Search;
 use attic_storage::TranspositionTable;
 
 use options::Options;
+use seen::Seen;
+use tree::Frontier;
 
 /// Generate teacher data from the command line `args`, which excludes the
 /// program name (`std::env::args().skip(1)` for a standalone binary).
@@ -106,7 +110,8 @@ pub fn run(args: impl Iterator<Item = String>) -> ExitCode {
     );
     eprintln!(
         "gensfen: format={} max_ply={} entering_king={} resign_cp={} resign_count={} \
-         quick_draw={} eval_limit={} random_moves={}@{}..{} games={} positions={}",
+         quick_draw={} eval_limit={} random_moves={}@{}..{} games={} positions={} \
+         dedup_mb={} dedup_max_ply={} move_margin={} book_ply={} book_width={} book_band={}",
         options.format.name(),
         options.max_ply,
         options::entering_king_name(options.entering_king),
@@ -122,6 +127,12 @@ pub fn run(args: impl Iterator<Item = String>) -> ExitCode {
         options.random_move_maxply,
         options.games,
         options.positions,
+        options.dedup_mb,
+        options.dedup_max_ply,
+        options.move_margin,
+        options.book_ply,
+        options.book_width,
+        options.book_band,
     );
 
     // `--threads` is the ceiling; the governor decides how much of it to use.
@@ -159,8 +170,26 @@ pub fn run(args: impl Iterator<Item = String>) -> ExitCode {
     };
     let source = source.as_ref();
 
+    // The tree's frontier is fleet-wide: one per process, lent to every worker
+    // on every NUMA node. A frontier per node would have the nodes expanding
+    // the same boards, which is the duplication the tree exists to remove.
+    let frontier = (options.book_ply > 0).then(|| {
+        let roots = match options.start_sfens.is_empty() {
+            true => vec![attic_state::format_sfen(&attic_state::Position::startpos())],
+            false => options.start_sfens.clone(),
+        };
+        eprintln!(
+            "gensfen: expanding a book from {} root(s) to move {}",
+            roots.len(),
+            options.book_ply
+        );
+        Frontier::new(roots, &options)
+    });
+    let frontier = frontier.as_ref();
+
     let games_played = Arc::new(AtomicU64::new(0));
     let positions_written = Arc::new(AtomicU64::new(0));
+    let repeats_skipped = Arc::new(AtomicU64::new(0));
     let numa = Arc::new(numa);
 
     std::thread::scope(|outer| {
@@ -168,6 +197,7 @@ pub fn run(args: impl Iterator<Item = String>) -> ExitCode {
             let numa = Arc::clone(&numa);
             let games_played = Arc::clone(&games_played);
             let positions_written = Arc::clone(&positions_written);
+            let repeats_skipped = Arc::clone(&repeats_skipped);
             let base = &base;
             let options = &options;
 
@@ -194,11 +224,23 @@ pub fn run(args: impl Iterator<Item = String>) -> ExitCode {
                 tt.resize(options.hash_mb * here.max(1));
                 let tt = &tt;
 
+                // Held per node for the same reason, but for the opposite
+                // relationship between workers: the duplicates this catches are
+                // *between* games, so a table private to one worker would miss
+                // most of them. Sized per node rather than per worker. A tree
+                // has no games to repeat, so it does not allocate one.
+                let seen = match frontier {
+                    Some(_) => None,
+                    None => Seen::new(options.dedup_mb),
+                };
+                let seen = seen.as_ref();
+
                 std::thread::scope(|inner| {
                     for slot in 0..here {
                         let numa = Arc::clone(&numa);
                         let games_played = Arc::clone(&games_played);
                         let positions_written = Arc::clone(&positions_written);
+                        let repeats_skipped = Arc::clone(&repeats_skipped);
                         let local = &local;
 
                         inner.spawn(move || {
@@ -208,17 +250,29 @@ pub fn run(args: impl Iterator<Item = String>) -> ExitCode {
                                 .seed
                                 .wrapping_mul(1_000_003)
                                 .wrapping_add(index as u64);
-                            worker::run(
-                                local.network(),
-                                tt,
-                                options,
-                                governor,
-                                seed,
-                                index,
-                                &games_played,
-                                &positions_written,
-                                source,
-                            );
+                            match frontier {
+                                Some(frontier) => tree::run(
+                                    local.network(),
+                                    tt,
+                                    options,
+                                    governor,
+                                    frontier,
+                                    index,
+                                ),
+                                None => worker::run(
+                                    local.network(),
+                                    tt,
+                                    options,
+                                    governor,
+                                    seed,
+                                    index,
+                                    &games_played,
+                                    &positions_written,
+                                    &repeats_skipped,
+                                    seen,
+                                    source,
+                                ),
+                            }
                         });
                     }
                 });
@@ -226,10 +280,20 @@ pub fn run(args: impl Iterator<Item = String>) -> ExitCode {
         }
     });
 
+    if let Some(frontier) = frontier {
+        let (searched, dropped, refuted) = frontier.counts();
+        eprintln!(
+            "gensfen: finished, {searched} boards searched, \
+             {refuted} refuted by their own search, {dropped} outside the band"
+        );
+        return ExitCode::SUCCESS;
+    }
+
     eprintln!(
-        "gensfen: finished, {} games / {} positions",
+        "gensfen: finished, {} games / {} positions, {} repeats skipped",
         games_played.load(Ordering::Relaxed),
-        positions_written.load(Ordering::Relaxed)
+        positions_written.load(Ordering::Relaxed),
+        repeats_skipped.load(Ordering::Relaxed)
     );
     ExitCode::SUCCESS
 }
