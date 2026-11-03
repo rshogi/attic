@@ -4,11 +4,23 @@ use std::sync::{Arc, Mutex};
 
 use attic_search::{EnteringKingConfig, PvInfo, PvSink, QSearch, RootKind};
 use attic_state::{
-    Move, PackedSfen, Position, RepetitionState, format_sfen, format_usi_move, parse_sfen,
-    sfen_pack,
+    Move, PackedSfen, Position, RepetitionState, format_sfen, parse_sfen, sfen_pack,
 };
 
 use crate::options::Options;
+use crate::seen::Seen;
+
+mod encode;
+
+#[cfg(all(
+    test,
+    not(any(
+        feature = "sym_kp_128x2_512",
+        feature = "sym_halfkp_128x2_512",
+        feature = "hce"
+    ))
+))]
+mod dedup_tests;
 
 /// One position's contribution to the corpus.
 pub struct Record {
@@ -37,6 +49,12 @@ pub struct Game {
     /// From Black's point of view: `1` Black won, `-1` White won, `0` draw.
     pub result: i32,
     pub reason: &'static str,
+    /// Plies the dedup filter recognised as boards already searched.
+    ///
+    /// Reported rather than inferred from `max_ply - records.len()`, which the
+    /// eval-limit filter also moves. Whether the table is earning its memory is
+    /// a measurement, and this is the thing measured.
+    pub repeats: u64,
 }
 
 /// Collects PV lines, keeping only the deepest iteration reported.
@@ -51,7 +69,7 @@ pub struct DeepestPvs {
 }
 
 impl DeepestPvs {
-    fn reset(&mut self) {
+    pub(crate) fn reset(&mut self) {
         self.depth = 0;
         self.lines.clear();
     }
@@ -94,6 +112,16 @@ impl Rng {
 
     fn below(&mut self, n: usize) -> usize {
         (self.next_u64() % n.max(1) as u64) as usize
+    }
+
+    /// Fisher-Yates, for choosing which of a tree level's boards to keep.
+    ///
+    /// Here rather than in `tree` because `below` is private to this module,
+    /// and a level is sampled by shuffling it whole and cutting.
+    pub(crate) fn shuffle<T>(&mut self, items: &mut [T]) {
+        for i in (1..items.len()).rev() {
+            items.swap(i, self.below(i + 1));
+        }
     }
 }
 
@@ -228,6 +256,42 @@ pub struct Start {
     pub played: u16,
 }
 
+/// The MultiPV lines the collector holds, best first, as `(move, centipawns)`.
+///
+/// The sink is fed one line per `multipv` slot per iteration, so the deepest
+/// iteration's lines arrive out of order and a slot can be revised within it;
+/// sorting and taking the first of each slot is what leaves one line per slot
+/// at the depth reached. Empty means the side to move is mated — the search
+/// reports no line at all.
+pub(crate) fn drain_candidates(collected: &Arc<Mutex<DeepestPvs>>) -> Vec<(Move, i32)> {
+    let mut lines = {
+        let mut slot = collected.lock().expect("pv collector mutex poisoned");
+        let mut lines = std::mem::take(&mut slot.lines);
+        lines.sort_by_key(|info| info.multipv);
+        lines.dedup_by_key(|info| info.multipv);
+        lines
+    };
+    lines.retain(|info| !info.pv.is_empty());
+    lines.iter().map(|info| (info.pv[0], info.score)).collect()
+}
+
+/// How many of `candidates` a ply is allowed to play.
+///
+/// The MultiPV list is best-first, so the moves within `margin` centipawns of
+/// the best one are its leading run. A margin of zero or less is the margin
+/// switched off, and then the whole list stands: nothing draws from it but the
+/// repeat divergence, which wants every move it can get.
+pub(crate) fn within_margin(candidates: &[(Move, i32)], margin: i32) -> usize {
+    let Some(&(_, best)) = candidates.first() else {
+        return 0;
+    };
+    if margin <= 0 {
+        return candidates.len();
+    }
+    let cut = best - margin;
+    candidates.iter().take_while(|&&(_, cp)| cp >= cut).count()
+}
+
 /// Plays one game with an already-built searcher.
 ///
 /// `qs` is deliberately a caller-owned parameter rather than built here.
@@ -238,12 +302,17 @@ pub struct Start {
 /// `start` overrides where the game begins, which is what recovery plays from:
 /// a position restored out of an existing corpus, its move number already set,
 /// and the plies it took to get there. `None` draws an opening the usual way.
+///
+/// `seen` is the table of boards this run has already searched, lent by the
+/// caller because it is held per NUMA node and shared between games. `None`
+/// plays every board as the search answers it.
 pub fn play_game(
     qs: &mut QSearch<'_>,
     collected: &Arc<Mutex<DeepestPvs>>,
     options: &Options,
     rng: &mut Rng,
     start: Option<Start>,
+    seen: Option<&Seen>,
 ) -> Game {
     // Drawn here rather than in the worker because `Rng::below` is private to
     // this module, and the worker's `rng` is already threaded through.
@@ -285,10 +354,42 @@ pub fn play_game(
     let mut undos = Vec::new();
     let random_plies = pick_random_plies(options, rng);
     let mut legal: Vec<Move> = Vec::with_capacity(128);
+    let mut repeats = 0u64;
 
     let (result, reason) = loop {
         if ply_count >= options.max_ply {
             break (0, "max_ply");
+        }
+
+        let side_to_move_is_black = pos.side_to_move() == attic_state::Color::Black;
+
+        // A board this run has already searched teaches nothing the second
+        // time: `manaka-pack` folds records that share a position into one row,
+        // so a retraced line is paid for at depth 9 and then averaged away.
+        // Part company where the retracing starts and the plies after it are
+        // new.
+        //
+        // The search still runs. Skipping it and drawing a uniform legal move
+        // was 46% faster per position and left 29.7% of the plies that followed
+        // at |eval| >= 1000, from a book capped at +-300: around move 24 most
+        // of the ~80 legal moves hang something, so the divergence decided the
+        // game. The speed was those blowouts ending early, not work saved.
+        //
+        // Bounded because the repeats sit at the front of a game: two games
+        // from one book position share a prefix and part company once, so the
+        // plies worth testing are the early ones. Past the bound the table
+        // would only write entries nothing comes back for, and those evict the
+        // early entries that do get hit.
+        //
+        // Counted from the start of the game, not from `pos.ply()`, so the
+        // bound means the same thing whichever book is loaded — and so it
+        // matches `--max-ply` and `--random-move-minply/maxply`, which are all
+        // measured the same way. An absolute bound would silently narrow when
+        // the book got deeper.
+        let repeat =
+            ply_count < options.dedup_max_ply && seen.is_some_and(|seen| seen.mark(pos.key()));
+        if repeat {
+            repeats += 1;
         }
 
         collected
@@ -297,34 +398,27 @@ pub fn play_game(
             .reset();
 
         let outcome = qs.run_root(&pos, options.depth);
-        let side_to_move_is_black = pos.side_to_move() == attic_state::Color::Black;
 
         if let Some(ending) = root_ending(outcome.kind, side_to_move_is_black) {
             break ending;
         }
 
-        let mut lines = {
-            let mut slot = collected.lock().expect("pv collector mutex poisoned");
-            let mut lines = std::mem::take(&mut slot.lines);
-            lines.sort_by_key(|info| info.multipv);
-            lines.dedup_by_key(|info| info.multipv);
-            lines
-        };
-        lines.retain(|info| !info.pv.is_empty());
+        let candidates = drain_candidates(collected);
 
-        if lines.is_empty() {
+        if candidates.is_empty() {
             // No legal move: the side to move is mated.
             break (if side_to_move_is_black { -1 } else { 1 }, "mated");
         }
-
-        let candidates: Vec<(Move, i32)> =
-            lines.iter().map(|info| (info.pv[0], info.score)).collect();
 
         let root_cp = outcome.score;
 
         if let Some(black_resigns) = resignation.update(root_cp, side_to_move_is_black, options) {
             break (if black_resigns { -1 } else { 1 }, "resign");
         }
+
+        // The moves the candidates allow a ply to play: the leading run within
+        // `--move-margin` of the best, or the whole list with no margin.
+        let choices = within_margin(&candidates, options.move_margin);
 
         // Spread the opening: always playing the best move from one start
         // position yields one game however many workers run. Every other ply
@@ -337,7 +431,28 @@ pub fn play_game(
         // the position, and they are true whatever gets played next — but
         // `played` is then not the search's answer, so a consumer training on
         // `played` alone wants the candidate list instead.
-        let played = if random_plies.get(usize::from(ply_count)).copied() == Some(true) {
+        //
+        // A repeated board and a margin both come first, and both draw from the
+        // candidates rather than from every legal move.
+        let played = if repeat {
+            // Anything but the best move: the game that reached this board
+            // first played that one, so playing it again retraces the same
+            // line the fold would merge away. A lone candidate leaves nothing
+            // else to play, and the ply is then a duplicate that gets through.
+            match choices {
+                0 | 1 => outcome.best_move,
+                n => candidates[1 + rng.below(n - 1)].0,
+            }
+        } else if options.move_margin > 0 {
+            // A walk through moves the search itself called near-best, which
+            // is what a book is made of. It takes the place of the random
+            // plies rather than adding to them: those reach a position by
+            // hanging something.
+            match choices {
+                0 | 1 => outcome.best_move,
+                n => candidates[rng.below(n)].0,
+            }
+        } else if random_plies.get(usize::from(ply_count)).copied() == Some(true) {
             legal.clear();
             pos.generate_legal_all(&mut legal);
             match legal.len() {
@@ -355,7 +470,10 @@ pub fn play_game(
         // than records.
         let over_limit = options.eval_limit > 0 && root_cp.abs() > options.eval_limit;
 
-        if !over_limit {
+        // A repeat is dropped rather than written: the row already exists, and
+        // `manaka-pack` would fold this one into it. The search that produced
+        // it is not wasted — it is what the divergence above is drawn from.
+        if !over_limit && !repeat {
             records.push(Record {
                 // The position's own move number, so an opening that starts at
                 // move 24 records 24 rather than 0. `sfen_pack` drops the ply,
@@ -394,42 +512,20 @@ pub fn play_game(
         records,
         result,
         reason,
+        repeats,
     }
 }
 
 #[cfg(test)]
 mod random_ply_tests {
     use super::*;
-    use crate::options::Format;
 
     pub(super) fn options(count: u32, minply: u16, maxply: u16) -> Options {
-        Options {
-            eval_dir: std::path::PathBuf::new(),
-            out: std::path::PathBuf::new(),
-            depth: 9,
-            nodes: 0,
-            multipv: 5,
-            threads: 1,
-            games: 0,
-            positions: 0,
-            max_ply: 320,
-            entering_king: attic_search::EnteringKingRule::Point27,
-            repetition_rule: attic_state::RepetitionRule::DEFAULT,
-            resign_cp: 3000,
-            resign_count: 4,
-            headroom: 0,
-            governor_secs: 0,
-            eval_limit: 0,
-            fv_scale: 28,
-            format: Format::Pack,
-            random_move_count: count,
-            random_move_minply: minply,
-            random_move_maxply: maxply,
-            start_sfens: Vec::new(),
-            recover_from: None,
-            seed: 1,
-            hash_mb: 16,
-        }
+        let mut options = Options::for_tests();
+        options.random_move_count = count;
+        options.random_move_minply = minply;
+        options.random_move_maxply = maxply;
+        options
     }
 
     #[test]
@@ -472,130 +568,6 @@ mod random_ply_tests {
         let flags = pick_random_plies(&opts, &mut rng);
         assert_eq!(flags.len(), 20);
         assert_eq!(flags.iter().filter(|&&f| f).count(), 5);
-    }
-}
-
-/// Bytes per `PackedSfenValue`: 32 packed + score + move + ply + result + pad.
-pub const PSV_LEN: usize = 40;
-
-/// Widest score the fixed-width encodings store, matching the engine's
-/// `VALUE_MATE`.
-///
-/// Scores reach this as `VALUE_MATE - ply`, so a mate at ply 1 is 31999 and
-/// nothing observed exceeds it; `VALUE_INFINITE` (32001) and `VALUE_NONE`
-/// (32002) are search-internal sentinels that never leave the root. Clamping
-/// rather than casting means a sentinel that did escape would land on the mate
-/// score instead of wrapping into a small negative number.
-const CP_LIMIT: i32 = 32000;
-
-/// A search score as it is stored: clamped, then narrowed.
-fn to_stored_cp(cp: i32) -> i16 {
-    cp.clamp(-CP_LIMIT, CP_LIMIT) as i16
-}
-
-impl Game {
-    /// The game as `PackedSfenValue` records, one per position.
-    ///
-    /// Field order and widths follow upstream's `PackedSfenValue`, little-endian
-    /// throughout. The candidate list has no place in this layout and is
-    /// dropped; a consumer that needs a policy target wants the JSONL form.
-    ///
-    /// `game_result` is stored from the side to move, which is what upstream's
-    /// learner expects, so the game-level result is flipped on White's turns.
-    pub fn to_psv(&self, out: &mut Vec<u8>) {
-        out.reserve(self.records.len() * PSV_LEN);
-        for record in &self.records {
-            self.write_psv_prefix(record, out);
-        }
-    }
-
-    /// Like [`to_psv`](Game::to_psv), with `candidates` MultiPV entries appended
-    /// to each record as `(move16, centipawns)` pairs.
-    ///
-    /// Records stay fixed width: a position with fewer candidates than asked for
-    /// is padded with zero moves, so a reader can seek by index. `candidates`
-    /// comes from `--multipv` and is not stored in the file — every record in a
-    /// run has the same width, and mixing runs means knowing which is which.
-    pub fn to_pack(&self, out: &mut Vec<u8>, candidates: usize) {
-        out.reserve(self.records.len() * (PSV_LEN + 4 * candidates));
-        for record in &self.records {
-            self.write_psv_prefix(record, out);
-            for slot in 0..candidates {
-                let (mv, cp) = match record.candidates.get(slot) {
-                    Some(&(mv, cp)) => (mv.move16(), to_stored_cp(cp)),
-                    None => (0, 0),
-                };
-                out.extend_from_slice(&mv.to_le_bytes());
-                out.extend_from_slice(&cp.to_le_bytes());
-            }
-        }
-    }
-
-    /// The 40 bytes both fixed-width encodings begin with.
-    ///
-    /// `game_result` is stored from the side to move, which is what upstream's
-    /// learner expects, so the game-level result is flipped on White's turns.
-    fn write_psv_prefix(&self, record: &Record, out: &mut Vec<u8>) {
-        let result = if record.side == 0 {
-            self.result
-        } else {
-            -self.result
-        };
-        out.extend_from_slice(&record.packed);
-        out.extend_from_slice(&to_stored_cp(record.cp).to_le_bytes());
-        out.extend_from_slice(&record.played.move16().to_le_bytes());
-        out.extend_from_slice(&record.ply.to_le_bytes());
-        out.push(result as u8);
-        out.push(0);
-    }
-
-    /// One JSONL line, matching the shape the existing corpus converter reads.
-    pub fn to_json(&self, engine: &str, depth: i32, multipv: usize) -> String {
-        let mut out = String::with_capacity(self.records.len() * 160);
-        out.push_str("{\"engine\":\"");
-        out.push_str(engine);
-        out.push_str("\",\"depth\":");
-        out.push_str(&depth.to_string());
-        out.push_str(",\"multipv\":");
-        out.push_str(&multipv.to_string());
-        out.push_str(",\"result\":");
-        out.push_str(&self.result.to_string());
-        out.push_str(",\"reason\":\"");
-        out.push_str(self.reason);
-        out.push_str("\",\"ply_count\":");
-        out.push_str(&self.records.len().to_string());
-        out.push_str(",\"moves\":[");
-        for (i, record) in self.records.iter().enumerate() {
-            if i > 0 {
-                out.push(',');
-            }
-            out.push_str("{\"ply\":");
-            out.push_str(&record.ply.to_string());
-            out.push_str(",\"sfen\":\"");
-            out.push_str(&record.sfen);
-            out.push_str("\",\"side\":");
-            out.push_str(&record.side.to_string());
-            out.push_str(",\"cp\":");
-            out.push_str(&record.cp.to_string());
-            out.push_str(",\"depth\":");
-            out.push_str(&record.depth.to_string());
-            out.push_str(",\"cand\":[");
-            for (j, &(mv, cp)) in record.candidates.iter().enumerate() {
-                if j > 0 {
-                    out.push(',');
-                }
-                out.push_str("[\"");
-                out.push_str(&format_usi_move(mv));
-                out.push_str("\",");
-                out.push_str(&cp.to_string());
-                out.push(']');
-            }
-            out.push_str("],\"m\":\"");
-            out.push_str(&format_usi_move(record.played));
-            out.push_str("\"}");
-        }
-        out.push_str("]}");
-        out
     }
 }
 
@@ -754,6 +726,11 @@ mod resumed_budget_tests {
 
     /// Play one game from `start`, returning the finished [`Game`].
     pub(super) fn play(start: Option<Start>, options: &Options) -> Game {
+        play_seen(start, options, None)
+    }
+
+    /// The same, with a dedup table lent to the game.
+    pub(super) fn play_seen(start: Option<Start>, options: &Options, seen: Option<&Seen>) -> Game {
         let net = flat_net();
         let mut tt = TranspositionTable::new();
         tt.resize(1);
@@ -771,7 +748,7 @@ mod resumed_budget_tests {
             Box::new(Collector(Arc::clone(&collected))),
         );
         let mut rng = Rng::new(7);
-        play_game(&mut qs, &collected, options, &mut rng, start)
+        play_game(&mut qs, &collected, options, &mut rng, start, seen)
     }
 
     /// Plies this game played. With `--eval-limit` off nothing is dropped, so

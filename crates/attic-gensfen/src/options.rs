@@ -129,6 +129,14 @@ pub struct Options {
     /// deliberate: the candidates are what the search already likes, so a
     /// position reached through them is one the engine would have considered
     /// anyway. Upstream calls this `random_move_count`.
+    ///
+    /// A randomised ply records a `played` that is not the search's move and
+    /// so sits outside the MultiPV list, and `manaka-teacher` refuses such a
+    /// row: 47,101,578 of the V4 corpus's 1,419,944,833 rows, 3.32%, searched
+    /// and paid for and then thrown away. `--dedup-mb` is the other source of
+    /// divergence and does not have that cost, so a run that leaves the
+    /// divergence to it states `--random-move-count 0`: the default here is 5
+    /// and the filter does not replace it.
     pub random_move_count: u32,
     /// First ply eligible to be randomised, counted from the start of the game.
     pub random_move_minply: u16,
@@ -163,6 +171,116 @@ pub struct Options {
     /// hold one, and a fixed-depth search does not benefit from a large table
     /// the way a fixed-time one does.
     pub hash_mb: usize,
+    /// Size, in MB per NUMA node, of the table of boards already searched. `0`,
+    /// the default, turns the filter off and searches every position the games
+    /// reach, which is what a run without this flag has always done: a corpus
+    /// written before the flag existed and one written after it, with the flag
+    /// left off, are the same bytes. 64 is the size the filter was measured at.
+    ///
+    /// A board that has been searched once teaches nothing the second time:
+    /// `manaka-pack` folds records sharing a position into one row, so a
+    /// retraced line is paid for and then averaged away. The board is still
+    /// searched, but its record is dropped and the game plays one of the
+    /// search's other MultiPV candidates: the game that got there first played
+    /// the best move, so this one parts company and the plies after it are new.
+    ///
+    /// The divergence is not a uniformly-drawn legal move, which would be
+    /// faster and much worse. From a book capped at ±300 centipawns, drawing
+    /// uniformly left 29.7% of the following plies at |eval| ≥ 1000: most legal
+    /// moves in the middlegame hang something, so the draw decided the game.
+    ///
+    /// The table is lossy on purpose; see [`crate::seen::Seen`].
+    pub dedup_mb: usize,
+    /// The filter only reads the table for this many plies of a game.
+    ///
+    /// Counted from the start of the game like `--max-ply` and
+    /// `--random-move-minply/maxply`, not from the board's own ply, so the
+    /// window means the same thing whichever book is loaded.
+    ///
+    /// Two games from one book position share a prefix and part company once,
+    /// so the plies worth testing are the early ones. Past the bound the table
+    /// would only write entries nothing comes back for, and those evict the
+    /// early entries that do get hit.
+    ///
+    /// The default of 16 is measured: over 519 games from 64 ply-24 book
+    /// positions, 99.7% of the 891 repeats fired inside the first sixteen plies
+    /// of a game and 87.4% inside the first four.
+    pub dedup_max_ply: u16,
+    /// Play a candidate drawn uniformly from those the search scored within
+    /// this many centipawns of its best, rather than the best move.
+    ///
+    /// This is what builds an opening book rather than a corpus. Every ply is
+    /// a move the search itself called near-best, so a position the walk
+    /// reaches is one best play could have reached too — unlike
+    /// `--random-move-count`, which reaches a position by hanging something.
+    /// The games branch without a random move anywhere in them, which is also
+    /// why a ply drawn this way takes the place of a randomised one.
+    ///
+    /// It also bounds the divergence a repeat draws: without a margin that
+    /// draw is over the whole candidate list, so a large `--multipv` lets it
+    /// pick the twentieth-best move.
+    ///
+    /// `0` leaves every ply greedy, which is what generating a corpus wants:
+    /// the recorded result is then best play's, not a walk's. In the tree it
+    /// admits every candidate as a child.
+    pub move_margin: i32,
+    /// Build a book as a tree instead of playing games, expanding until the
+    /// boards carry this move number.
+    ///
+    /// **A move number, not a game length.** `--max-ply`, `--dedup-max-ply`
+    /// and the random-move window all count plies from the start of a game;
+    /// this one is absolute, because a book is named by the move number its
+    /// boards carry and `--start-sfens` roots already carry their own. A run
+    /// with roots at move 24 and `--book-ply 32` expands eight times.
+    ///
+    /// `0` plays games, which is everything else in this file.
+    ///
+    /// The tree ignores what only a game has: `--games`, `--positions`,
+    /// `--max-ply`, `--random-move-*`, `--dedup-*`, resignation and
+    /// adjudication. It writes one `<out>.plyNN.txt` per level, `sfen `
+    /// prefixed, so a level feeds straight back in as `--start-sfens`, and a
+    /// `<out>.plyNN.cp.txt` beside it with each board's score and parent.
+    pub book_ply: u16,
+    /// Boards kept per level of the tree. `0` keeps all of them.
+    ///
+    /// A level is sampled by shuffling it whole and cutting, which is why the
+    /// frontier waits for a level to be complete before handing any of it out.
+    /// Six children a board means an uncapped tree multiplies by six a ply;
+    /// this is the only thing that bounds it.
+    pub book_width: usize,
+    /// Drop a board of the tree this many centipawns or more from the score
+    /// the book was rooted at, and do not expand it. `0` keeps every board.
+    ///
+    /// From the root's score, which is one number for the whole run, and not
+    /// from the level the board is in. `--move-margin` is the one measured per
+    /// node, and that is exactly why it cannot do this job: a node the search
+    /// reads at -50 admits moves down to -100, and those admit -150. Nothing
+    /// pulls back towards even, so a margin of 50 over eight plies spreads the
+    /// ninth over 200 centipawns. Measured, without a band: median +80, but
+    /// from -136 to +607.
+    ///
+    /// The anchor is the median of the root level's own scores, taken when
+    /// that level closes — the median so that one wild starting position
+    /// cannot carry the book with it. Scores are flipped into the root's
+    /// frame before being compared, one flip per level, since a level is one
+    /// side to move. The search reads the initial position at +94 for black,
+    /// so a band read from zero rather than from the root would keep the
+    /// boards that are abnormally level and drop the ordinary ones.
+    ///
+    /// How tight a band is meaningful is a question about `--threads`. A
+    /// node's workers share one transposition table, so two sixteen-thread
+    /// runs of the same tree agreed on 4 of 500 boards and differed by 32 on
+    /// average — below about 64 there, the band cuts on which worker won a
+    /// race rather than on the position. Single-threaded there is nobody to
+    /// race: two runs to move 5 wrote all 340 boards identically, so any band
+    /// is meaningful, at roughly an order of magnitude in wall clock.
+    ///
+    /// It prunes rather than filters: the subtree under a rejected board is
+    /// never searched at all. That is what keeps a banded book equal the whole
+    /// way down instead of only at its last ply, and it is the difference
+    /// between generating a book and mining one out of a corpus after the
+    /// fact.
+    pub book_band: i32,
 }
 
 /// What the command line asked for.
@@ -203,88 +321,6 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Invocation, String> {
 }
 
 impl Options {
-    /// The first line of `--help`, and what a bad flag is answered with.
-    pub const USAGE: &'static str = "\
-usage: attic-gensfen --eval-dir DIR --out FILE [options]
-       attic-gensfen --help | --version";
-
-    /// The full option table.
-    ///
-    /// Every flag is listed with the value it takes and the default it has,
-    /// because the defaults are what bite: `--random-move-count` is 5, not 0,
-    /// and a corpus meant to be all best moves comes out with five random
-    /// plies a game if the flag is left off. Nothing here is a substitute for
-    /// the notes at the end, which are the things that are not visible in the
-    /// output when they go wrong.
-    pub const HELP: &'static str = "\
-Generate NNUE teacher data by self-play, driving the search in-process.
-
-required:
-  --eval-dir DIR         directory holding nn.bin
-  --out FILE             where to write; opened for APPEND, never truncated
-
-search:
-  --depth N              search depth                              [9]
-  --nodes N              node ceiling per search, 0 for none       [0]
-  --multipv N            candidates recorded per position          [5]
-  --fv-scale N           evaluation scale; NAGISA V4 wants 28      [28]
-  --hash MB              transposition table PER WORKER            [16]
-
-how much:
-  --games N              stop after N games, 0 to run until killed [0]
-  --positions N          stop after N positions instead, 0 for off [0]
-  --threads N            worker threads, 0 for every system thread [0]
-  --headroom N           threads left to the rest of the machine   [8]
-  --governor-secs N      how often to re-read the load, 0 to pin   [30]
-
-how a game ends:
-  --max-ply N            hard cap on the length of a game          [320]
-  --entering-king RULE   NoEnteringKing, CSARule24, CSARule24H,
-                         CSARule27, CSARule27H, TryRule            [CSARule27]
-  --quick-draw on|off    repetition rule of the search: on adjudicates a
-                         second occurrence, off waits for the fourth in
-                         the stored chain. A game is scored on the fourth
-                         either way                       [the build's default]
-  --resign-cp N          resign at this score, 0 to play on        [3000]
-  --resign-count N       plies at that score before resigning      [1]
-
-what gets written:
-  --format F             jsonl, psv, or pack                       [jsonl]
-  --eval-limit N         drop records past this score, 0 for none  [0]
-
-where a game starts:
-  --start-sfens FILE     draw openings from this file, one per line
-  --random-move-count N  random plies played per game, 0 for none  [5]
-  --random-move-minply N first ply that may be random              [16]
-  --random-move-maxply N last ply that may be random               [32]
-  --recover-from DIR     resume the games in this corpus instead of
-                         drawing openings; refuses --start-sfens and
-                         a non-zero --random-move-count
-  --seed N               base for the random number generator      [1]
-
-  -h, --help             this text
-  -V, --version          version and the commit it was built from
-
-notes:
-  --random-move-count defaults to 5. A corpus of nothing but search best
-  moves needs --random-move-count 0 stated; leaving the flag off does not
-  give it. The ply window counts plies played in THIS game, so with an
-  opening at move 37 the random plies land at moves 53 to 69, not 16 to 32.
-
-  --out is opened for append. Re-running with the same --out and the same
-  --seed writes the same games again, into the same file.
-
-  --eval-limit drops records without shortening the game, so a corpus
-  written with it has games whose tails are missing rather than games that
-  ended early. --recover-from is what plays those tails.
-
-  Repetition and the entering-king law end games; a game that reaches
-  --max-ply is recorded as a draw.
-
-  --hash is per worker, not per process and not per NUMA node. The workers
-  on a NUMA node share one table sized --hash times their number, so 256
-  threads over 8 NUMA nodes at the default hold 512 MB a node, 4 GB in all.";
-
     pub fn parse(args: impl Iterator<Item = String>) -> Result<Self, String> {
         let mut eval_dir = None;
         let mut out = None;
@@ -311,6 +347,12 @@ notes:
         let mut recover_from: Option<PathBuf> = None;
         let mut seed = 1u64;
         let mut hash_mb = 16usize;
+        let mut dedup_mb = 0usize;
+        let mut dedup_max_ply = 16u16;
+        let mut move_margin = 0i32;
+        let mut book_ply = 0u16;
+        let mut book_width = 0usize;
+        let mut book_band = 0i32;
 
         let mut args = args.peekable();
         while let Some(flag) = args.next() {
@@ -347,6 +389,14 @@ notes:
                 "--recover-from" => recover_from = Some(PathBuf::from(value()?)),
                 "--seed" => seed = parse_field(&value()?, "--seed")?,
                 "--hash" => hash_mb = parse_field(&value()?, "--hash")?,
+                "--dedup-mb" => dedup_mb = parse_field(&value()?, "--dedup-mb")?,
+                "--dedup-max-ply" => {
+                    dedup_max_ply = parse_field(&value()?, "--dedup-max-ply")?;
+                }
+                "--move-margin" => move_margin = parse_field(&value()?, "--move-margin")?,
+                "--book-ply" => book_ply = parse_field(&value()?, "--book-ply")?,
+                "--book-width" => book_width = parse_field(&value()?, "--book-width")?,
+                "--book-band" => book_band = parse_field(&value()?, "--book-band")?,
                 other => return Err(format!("unknown flag {other}")),
             }
         }
@@ -380,6 +430,17 @@ notes:
                     "--recover-from resumes positions that are already decided; a random move \
                      there rewrites a result the prefix was recorded with. Pass \
                      --random-move-count 0"
+                        .to_string(),
+                );
+            }
+            // Same hazard, reached the other way: a repeated board makes the
+            // game play a different candidate, and here that move lands in a
+            // game whose earlier records already carry the original ending.
+            if dedup_mb > 0 {
+                return Err(
+                    "--recover-from resumes positions that are already decided; the dedup \
+                     filter diverges a game with a different move, which rewrites a result the \
+                     prefix was recorded with. Leave --dedup-mb off, or pass --dedup-mb 0"
                         .to_string(),
                 );
             }
@@ -440,7 +501,56 @@ notes:
             recover_from,
             seed,
             hash_mb,
+            dedup_mb,
+            dedup_max_ply,
+            move_margin,
+            book_ply,
+            book_width,
+            book_band,
         })
+    }
+
+    /// A complete `Options` for tests to amend.
+    ///
+    /// Shared rather than written out in each test module so that a new flag
+    /// is added in one place: every literal that named every field had to be
+    /// touched to add one, and a module that was not touched failed to
+    /// compile for a reason unrelated to what it tests.
+    #[cfg(test)]
+    pub(crate) fn for_tests() -> Self {
+        Options {
+            eval_dir: PathBuf::new(),
+            out: PathBuf::new(),
+            depth: 9,
+            nodes: 0,
+            multipv: 5,
+            threads: 1,
+            games: 0,
+            positions: 0,
+            max_ply: 320,
+            entering_king: attic_search::EnteringKingRule::Point27,
+            repetition_rule: attic_state::RepetitionRule::DEFAULT,
+            resign_cp: 3000,
+            resign_count: 4,
+            headroom: 0,
+            governor_secs: 0,
+            eval_limit: 0,
+            fv_scale: 28,
+            format: Format::Pack,
+            dedup_mb: 0,
+            dedup_max_ply: 48,
+            move_margin: 0,
+            random_move_count: 0,
+            random_move_minply: 16,
+            random_move_maxply: 32,
+            start_sfens: Vec::new(),
+            recover_from: None,
+            seed: 1,
+            hash_mb: 16,
+            book_ply: 0,
+            book_width: 0,
+            book_band: 0,
+        }
     }
 }
 
@@ -532,237 +642,9 @@ fn load_start_sfens(path: &std::path::Path) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-#[cfg(test)]
-mod help_tests {
-    use super::*;
-
-    fn parse_of(args: &[&str]) -> Result<Invocation, String> {
-        parse(args.iter().map(|arg| arg.to_string()))
-    }
-
-    /// Both answers have to work on their own. Requiring `--eval-dir` and
-    /// `--out` first would mean the only way to read the option list is to
-    /// already know two of the options.
-    #[test]
-    fn help_and_version_need_no_other_flags() {
-        assert!(matches!(parse_of(&["--help"]), Ok(Invocation::Help)));
-        assert!(matches!(parse_of(&["-h"]), Ok(Invocation::Help)));
-        assert!(matches!(parse_of(&["--version"]), Ok(Invocation::Version)));
-        assert!(matches!(parse_of(&["-V"]), Ok(Invocation::Version)));
-        // And they win over a command line that is otherwise unusable, so a
-        // half-remembered invocation can be fixed by appending `--help`.
-        assert!(matches!(
-            parse_of(&["--depth", "9", "--help"]),
-            Ok(Invocation::Help)
-        ));
-    }
-
-    /// Every flag the help names has to be a flag the parser takes. The two
-    /// drift apart in the direction that matters most — the help is what a
-    /// caller reads, so a flag misspelled here is a command line that fails
-    /// for a reason the reader cannot see.
-    #[test]
-    fn every_flag_named_in_the_help_is_accepted() {
-        let flags: Vec<&str> = Options::HELP
-            .split_whitespace()
-            .filter(|word| word.starts_with("--") && word.len() > 2)
-            // The notes are prose about the same flags, and a sentence can end
-            // in one; strip the punctuation rather than skipping the section.
-            .map(|word| word.trim_end_matches(['.', ',', ';', ':']))
-            // These two are answers, not settings: they parse fine and take no
-            // value, so the "needs a value" check below does not apply.
-            .filter(|word| !matches!(*word, "--help" | "--version"))
-            .collect();
-        assert!(flags.len() > 15, "the help lists {} flags", flags.len());
-
-        for flag in flags {
-            let error = parse_of(&[flag])
-                .err()
-                .unwrap_or_else(|| panic!("{flag} parsed with no value"));
-            assert!(
-                !error.starts_with("unknown flag"),
-                "the help names {flag}, which the parser rejects: {error}"
-            );
-        }
-    }
-
-    /// The build stamp is what tells two binaries apart, so an empty one is a
-    /// silently useless `--version`.
-    #[test]
-    fn the_version_line_carries_a_build() {
-        let line = version_line();
-        assert!(line.starts_with("attic-gensfen "), "{line}");
-        assert!(!BUILD.is_empty(), "the build stamp is empty");
-        assert!(line.contains(BUILD), "{line}");
-    }
-
-    /// `--entering-king` has to round-trip: the log prints what the caller
-    /// would have typed, not the variant's Rust name.
-    #[test]
-    fn every_rule_name_parses_back_to_its_rule() {
-        for spelling in attic_search::EnteringKingRule::STRINGS {
-            let rule = parse_entering_king(spelling).expect("a declared spelling parses");
-            assert_eq!(entering_king_name(rule), spelling);
-        }
-    }
-}
+mod help;
 
 #[cfg(test)]
-mod start_sfen_tests {
-    use super::*;
-
-    /// A file that deletes itself, so a failing assert does not leave the temp
-    /// directory holding fixtures.
-    struct TempFile(PathBuf);
-
-    impl TempFile {
-        fn new(tag: &str, body: &str) -> Self {
-            let path = std::env::temp_dir()
-                .join(format!("attic-gensfen-{}-{tag}.sfen", std::process::id()));
-            std::fs::write(&path, body).expect("write fixture");
-            Self(path)
-        }
-    }
-
-    impl Drop for TempFile {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
-
-    fn parse_with(extra: &[&str]) -> Result<Options, String> {
-        let mut args = vec!["--eval-dir", "eval", "--out", "out"];
-        args.extend_from_slice(extra);
-        Options::parse(args.into_iter().map(String::from))
-    }
-
-    #[test]
-    fn the_repetition_rule_is_the_builds_unless_told_otherwise() {
-        use attic_state::RepetitionRule;
-
-        assert_eq!(
-            parse_with(&[]).expect("parses").repetition_rule,
-            RepetitionRule::DEFAULT,
-            "a run that never says gets what the binary was built to do",
-        );
-        for (spelling, rule) in [
-            ("on", RepetitionRule::QuickDraw),
-            ("off", RepetitionRule::Precomputed),
-        ] {
-            let options = parse_with(&["--quick-draw", spelling]).expect("parses");
-            assert_eq!(options.repetition_rule, rule, "--quick-draw {spelling}");
-        }
-    }
-
-    #[test]
-    fn an_unknown_quick_draw_setting_is_refused_rather_than_defaulted() {
-        for spelling in ["", "true", "ON", "0", "no-quick-draw"] {
-            let err = parse_with(&["--quick-draw", spelling])
-                .err()
-                .unwrap_or_else(|| panic!("--quick-draw {spelling:?} was accepted"));
-            assert!(err.contains("--quick-draw"), "{err}");
-        }
-    }
-
-    #[test]
-    fn declaration_is_on_by_default_and_takes_the_engines_spellings() {
-        use attic_search::EnteringKingRule;
-
-        assert_eq!(
-            parse_with(&[]).expect("parses").entering_king,
-            EnteringKingRule::Point27,
-            "a generator that cannot declare writes entered-king games out as \
-             draws, so the rule has to be on unless it is turned off",
-        );
-        for (spelling, rule) in [
-            ("CSARule24", EnteringKingRule::Point24),
-            ("CSARule27", EnteringKingRule::Point27),
-            ("TryRule", EnteringKingRule::Try),
-            ("NoEnteringKing", EnteringKingRule::None),
-        ] {
-            let options = parse_with(&["--entering-king", spelling]).expect("parses");
-            assert_eq!(options.entering_king, rule, "--entering-king {spelling}");
-        }
-    }
-
-    #[test]
-    fn an_unknown_entering_king_rule_is_refused_rather_than_disabled() {
-        // `EnteringKingRule::from_option` answers an unrecognised string with
-        // `None`, which is safe behind a validated USI combo and silently turns
-        // declaration off on a command line.
-        let error = match parse_with(&["--entering-king", "27"]) {
-            Err(error) => error,
-            Ok(_) => panic!("`27` is not one of the engine's spellings"),
-        };
-        assert!(error.contains("CSARule27"), "the error lists the spellings");
-    }
-
-    #[test]
-    fn without_the_flag_there_are_no_start_positions() {
-        let options = parse_with(&[]).expect("parses");
-        assert!(
-            options.start_sfens.is_empty(),
-            "the default must stay the initial position"
-        );
-    }
-
-    #[test]
-    fn the_sfen_prefix_and_crlf_are_stripped() {
-        // Both are how the published opening sets are written, so a file copied
-        // from there has to load unchanged.
-        let file = TempFile::new(
-            "prefixed",
-            "sfen lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1\r\n\
-             sfen 4k4/9/4r4/9/9/9/4K3B/9/9 b RG2gs2n3p 1\r\n",
-        );
-        let options = parse_with(&["--start-sfens", file.0.to_str().unwrap()]).expect("parses");
-        assert_eq!(options.start_sfens.len(), 2);
-        assert!(
-            options.start_sfens.iter().all(|s| !s.starts_with("sfen ")),
-            "stored lines must be sfen bodies"
-        );
-        assert!(
-            options.start_sfens.iter().all(|s| !s.contains('\r')),
-            "a stray CR would reach the parser"
-        );
-    }
-
-    #[test]
-    fn blank_lines_are_skipped_rather_than_failing() {
-        let file = TempFile::new(
-            "blanks",
-            "\nlnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1\n\n",
-        );
-        let options = parse_with(&["--start-sfens", file.0.to_str().unwrap()]).expect("parses");
-        assert_eq!(options.start_sfens.len(), 1);
-    }
-
-    #[test]
-    fn a_file_with_no_positions_is_rejected() {
-        let file = TempFile::new("empty", "\n\n");
-        let err = parse_with(&["--start-sfens", file.0.to_str().unwrap()])
-            .err()
-            .expect("an empty list would silently play from the initial position");
-        assert!(err.contains("no positions"), "unexpected error {err:?}");
-    }
-
-    #[test]
-    fn a_bad_line_names_its_line_number() {
-        let file = TempFile::new(
-            "bad",
-            "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1\nnonsense\n",
-        );
-        let err = parse_with(&["--start-sfens", file.0.to_str().unwrap()])
-            .err()
-            .expect("must not parse");
-        assert!(err.contains("line 2"), "unexpected error {err:?}");
-    }
-
-    #[test]
-    fn a_missing_file_is_reported_rather_than_ignored() {
-        let err = parse_with(&["--start-sfens", "/nonexistent/attic/openings.sfen"])
-            .err()
-            .expect("must not parse");
-        assert!(err.contains("cannot read"), "unexpected error {err:?}");
-    }
-}
+mod help_tests;
+#[cfg(test)]
+mod start_sfen_tests;
