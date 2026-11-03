@@ -104,19 +104,62 @@ impl ProgressParameters {
         // `Inv(sq_wk)` in the reference: White's king viewed from White.
         let sq_wk = from_persp(king_square(pos, Color::White), Color::White).index() as usize;
 
-        let mut black = [BONA_PIECE_ZERO; PROGRESS_PIECE_SLOTS];
-        let mut white = [BONA_PIECE_ZERO; PROGRESS_PIECE_SLOTS];
-        bona_pieces(pos, Color::Black, &mut black);
-        bona_pieces(pos, Color::White, &mut white);
-
-        let mut sum_q16: i64 = 0;
-        for i in 0..PROGRESS_PIECE_SLOTS {
-            sum_q16 += self.weight(sq_bk, black[i]);
-            sum_q16 += self.weight(sq_wk, white[i]);
-        }
+        let sum_q16 = self.sum_q16(pos, sq_bk, sq_wk);
 
         // How many thresholds the sum clears; the table is sorted ascending.
         thresholds_q16().partition_point(|&t| t <= sum_q16)
+    }
+
+    /// The coefficient sum [`Self::value_0_to_255`] compares against its
+    /// thresholds.
+    ///
+    /// The same sum [`bona_pieces`] describes, taken without the two 38-slot
+    /// arrays: addition does not care what order the slots come in, so each
+    /// piece adds both frames' coefficients as it is found, walking the
+    /// occupied squares rather than all eighty-one, and the slots the position
+    /// leaves empty are added at the end as the `BONA_PIECE_ZERO` coefficient
+    /// they would have carried. A position with more than 38 non-king pieces and
+    /// held pieces cannot exist -- the pieces are forty, two of them kings --
+    /// so that count never goes negative.
+    #[inline]
+    fn sum_q16(&self, pos: &Position, sq_bk: usize, sq_wk: usize) -> i64 {
+        let board = pos.board();
+        let mut sum_q16: i64 = 0;
+        let mut slots = 0usize;
+
+        for sq in board.occupied() {
+            let Some(piece) = board.get(sq) else {
+                continue;
+            };
+            if piece.kind == PieceKind::King {
+                continue;
+            }
+            let black_code = board_plane(piece.kind, piece.promoted, piece.color == Color::Black)
+                + from_persp(sq, Color::Black).index() as usize;
+            let white_code = board_plane(piece.kind, piece.promoted, piece.color == Color::White)
+                + from_persp(sq, Color::White).index() as usize;
+            sum_q16 += self.weight(sq_bk, black_code) + self.weight(sq_wk, white_code);
+            slots += 1;
+        }
+
+        for hand_color in [Color::Black, Color::White] {
+            let hand = pos.hand(hand_color);
+            for kind in HAND_KINDS {
+                let held = hand.count(kind) as usize;
+                let black_base = hand_plane(kind, hand_color == Color::Black);
+                let white_base = hand_plane(kind, hand_color == Color::White);
+                for i in 1..=held {
+                    sum_q16 +=
+                        self.weight(sq_bk, black_base + i) + self.weight(sq_wk, white_base + i);
+                }
+                slots += held;
+            }
+        }
+
+        debug_assert!(slots <= PROGRESS_PIECE_SLOTS);
+        let empty = (PROGRESS_PIECE_SLOTS - slots) as i64;
+        sum_q16
+            + empty * (self.weight(sq_bk, BONA_PIECE_ZERO) + self.weight(sq_wk, BONA_PIECE_ZERO))
     }
 
     /// The layer-stack index under `progress8ek`.
@@ -151,6 +194,7 @@ fn is_mutual_entering_king(pos: &Position) -> bool {
 /// plane, because its output indexes a `45 * 1629` feature space. The progress
 /// table is `81 * 1548` and never mirrors, so only the plane arithmetic is
 /// shared.
+#[cfg(test)]
 fn bona_pieces(pos: &Position, perspective: Color, out: &mut [usize; PROGRESS_PIECE_SLOTS]) {
     let mut n = 0;
 
@@ -249,6 +293,66 @@ mod tests {
     fn bucket_is_zero_without_a_table() {
         let pos = Position::startpos();
         assert_eq!(bucket_index(&pos), 0);
+    }
+
+    /// The sum as the slot arrays define it: one `BonaPiece` code per non-king
+    /// piece and held piece in each frame, `BONA_PIECE_ZERO` in the rest.
+    fn reference_sum_q16(params: &ProgressParameters, pos: &Position) -> i64 {
+        let sq_bk = king_square(pos, Color::Black).index() as usize;
+        let sq_wk = from_persp(king_square(pos, Color::White), Color::White).index() as usize;
+        let mut black = [BONA_PIECE_ZERO; PROGRESS_PIECE_SLOTS];
+        let mut white = [BONA_PIECE_ZERO; PROGRESS_PIECE_SLOTS];
+        bona_pieces(pos, Color::Black, &mut black);
+        bona_pieces(pos, Color::White, &mut white);
+        let mut sum_q16: i64 = 0;
+        for i in 0..PROGRESS_PIECE_SLOTS {
+            sum_q16 += params.weight(sq_bk, black[i]);
+            sum_q16 += params.weight(sq_wk, white[i]);
+        }
+        sum_q16
+    }
+
+    #[test]
+    fn the_single_pass_sum_matches_the_slot_arrays() {
+        // Coefficients that differ everywhere, including column 0 (the padding
+        // code), so a miscounted empty slot or a swapped frame cannot cancel.
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        let weights_q16: Vec<i32> = (0..ProgressParameters::WEIGHT_COUNT)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                (state as i32) >> 4
+            })
+            .collect();
+        let params = ProgressParameters {
+            weights_q16: weights_q16.into_boxed_slice(),
+        };
+
+        for sfen in [
+            // Start position, then both sides to move.
+            "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+            "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL w - 2",
+            // Pieces in hand on both sides.
+            "l1sgk2nl/6sb1/n1p1pp2p/p1bp2p2/7p1/Pr1P1PP1P/2P1P1N2/1SG2G1R1/LN2K1SGL b 2Pp 35",
+            "ln1gk1snl/2s3g2/1rp1pp1pp/pp4p2/3p3P1/PP3P3/NGP1G1P1P/1BKS3R1/L1S4NL b Pbp 35",
+            // Promoted pieces and a crowded hand.
+            "4k4/9/9/9/9/9/+P+L+N+S+B+R3/9/4K4 b 2G2S2N2L9PBR2gsnl8p 1",
+            "9/4k4/9/3+r+b4/9/9/9/4K4/9 w RB4G4S4N4L18P 90",
+            // Almost bare: nearly all of the 38 slots are padding.
+            "4k4/9/9/9/9/9/9/9/4K4 b - 1",
+        ] {
+            let pos = attic_state::parse_sfen(sfen).expect("test sfen parses");
+            assert_eq!(
+                params.sum_q16(
+                    &pos,
+                    king_square(&pos, Color::Black).index() as usize,
+                    from_persp(king_square(&pos, Color::White), Color::White).index() as usize,
+                ),
+                reference_sum_q16(&params, &pos),
+                "single-pass sum disagrees with the slot arrays for {sfen}",
+            );
+        }
     }
 
     /// Prints what a real `progress.bin` makes of a few positions.
