@@ -14,10 +14,13 @@
 //! ```text
 //! attic-gensfen --eval-dir DIR --out FILE [--depth 9] [--multipv 5]
 //!               [--threads N] [--games N] [--max-ply 320] [--resign-cp 3000]
+//!               [--entering-king CSARule27]
 //! ```
 
 mod game;
+mod governor;
 mod options;
+mod recover;
 mod worker;
 
 use std::sync::Arc;
@@ -70,9 +73,51 @@ fn main() {
     let extra = options.threads % nodes;
 
     eprintln!(
-        "gensfen: numa_nodes={nodes} threads={} depth={} multipv={} fv_scale={}",
-        options.threads, options.depth, options.multipv, options.fv_scale
+        "gensfen: numa_nodes={nodes} threads={} depth={} multipv={} fv_scale={} quick_draw={}",
+        options.threads,
+        options.depth,
+        options.multipv,
+        options.fv_scale,
+        match options.repetition_rule {
+            attic_state::RepetitionRule::QuickDraw => "on",
+            attic_state::RepetitionRule::Precomputed => "off",
+        }
     );
+
+    // `--threads` is the ceiling; the governor decides how much of it to use.
+    let governor = governor::Governor::spawn(
+        options.threads,
+        options.headroom,
+        std::time::Duration::from_secs(options.governor_secs),
+    );
+
+    // Recovery reads the corpus back at the same record width it was written
+    // with, which `--format` and `--multipv` are what state — the files carry
+    // neither.
+    let source = match &options.recover_from {
+        None => None,
+        Some(dir) => {
+            let stride = match options.format {
+                options::Format::Psv => 0,
+                _ => options.multipv,
+            };
+            match recover::Source::new(dir, stride) {
+                Ok(source) => {
+                    eprintln!(
+                        "gensfen: recovering {} shards from {}",
+                        source.len(),
+                        dir.display()
+                    );
+                    Some(source)
+                }
+                Err(err) => {
+                    eprintln!("{err}");
+                    std::process::exit(1);
+                }
+            }
+        }
+    };
+    let source = source.as_ref();
 
     let games_played = Arc::new(AtomicU64::new(0));
     let positions_written = Arc::new(AtomicU64::new(0));
@@ -127,10 +172,12 @@ fn main() {
                                 local.network(),
                                 tt,
                                 options,
+                                governor,
                                 seed,
                                 index,
                                 &games_played,
                                 &positions_written,
+                                source,
                             );
                         });
                     }

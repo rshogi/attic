@@ -20,6 +20,14 @@ pub enum SfenError {
     InvalidHandPiece(char),
     InvalidPly,
     UnexpectedTrailing,
+    /// A [`PackedSfen`](crate::PackedSfen) ran out of bits before the position
+    /// was complete.
+    PackedTruncated,
+    /// A packed king square was outside `0..=81` (81 meaning "absent").
+    PackedInvalidKingSquare(u32),
+    /// A packed stream held more pieces of a kind than the standard set has, so
+    /// the hand and piece-box passes could not be terminated.
+    PackedPieceOverflow,
 }
 
 impl fmt::Display for SfenError {
@@ -46,6 +54,13 @@ impl fmt::Display for SfenError {
             SfenError::InvalidHandPiece(c) => write!(f, "sfen: invalid hand piece {c:?}"),
             SfenError::InvalidPly => f.write_str("sfen: invalid ply"),
             SfenError::UnexpectedTrailing => f.write_str("sfen: unexpected trailing input"),
+            SfenError::PackedTruncated => f.write_str("packed sfen: ran out of bits"),
+            SfenError::PackedInvalidKingSquare(sq) => {
+                write!(f, "packed sfen: king square {sq} is out of range")
+            }
+            SfenError::PackedPieceOverflow => {
+                f.write_str("packed sfen: more pieces than the standard set holds")
+            }
         }
     }
 }

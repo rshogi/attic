@@ -120,7 +120,9 @@ impl Board {
         self.by_pattern[piece.color.index()][pattern_of(piece)] ^= bit;
     }
 
-    pub(crate) fn occupied(&self) -> Bitboard {
+    /// Every occupied square, for callers that walk the pieces rather than
+    /// the squares.
+    pub fn occupied(&self) -> Bitboard {
         self.occupied
     }
 
