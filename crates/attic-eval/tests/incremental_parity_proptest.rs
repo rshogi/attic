@@ -30,11 +30,7 @@
 // Manaka's shapes have no kernel backend to report and read an `MNW1` file, not
 // `eval/nn.bin`; `sym_network.rs` is their test. The hand-crafted shapes have no
 // accumulator to keep in step and no file at all; `hce_golden.rs` is theirs.
-#![cfg(not(any(
-    feature = "sym_kp_128x2_512",
-    feature = "sym_halfkp_128x2_512",
-    feature = "hce"
-)))]
+#![cfg(not(any(feature = "sym", feature = "hce")))]
 
 use std::path::PathBuf;
 use std::sync::OnceLock;

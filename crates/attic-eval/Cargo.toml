@@ -52,6 +52,10 @@ nnue_halfkp_768x2_16_64 = ["nnue_standard", "nnue_halfkp"]
 #                        never used, because V3 was trained with eight buckets.
 #   nnue_standard        every YaneuraOu standard shape
 #   nnue_halfkp          ... whose features are `HalfKP` (the other is K+P)
+#   sym                  every Manaka shape. Like `hce` it stands for them in the
+#                        guard's pairwise lists, so a new one widens none of them
+#   sym_kp               ... whose features are K+P
+#   sym_halfkp           ... whose features are Manaka's HalfKP
 #   hce                  every hand-crafted shape. Unlike the others it also
 #                        stands for them in the guard's pairwise lists, because
 #                        an HCE shape is exactly what `hce` being on means.
@@ -60,6 +64,9 @@ sfnn_progress = ["sfnn"]
 sfnn_progress_ek = ["sfnn_progress"]
 nnue_standard = []
 nnue_halfkp = []
+sym = []
+sym_kp = ["sym"]
+sym_halfkp = ["sym"]
 hce = []
 # Manaka's own shapes, spelled the way YaneuraOu spells its architectures:
 # feature space, transformer width by two perspectives, then the dense width.
@@ -68,8 +75,8 @@ hce = []
 # files rather than `nn.bin`: f32 weights, and an RMS norm where NNUE clips.
 # They share this crate's feature extraction and nothing else, see
 # `src/manaka.rs`.
-sym_kp_128x2_512 = []
-sym_halfkp_128x2_512 = []
+sym_kp_128x2_512 = ["sym_kp"]
+sym_halfkp_128x2_512 = ["sym_halfkp"]
 # The two hand-crafted evaluations (HCE), spelled the same way: how many
 # coefficients, then how they are grouped. Material is 10 board slots and 7
 # hand slots; Mobility is 107 board features and 57 for a piece in hand.

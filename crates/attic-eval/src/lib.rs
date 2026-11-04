@@ -17,44 +17,20 @@ mod features;
 mod scale;
 mod types;
 
-#[cfg(not(any(
-    feature = "sym_kp_128x2_512",
-    feature = "sym_halfkp_128x2_512",
-    feature = "hce"
-)))]
+#[cfg(not(any(feature = "sym", feature = "hce")))]
 mod finny;
-#[cfg(not(any(
-    feature = "sym_kp_128x2_512",
-    feature = "sym_halfkp_128x2_512",
-    feature = "hce"
-)))]
+#[cfg(not(any(feature = "sym", feature = "hce")))]
 mod loader;
-#[cfg(not(any(
-    feature = "sym_kp_128x2_512",
-    feature = "sym_halfkp_128x2_512",
-    feature = "hce"
-)))]
+#[cfg(not(any(feature = "sym", feature = "hce")))]
 mod network;
-#[cfg(not(any(
-    feature = "sym_kp_128x2_512",
-    feature = "sym_halfkp_128x2_512",
-    feature = "hce"
-)))]
+#[cfg(not(any(feature = "sym", feature = "hce")))]
 pub mod progress;
-#[cfg(not(any(
-    feature = "sym_kp_128x2_512",
-    feature = "sym_halfkp_128x2_512",
-    feature = "hce"
-)))]
+#[cfg(not(any(feature = "sym", feature = "hce")))]
 mod simd;
-#[cfg(not(any(
-    feature = "sym_kp_128x2_512",
-    feature = "sym_halfkp_128x2_512",
-    feature = "hce"
-)))]
+#[cfg(not(any(feature = "sym", feature = "hce")))]
 mod transformer;
 
-#[cfg(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512"))]
+#[cfg(feature = "sym")]
 pub mod manaka;
 
 #[cfg(feature = "hce")]
@@ -64,7 +40,7 @@ pub mod hce;
 // NNUE's because the search is written against them and the two evaluators
 // are interchangeable at this surface — which is the point: a shape swap is
 // a feature flag, not an edit to `qsearch`.
-#[cfg(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512"))]
+#[cfg(feature = "sym")]
 pub use manaka::{
     Accumulator, FinnyCache, SymNetwork as NnueNetwork, evaluate, evaluate_with, load_network,
     load_network_with_warnings,
@@ -99,41 +75,17 @@ pub use features::FEATURE_DIMENSION;
 
 #[cfg(not(feature = "hce"))]
 pub use features::{MoveDelta, PerspectiveDelta};
-#[cfg(not(any(
-    feature = "sym_kp_128x2_512",
-    feature = "sym_halfkp_128x2_512",
-    feature = "hce"
-)))]
+#[cfg(not(any(feature = "sym", feature = "hce")))]
 pub use finny::FinnyCache;
-#[cfg(not(any(
-    feature = "sym_kp_128x2_512",
-    feature = "sym_halfkp_128x2_512",
-    feature = "hce"
-)))]
+#[cfg(not(any(feature = "sym", feature = "hce")))]
 pub use loader::{load_network, load_network_with_dims, load_network_with_warnings};
-#[cfg(not(any(
-    feature = "sym_kp_128x2_512",
-    feature = "sym_halfkp_128x2_512",
-    feature = "hce"
-)))]
+#[cfg(not(any(feature = "sym", feature = "hce")))]
 pub use network::{evaluate, evaluate_with, layer_stack_index};
-#[cfg(not(any(
-    feature = "sym_kp_128x2_512",
-    feature = "sym_halfkp_128x2_512",
-    feature = "hce"
-)))]
+#[cfg(not(any(feature = "sym", feature = "hce")))]
 pub use simd::{Backend, active_backend};
-#[cfg(not(any(
-    feature = "sym_kp_128x2_512",
-    feature = "sym_halfkp_128x2_512",
-    feature = "hce"
-)))]
+#[cfg(not(any(feature = "sym", feature = "hce")))]
 pub use transformer::{Accumulator, FT_OUTPUT_DIMS};
-#[cfg(not(any(
-    feature = "sym_kp_128x2_512",
-    feature = "sym_halfkp_128x2_512",
-    feature = "hce"
-)))]
+#[cfg(not(any(feature = "sym", feature = "hce")))]
 pub use types::{
     FC_0_INPUT_DIMS, FC_0_OUTPUT_DIMS, FC_0_PADDED_INPUT_DIMS, FC_1_INPUT_DIMS, FC_1_OUTPUT_DIMS,
     FC_1_PADDED_INPUT_DIMS, FC_2_INPUT_DIMS, FC_2_OUTPUT_DIMS, FC_2_PADDED_INPUT_DIMS, HIDDEN_SIZE,

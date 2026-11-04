@@ -12,14 +12,7 @@ use crate::seen::Seen;
 
 mod encode;
 
-#[cfg(all(
-    test,
-    not(any(
-        feature = "sym_kp_128x2_512",
-        feature = "sym_halfkp_128x2_512",
-        feature = "hce"
-    ))
-))]
+#[cfg(all(test, not(any(feature = "sym", feature = "hce"))))]
 mod dedup_tests;
 
 /// One position's contribution to the corpus.
@@ -677,14 +670,7 @@ mod resignation_tests {
 // their weights are f32 and arrive as `MNW1`, so there is no builder to reach for.
 // The hand-crafted shapes (`hce_*`) have no builder either, and no network for
 // one to build.
-#[cfg(all(
-    test,
-    not(any(
-        feature = "sym_kp_128x2_512",
-        feature = "sym_halfkp_128x2_512",
-        feature = "hce"
-    ))
-))]
+#[cfg(all(test, not(any(feature = "sym", feature = "hce"))))]
 mod resumed_budget_tests {
     use std::time::{Duration, Instant};
 
@@ -861,14 +847,7 @@ mod resumed_budget_tests {
 /// These share the zero-eval network of [`resumed_budget_tests`]: a search that
 /// prefers nothing still has to be *stopped* by something, and what stops it is
 /// exactly what is under test.
-#[cfg(all(
-    test,
-    not(any(
-        feature = "sym_kp_128x2_512",
-        feature = "sym_halfkp_128x2_512",
-        feature = "hce"
-    ))
-))]
+#[cfg(all(test, not(any(feature = "sym", feature = "hce"))))]
 mod played_ending_tests {
     use super::resumed_budget_tests::{options, play};
     use super::*;

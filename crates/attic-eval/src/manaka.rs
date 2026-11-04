@@ -66,15 +66,15 @@ const WEIGHT_SCALE: f32 = 64.0;
 const RMS_EPS: f32 = 1e-6;
 
 /// The width of one perspective's embedding.
-#[cfg(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512"))]
+#[cfg(feature = "sym")]
 pub const DIM: usize = 128;
 
 /// Highest power the accumulator carries.
-#[cfg(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512"))]
+#[cfg(feature = "sym")]
 pub const ORDER: usize = 3;
 
 /// The single hidden layer's width.
-#[cfg(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512"))]
+#[cfg(feature = "sym")]
 pub const HIDDEN: usize = 512;
 
 /// Rows of the embedding table.
@@ -191,7 +191,7 @@ impl<'a> Reader<'a> {
 /// written at the old width stops matching instead of being read at the wrong
 /// stride. Manaka's exporter builds the same string from its own `Arch`.
 fn expected_arch(quantised: bool) -> String {
-    let features = match cfg!(feature = "sym_kp_128x2_512") {
+    let features = match cfg!(feature = "sym_kp") {
         true => format!("K+P[{TOKENS}->"),
         false => format!("HalfKP(Friend)[{TOKENS}->"),
     };
