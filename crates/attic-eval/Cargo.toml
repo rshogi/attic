@@ -57,7 +57,8 @@ nnue_halfkp_768x2_16_64 = ["nnue_standard", "nnue_halfkp"]
 #   sym_kp               ... whose features are K+P
 #   sym_halfkp           ... whose features are Manaka's HalfKP
 #   sym_token            ... whose features are Manaka's own token space (2,344 rows,
-#                        nothing crossed with anything)
+#                        nothing crossed with anything). The only space a pair
+#                        table can exist in
 #   hce                  every hand-crafted shape. Unlike the others it also
 #                        stands for them in the guard's pairwise lists, because
 #                        an HCE shape is exactly what `hce` being on means.
@@ -100,7 +101,36 @@ hce = []
 #   sym_token_256x2_512        pair0_d256_o3_h512
 #   sym_token_256x2_o1_32_32   pair0_d256_o1_h32_h232
 #
-# The dimensions of each are one row of the table in `src/manaka.rs`.
+# The token space is also the only one with a pair table, and a shape that has
+# one is spelled by what follows the dimensions: `_pair<N>` for its width, then
+# `_lse<N>` for how many of its last channels read a log-sum-exp, `_ks` for the
+# kept magnitudes and `_split` for power sums taken per owner. The order is
+# spelled `_o<N>` when it is not three, and a second dense width follows the
+# first, both as in the names above.
+#
+#   feature                                  Manaka's shape code
+#   sym_token_128x2_512_pair16               pair16_d128_o3_h512
+#   sym_token_128x2_512_pair32               pair32_d128_o3_h512
+#   sym_token_128x2_512_pair64               pair64_d128_o3_h512
+#   sym_token_64x2_512_pair16                pair16_d64_o3_h512
+#   sym_token_256x2_512_pair16               pair16_d256_o3_h512
+#   sym_token_128x2_o2_512_pair16            pair16_d128_o2_h512
+#   sym_token_128x2_o4_512_pair16            pair16_d128_o4_h512
+#   sym_token_128x2_1024_pair16              pair16_d128_o3_h1024
+#   sym_token_128x2_512_256_pair16           pair16_d128_o3_h512_h2256
+#   sym_token_128x2_512_512_pair16           pair16_d128_o3_h512_h2512
+#   sym_token_128x2_512_pair16_lse4          pair16_d128_o3_h512_lse4
+#   sym_token_128x2_512_pair16_lse8          pair16_d128_o3_h512_lse8
+#   sym_token_128x2_512_pair16_lse16         pair16_d128_o3_h512_lse16
+#   sym_token_128x2_512_pair16_lse4_ks       pair16_d128_o3_h512_lse4_ks
+#   sym_token_128x2_512_pair16_ks            pair16_d128_o3_h512_ks
+#   sym_token_128x2_512_pair16_split         pair16_d128_o3_h512_split
+#
+# `pair16_d128_o3_h512_pair-tie` is `sym_token_128x2_512_pair16` too: tying the
+# pair rows is a way of training, and the exporter writes the sum, so the file
+# has the shape of an ordinary `pair16_d128_o3_h512` and nothing in it says tied.
+#
+# The dimensions of each are one row of the table in `src/manaka/shape.rs`.
 sym_kp_64x2_512 = ["sym_kp"]
 sym_halfkp_64x2_512 = ["sym_halfkp"]
 sym_kp_128x2_512 = ["sym_kp"]
@@ -113,6 +143,22 @@ sym_token_64x2_512 = ["sym_token"]
 sym_token_128x2_512 = ["sym_token"]
 sym_token_256x2_512 = ["sym_token"]
 sym_token_256x2_o1_32_32 = ["sym_token"]
+sym_token_128x2_512_pair16 = ["sym_token"]
+sym_token_128x2_512_pair32 = ["sym_token"]
+sym_token_128x2_512_pair64 = ["sym_token"]
+sym_token_64x2_512_pair16 = ["sym_token"]
+sym_token_256x2_512_pair16 = ["sym_token"]
+sym_token_128x2_o2_512_pair16 = ["sym_token"]
+sym_token_128x2_o4_512_pair16 = ["sym_token"]
+sym_token_128x2_1024_pair16 = ["sym_token"]
+sym_token_128x2_512_256_pair16 = ["sym_token"]
+sym_token_128x2_512_512_pair16 = ["sym_token"]
+sym_token_128x2_512_pair16_lse4 = ["sym_token"]
+sym_token_128x2_512_pair16_lse8 = ["sym_token"]
+sym_token_128x2_512_pair16_lse16 = ["sym_token"]
+sym_token_128x2_512_pair16_lse4_ks = ["sym_token"]
+sym_token_128x2_512_pair16_ks = ["sym_token"]
+sym_token_128x2_512_pair16_split = ["sym_token"]
 # The two hand-crafted evaluations (HCE), spelled the same way: how many
 # coefficients, then how they are grouped. Material is 10 board slots and 7
 # hand slots; Mobility is 107 board features and 57 for a piece in hand.

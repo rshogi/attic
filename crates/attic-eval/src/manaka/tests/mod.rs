@@ -6,6 +6,9 @@
 //! architecture string and its forward pass hang together. What a *trained*
 //! file evaluates to is `tests/sym_network.rs`'s business, with a file.
 
+mod exported;
 mod fixtures;
 mod format;
 mod forward;
+#[cfg(feature = "sym_token")]
+mod pair;

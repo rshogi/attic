@@ -2,12 +2,24 @@
 
 use attic_state::{Color, Position, parse_sfen};
 
+use super::super::forward::{LSE_FLOOR, RMS_EPS};
 use super::super::{
-    Accumulator, DIM, FEATURE_LEN, FinnyCache, ORDER, RMS_EPS, SECOND_LAYER, SymNetwork,
-    evaluate_pre, evaluate_value, value_from_sums,
+    Accumulator, DIM, FEATURE_LEN, FinnyCache, GROUPS, HAS_PAIR, KS, MEAN, ORDER, PAIR,
+    SECOND_LAYER, SPLIT, SymNetwork, TOKENS, evaluate_pre, evaluate_value, value_from_sums,
 };
-use super::fixtures::{assert_close, game, random_game, synthetic};
-use crate::{MoveDelta, active_features};
+use super::fixtures::{
+    assert_close, assert_close_relative, game, owned_tokens, random_game, synthetic,
+};
+use crate::MoveDelta;
+#[cfg(feature = "sym_token")]
+use crate::active_features;
+
+/// How far a pair sum built by deltas may be from one built from scratch, as a
+/// fraction of its size (or of one, for a sum smaller than that). The sums are
+/// in the hundreds in the log-sum-exp channels, where one `f32` step is a few
+/// millionths of the sum, and a game of 160 plies adds and takes out a few
+/// thousand rows of them.
+const PAIR_DRIFT: f32 = 2e-5;
 
 /// The value is a number in `[-1, 1]` and is the `tanh` of the pre-activation
 /// it reports, on a position with hands and promoted pieces as well as the
@@ -29,35 +41,88 @@ fn the_value_is_finite_bounded_and_the_tanh_of_the_pre_activation() {
     }
 }
 
+/// The row of the pair `{a, b}` counted out: the pairs with a lower token below
+/// `lo` come first, `TOKENS − 1 − i` of them for each `i`, and `hi` is
+/// `hi − lo − 1` into its own. The accumulator's formula is the closed form of
+/// this sum; the two should never need to agree by construction.
+fn counted_pair_row(a: u32, b: u32) -> usize {
+    let (lo, hi) = (a.min(b) as usize, a.max(b) as usize);
+    (0..lo).map(|i| TOKENS - 1 - i).sum::<usize>() + (hi - lo - 1)
+}
+
 /// The forward pass written a second way, in `f64`, from the definition.
 ///
 /// The elementary symmetric polynomial `e_k` is the coefficient of `x^k` in
 /// `∏ (1 + v_i x)`, so this builds it by multiplying out the product rather
 /// than by Newton's identities from power sums — a different route to the same
-/// number, which is what makes agreement mean something. The norm, the hidden
-/// layers and the head are then the plain textbook forms.
+/// number, which is what makes agreement mean something. The pair sum is taken
+/// over every pair of tokens present, one at a time, at a row number counted
+/// out rather than computed; the group of a split shape is read off the
+/// position, not the token's number. The norm, the hidden layers and the head
+/// are then the plain textbook forms.
 fn reference_value(net: &SymNetwork, pos: &Position) -> f64 {
     let mut features = Vec::with_capacity(FEATURE_LEN);
     for color in [pos.side_to_move(), pos.side_to_move().flip()] {
-        let active = active_features(pos, color);
-        let mut elementary = vec![[0.0f64; ORDER + 1]; DIM];
-        for (channel, e) in elementary.iter_mut().enumerate() {
-            e[0] = 1.0;
-            for &token in &active {
-                let v = f64::from(net.embed[token as usize * DIM + channel]);
-                for k in (1..=ORDER).rev() {
-                    e[k] += e[k - 1] * v;
+        let tokens = owned_tokens(pos, color);
+        // The `r` of every norm, in the order the blocks come out, for `ks`.
+        let mut kept = Vec::new();
+        let rms = |block: &[f64]| {
+            let mean_square = block.iter().map(|v| v * v).sum::<f64>() / block.len() as f64;
+            (mean_square + f64::from(RMS_EPS)).sqrt()
+        };
+
+        for group in 0..GROUPS {
+            let mut elementary = vec![[0.0f64; ORDER + 1]; DIM];
+            for (channel, e) in elementary.iter_mut().enumerate() {
+                e[0] = 1.0;
+                for &(token, theirs) in &tokens {
+                    // A split shape sums the frame's own pieces apart from the
+                    // opponent's; every other shape has the one group.
+                    if SPLIT && usize::from(theirs) != group {
+                        continue;
+                    }
+                    let v = f64::from(net.embed[token as usize * DIM + channel]);
+                    for k in (1..=ORDER).rev() {
+                        e[k] += e[k - 1] * v;
+                    }
+                }
+            }
+            for k in 1..=ORDER {
+                let block: Vec<f64> = elementary.iter().map(|e| e[k]).collect();
+                let r = rms(&block);
+                kept.push(r);
+                for (channel, v) in block.iter().enumerate() {
+                    let gamma = f64::from(net.gamma[(k - 1) * DIM + channel]);
+                    features.push(v * (1.0 / r) * gamma);
                 }
             }
         }
-        for k in 1..=ORDER {
-            let block: Vec<f64> = elementary.iter().map(|e| e[k]).collect();
-            let mean_square = block.iter().map(|v| v * v).sum::<f64>() / DIM as f64;
-            let scale = 1.0 / (mean_square + f64::from(RMS_EPS)).sqrt();
-            for (channel, v) in block.iter().enumerate() {
-                let gamma = f64::from(net.gamma[(k - 1) * DIM + channel]);
-                features.push(v * scale * gamma);
+
+        if HAS_PAIR {
+            let mut sum = [0.0f64; PAIR];
+            for (i, &(a, _)) in tokens.iter().enumerate() {
+                for &(b, _) in &tokens[i + 1..] {
+                    let row = counted_pair_row(a, b);
+                    for (channel, s) in sum.iter_mut().enumerate() {
+                        *s += f64::from(net.pair[row * PAIR + channel]);
+                    }
+                }
             }
+            let gamma = |channel: usize| f64::from(net.pair_gamma[channel]);
+            if MEAN != 0 {
+                let r = rms(&sum[..MEAN]);
+                kept.push(r);
+                features.extend((0..MEAN).map(|c| sum[c] * (1.0 / r) * gamma(c)));
+            }
+            features.extend((MEAN..PAIR).map(|c| sum[c].max(f64::from(LSE_FLOOR)).ln() * gamma(c)));
+        }
+
+        if KS {
+            features.extend(
+                kept.iter()
+                    .zip(&net.scale_gamma)
+                    .map(|(r, g)| r.ln() * f64::from(*g)),
+            );
         }
     }
 
@@ -167,6 +232,18 @@ fn the_incremental_path_matches_a_rebuild() {
                 rebuilt.perspective(color),
                 1e-3,
             );
+            assert_close_relative(
+                "derive pair",
+                &derived.pair(color),
+                &rebuilt.pair(color),
+                PAIR_DRIFT,
+            );
+            assert_close_relative(
+                "update_after_move pair",
+                &root.pair(color),
+                &rebuilt.pair(color),
+                PAIR_DRIFT,
+            );
         }
         let want = evaluate_value(net, &pos);
         let got = value_from_sums(net, &derived, pos.side_to_move());
@@ -207,6 +284,12 @@ fn the_incremental_path_survives_long_random_games() {
                     derived.perspective(color),
                     rebuilt.perspective(color),
                     1e-3,
+                );
+                assert_close_relative(
+                    "derive pair",
+                    &derived.pair(color),
+                    &rebuilt.pair(color),
+                    PAIR_DRIFT,
                 );
                 #[cfg(feature = "sym_token")]
                 {

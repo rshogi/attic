@@ -5,7 +5,7 @@
 //! no edit anywhere else.
 
 /// What the shapes differ in. Everything else this module sizes follows from
-/// these four numbers and the feature space.
+/// these numbers and the feature space.
 struct Dims {
     /// The width of one perspective's embedding.
     dim: usize,
@@ -15,11 +15,61 @@ struct Dims {
     hidden: usize,
     /// The second hidden layer's width, or 0 for a shape that has one layer.
     hidden2: usize,
+    /// Channels of the pair table, or 0 for a shape without one. It is a table
+    /// of one vector per unordered pair of tokens, so it exists only in the
+    /// token space, whose 2,344 rows make 2,745,996 pairs.
+    pair: usize,
+    /// How many of the pair table's *last* channels are read as a log-sum-exp
+    /// instead of a mean. Carved out of `pair`, not added to it.
+    lse: usize,
+    /// Whether each normalised block also reports the magnitude the norm
+    /// divided away (`ks`, for kept scale).
+    ks: bool,
+    /// Whether the power sums are taken twice, once over the frame's own pieces
+    /// and once over the opponent's (`split`).
+    split: bool,
 }
 
-/// One row per set of dimensions, shared by the KP, HalfKP and token shape that
-/// carry them. The feature space is not here: it is `sym_kp`, `sym_halfkp` or
-/// `sym_token` and decides the token count, not these four numbers.
+impl Dims {
+    /// A shape with only the power sums, which is what all the older ones are.
+    const fn new(dim: usize, order: usize, hidden: usize, hidden2: usize) -> Dims {
+        Dims {
+            dim,
+            order,
+            hidden,
+            hidden2,
+            pair: 0,
+            lse: 0,
+            ks: false,
+            split: false,
+        }
+    }
+
+    const fn pair(self, pair: usize) -> Dims {
+        Dims { pair, ..self }
+    }
+
+    const fn lse(self, lse: usize) -> Dims {
+        Dims { lse, ..self }
+    }
+
+    const fn ks(self) -> Dims {
+        Dims { ks: true, ..self }
+    }
+
+    const fn split(self) -> Dims {
+        Dims {
+            split: true,
+            ..self
+        }
+    }
+}
+
+/// One row per shape, or per set of dimensions that the KP, HalfKP and plain
+/// token shapes share. The feature space is not here: it is `sym_kp`,
+/// `sym_halfkp` or `sym_token` and decides the token count, not these numbers.
+/// The shapes with a pair table have no KP or HalfKP counterpart, so each has a
+/// row of its own, in the order Manaka's shape code lists the knobs.
 ///
 /// A chain of `cfg!` rather than a `#[cfg]` per row, so that selecting two
 /// shapes at once is not a pile of duplicate-definition errors but the one
@@ -30,45 +80,57 @@ const DIMS: Dims = if cfg!(any(
     feature = "sym_halfkp_64x2_512",
     feature = "sym_token_64x2_512"
 )) {
-    Dims {
-        dim: 64,
-        order: 3,
-        hidden: 512,
-        hidden2: 0,
-    }
+    Dims::new(64, 3, 512, 0)
 } else if cfg!(any(
     feature = "sym_kp_128x2_512",
     feature = "sym_halfkp_128x2_512",
     feature = "sym_token_128x2_512"
 )) {
-    Dims {
-        dim: 128,
-        order: 3,
-        hidden: 512,
-        hidden2: 0,
-    }
+    Dims::new(128, 3, 512, 0)
 } else if cfg!(any(
     feature = "sym_kp_256x2_512",
     feature = "sym_halfkp_256x2_512",
     feature = "sym_token_256x2_512"
 )) {
-    Dims {
-        dim: 256,
-        order: 3,
-        hidden: 512,
-        hidden2: 0,
-    }
+    Dims::new(256, 3, 512, 0)
 } else if cfg!(any(
     feature = "sym_kp_256x2_o1_32_32",
     feature = "sym_halfkp_256x2_o1_32_32",
     feature = "sym_token_256x2_o1_32_32"
 )) {
-    Dims {
-        dim: 256,
-        order: 1,
-        hidden: 32,
-        hidden2: 32,
-    }
+    Dims::new(256, 1, 32, 32)
+} else if cfg!(feature = "sym_token_128x2_512_pair16") {
+    Dims::new(128, 3, 512, 0).pair(16)
+} else if cfg!(feature = "sym_token_128x2_512_pair32") {
+    Dims::new(128, 3, 512, 0).pair(32)
+} else if cfg!(feature = "sym_token_128x2_512_pair64") {
+    Dims::new(128, 3, 512, 0).pair(64)
+} else if cfg!(feature = "sym_token_64x2_512_pair16") {
+    Dims::new(64, 3, 512, 0).pair(16)
+} else if cfg!(feature = "sym_token_256x2_512_pair16") {
+    Dims::new(256, 3, 512, 0).pair(16)
+} else if cfg!(feature = "sym_token_128x2_o2_512_pair16") {
+    Dims::new(128, 2, 512, 0).pair(16)
+} else if cfg!(feature = "sym_token_128x2_o4_512_pair16") {
+    Dims::new(128, 4, 512, 0).pair(16)
+} else if cfg!(feature = "sym_token_128x2_1024_pair16") {
+    Dims::new(128, 3, 1024, 0).pair(16)
+} else if cfg!(feature = "sym_token_128x2_512_256_pair16") {
+    Dims::new(128, 3, 512, 256).pair(16)
+} else if cfg!(feature = "sym_token_128x2_512_512_pair16") {
+    Dims::new(128, 3, 512, 512).pair(16)
+} else if cfg!(feature = "sym_token_128x2_512_pair16_lse4") {
+    Dims::new(128, 3, 512, 0).pair(16).lse(4)
+} else if cfg!(feature = "sym_token_128x2_512_pair16_lse8") {
+    Dims::new(128, 3, 512, 0).pair(16).lse(8)
+} else if cfg!(feature = "sym_token_128x2_512_pair16_lse16") {
+    Dims::new(128, 3, 512, 0).pair(16).lse(16)
+} else if cfg!(feature = "sym_token_128x2_512_pair16_lse4_ks") {
+    Dims::new(128, 3, 512, 0).pair(16).lse(4).ks()
+} else if cfg!(feature = "sym_token_128x2_512_pair16_ks") {
+    Dims::new(128, 3, 512, 0).pair(16).ks()
+} else if cfg!(feature = "sym_token_128x2_512_pair16_split") {
+    Dims::new(128, 3, 512, 0).pair(16).split()
 } else {
     panic!("a Manaka shape has to be selected: see the features of attic-eval")
 };
@@ -106,5 +168,117 @@ pub const HEAD: usize = if SECOND_LAYER { HIDDEN2 } else { HIDDEN };
 /// `14 · 2 · 81 + 2 · 38`: see `tokens.rs`.
 pub const TOKENS: usize = crate::types::NUM_FEATURES;
 
-/// What the first hidden layer reads: both perspectives, every order.
-pub const FEATURE_LEN: usize = 2 * ORDER * DIM;
+/// Channels of the pair table, or 0 when the shape has none.
+pub const PAIR: usize = DIMS.pair;
+
+/// How many of the pair table's last channels are read as a log-sum-exp.
+pub const LSE: usize = DIMS.lse;
+
+/// The pair channels read as a mean: normalised like a power block, and ahead of
+/// the log-sum-exp ones in the table. A row that asked for more log-sum-exp
+/// channels than there are channels would not subtract, and so does not compile.
+pub const MEAN: usize = PAIR - LSE;
+
+/// Whether each normalised block also reports the magnitude the norm divided
+/// away. A constant for the same reason [`SECOND_LAYER`] is.
+pub const KS: bool = DIMS.ks;
+
+/// Whether the power sums are taken separately over the frame's own pieces and
+/// the opponent's.
+pub const SPLIT: bool = DIMS.split;
+
+/// Groups of power sums per perspective: two when split by owner, else one.
+pub const GROUPS: usize = if SPLIT { 2 } else { 1 };
+
+/// Whether the shape has a pair table. Spelled `!= 0` for the reason
+/// [`SECOND_LAYER`] is.
+pub const HAS_PAIR: bool = PAIR != 0;
+
+/// Rows of the pair table: one per unordered pair of distinct tokens, which is
+/// `C(TOKENS, 2)`. Zero without a pair table, since in the KP and HalfKP spaces
+/// the same formula would name 7.9e9 rows that nothing reads.
+pub const PAIR_ROWS: usize = if HAS_PAIR {
+    TOKENS * (TOKENS - 1) / 2
+} else {
+    0
+};
+
+/// The power sums one perspective carries: every order of every group.
+pub const POWER_LEN: usize = GROUPS * ORDER * DIM;
+
+/// Magnitudes the norms divided away that the head is told about, per
+/// perspective: one for each normalised block, which is every order of every
+/// group and the pair's mean channels when there are any. Zero without `ks`.
+pub const SCALE_LEN: usize = if KS {
+    GROUPS * ORDER + (MEAN != 0) as usize
+} else {
+    0
+};
+
+/// One perspective's share of what the first hidden layer reads, laid out as
+/// the power blocks, then the pair channels, then the kept magnitudes. A block
+/// that a shape lacks is zero long, so its offset is where the next one starts.
+pub const BLOCK_LEN: usize = POWER_LEN + PAIR + SCALE_LEN;
+
+/// Where the pair channels start within a block.
+pub const PAIR_AT: usize = POWER_LEN;
+
+/// Where the kept magnitudes start within a block.
+pub const SCALE_AT: usize = PAIR_AT + PAIR;
+
+/// What the first hidden layer reads: both perspectives' blocks.
+pub const FEATURE_LEN: usize = 2 * BLOCK_LEN;
+
+// Exactly one shape, counted. `DIMS` above picks its row by testing the shapes in
+// turn, so two at once would silently take the first. `sym` on its own, which no
+// shape is, counts zero and fails here too, which is why the guard in `types.rs`
+// can stand for every one of them with `sym`.
+#[cfg(feature = "sym")]
+const _: () = {
+    macro_rules! selected {
+        ($($shape:literal),+ $(,)?) => { 0 $(+ cfg!(feature = $shape) as usize)+ };
+    }
+    let selected = selected!(
+        "sym_kp_64x2_512",
+        "sym_halfkp_64x2_512",
+        "sym_kp_128x2_512",
+        "sym_halfkp_128x2_512",
+        "sym_kp_256x2_512",
+        "sym_halfkp_256x2_512",
+        "sym_kp_256x2_o1_32_32",
+        "sym_halfkp_256x2_o1_32_32",
+        "sym_token_64x2_512",
+        "sym_token_128x2_512",
+        "sym_token_256x2_512",
+        "sym_token_256x2_o1_32_32",
+        "sym_token_128x2_512_pair16",
+        "sym_token_128x2_512_pair32",
+        "sym_token_128x2_512_pair64",
+        "sym_token_64x2_512_pair16",
+        "sym_token_256x2_512_pair16",
+        "sym_token_128x2_o2_512_pair16",
+        "sym_token_128x2_o4_512_pair16",
+        "sym_token_128x2_1024_pair16",
+        "sym_token_128x2_512_256_pair16",
+        "sym_token_128x2_512_512_pair16",
+        "sym_token_128x2_512_pair16_lse4",
+        "sym_token_128x2_512_pair16_lse8",
+        "sym_token_128x2_512_pair16_lse16",
+        "sym_token_128x2_512_pair16_lse4_ks",
+        "sym_token_128x2_512_pair16_ks",
+        "sym_token_128x2_512_pair16_split",
+    );
+    assert!(
+        selected == 1,
+        "select exactly one Manaka shape: they differ in their dimensions"
+    );
+};
+
+const _: () = {
+    // Only the token space is small enough for a row per pair, and the loader
+    // and the accumulator index the table by a token pair directly.
+    assert!(
+        !HAS_PAIR || cfg!(feature = "sym_token"),
+        "a pair table exists only in the token space"
+    );
+};

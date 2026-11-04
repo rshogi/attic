@@ -38,12 +38,20 @@ env:
 # The network shape is a build-time feature and exactly one must be selected
 # (`attic-eval` refuses to compile with none or two), so `--all-features` can
 # neither build nor test anything. Each job below runs once per shape instead.
-# `args` is what follows `cargo <verb>` to pick it; the twenty-third entry is the
+# `args` is what follows `cargo <verb>` to pick it; the twenty-eighth entry is the
 # build that must match YaneuraOu node for node (`ref_check_time` moves the
 # time checks to where the reference's are), which turns off the defaults.
-# The list is written out in each job on purpose: it is the same twenty-three entries
-# three times, and kept that way rather than behind a YAML anchor so that no
-# workflow parser has to support one for CI to start at all.
+# The list is written out in each job on purpose: it is the same twenty-eight
+# entries three times, and kept that way rather than behind a YAML anchor so that
+# no workflow parser has to support one for CI to start at all.
+#
+# The Manaka shapes with a pair table are sixteen, and only five of them are
+# rows here: each row builds the whole workspace and, in `test`, allocates a
+# synthetic pair table of 175 MB (700 MB at `pair64`) several times over. The five
+# are one per axis the code branches on (the plain pair table, a log-sum-exp
+# with kept magnitudes, `split`, a second hidden layer, order four). The rest
+# differ from them in a width or a count the code only reads as a constant, and
+# `pair-shapes` below compiles and lints each of them.
 #
 # Nothing here has a network file: the tests that read one skip with a notice
 # when it is absent, so a green run says the code builds and its self-contained
@@ -110,6 +118,16 @@ jobs:
             args: --features sym_token_256x2_512
           - name: sym-token-256-o1
             args: --features sym_token_256x2_o1_32_32
+          - name: sym-token-pair16
+            args: --features sym_token_128x2_512_pair16
+          - name: sym-token-pair16-lse4-ks
+            args: --features sym_token_128x2_512_pair16_lse4_ks
+          - name: sym-token-pair16-split
+            args: --features sym_token_128x2_512_pair16_split
+          - name: sym-token-pair16-h2
+            args: --features sym_token_128x2_512_256_pair16
+          - name: sym-token-pair16-o4
+            args: --features sym_token_128x2_o4_512_pair16
           - name: hce-material
             args: --features hce_material_17
           - name: hce-mobility
@@ -136,6 +154,38 @@ jobs:
         run: |
           cargo clippy --workspace --all-targets --target x86_64-unknown-linux-gnu \
             ${{ matrix.args }} -- -D warnings
+
+  # The eleven pair-table shapes that are not rows of the matrices above. They
+  # share every line of code with a row that is, and differ in a constant, so
+  # what can go wrong with one is that it does not compile or trips a lint that
+  # a constant being zero or one provokes (`lse16` has no mean channels at all):
+  # one workspace-wide clippy pass per shape finds both. The dependencies build
+  # once and every shape after the first recompiles only the workspace.
+  pair-shapes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: pair-shapes
+      - run: |
+          for shape in \
+            sym_token_128x2_512_pair32 \
+            sym_token_128x2_512_pair64 \
+            sym_token_64x2_512_pair16 \
+            sym_token_256x2_512_pair16 \
+            sym_token_128x2_o2_512_pair16 \
+            sym_token_128x2_1024_pair16 \
+            sym_token_128x2_512_512_pair16 \
+            sym_token_128x2_512_pair16_lse4 \
+            sym_token_128x2_512_pair16_lse8 \
+            sym_token_128x2_512_pair16_lse16 \
+            sym_token_128x2_512_pair16_ks; do
+            echo "::group::$shape"
+            cargo clippy --workspace --all-targets --features "$shape" -- -D warnings
+            echo "::endgroup::"
+          done
 
   build:
     name: build (${{ matrix.name }})
@@ -184,6 +234,16 @@ jobs:
             args: --features sym_token_256x2_512
           - name: sym-token-256-o1
             args: --features sym_token_256x2_o1_32_32
+          - name: sym-token-pair16
+            args: --features sym_token_128x2_512_pair16
+          - name: sym-token-pair16-lse4-ks
+            args: --features sym_token_128x2_512_pair16_lse4_ks
+          - name: sym-token-pair16-split
+            args: --features sym_token_128x2_512_pair16_split
+          - name: sym-token-pair16-h2
+            args: --features sym_token_128x2_512_256_pair16
+          - name: sym-token-pair16-o4
+            args: --features sym_token_128x2_o4_512_pair16
           - name: hce-material
             args: --features hce_material_17
           - name: hce-mobility
@@ -246,6 +306,16 @@ jobs:
             args: --features sym_token_256x2_512
           - name: sym-token-256-o1
             args: --features sym_token_256x2_o1_32_32
+          - name: sym-token-pair16
+            args: --features sym_token_128x2_512_pair16
+          - name: sym-token-pair16-lse4-ks
+            args: --features sym_token_128x2_512_pair16_lse4_ks
+          - name: sym-token-pair16-split
+            args: --features sym_token_128x2_512_pair16_split
+          - name: sym-token-pair16-h2
+            args: --features sym_token_128x2_512_256_pair16
+          - name: sym-token-pair16-o4
+            args: --features sym_token_128x2_o4_512_pair16
           - name: hce-material
             args: --features hce_material_17
           - name: hce-mobility

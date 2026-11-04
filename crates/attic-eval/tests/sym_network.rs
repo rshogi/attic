@@ -9,12 +9,22 @@
 //! names now is the `nn.bin` that `manaka-train export-nnue` writes.
 
 #![cfg(feature = "sym")]
+// `PAIR`, `MEAN`, `LSE` and `SCALE_LEN` are zero in a shape without that block,
+// and this file is compiled for every shape. A comparison with one or a range
+// ending at one is then decided before the code runs, which is what these three
+// lints report; each use below is guarded by the constant it would be absurd
+// without.
+#![allow(
+    clippy::absurd_extreme_comparisons,
+    clippy::chunks_exact_to_as_chunks,
+    clippy::reversed_empty_ranges
+)]
 
 use std::path::PathBuf;
 
 use attic_eval::manaka::{
-    Accumulator, DIM, FEATURE_LEN, HEAD, HIDDEN, HIDDEN2, ORDER, TOKENS, evaluate_value,
-    load_network,
+    Accumulator, DIM, FEATURE_LEN, GROUPS, HEAD, HIDDEN, HIDDEN2, LSE, MEAN, ORDER, PAIR,
+    PAIR_ROWS, SCALE_LEN, TOKENS, evaluate_value, evaluate_value_with, load_network,
 };
 use attic_eval::{FinnyCache, MoveDelta, evaluate, evaluate_with};
 use attic_state::{Color, Position};
@@ -40,6 +50,19 @@ fn a_trained_network_loads_at_the_declared_shape() {
     assert_eq!(net.w2.len(), HIDDEN2 * HIDDEN);
     assert_eq!(net.b2.len(), HIDDEN2);
     assert_eq!(net.value_w.len(), HEAD);
+    assert_eq!(net.pair_gamma.len(), PAIR);
+    assert_eq!(net.pair.len(), PAIR_ROWS * PAIR);
+    assert_eq!(net.scale_gamma.len(), SCALE_LEN);
+    // The log-sum-exp channels hold `exp θ`, which is positive; a reader that
+    // forgot to exponentiate the scaled file's `θ` would leave negative ones.
+    if LSE > 0 {
+        let lowest = net
+            .pair
+            .chunks_exact(PAIR)
+            .flat_map(|row| row[MEAN..].iter().copied())
+            .fold(f32::INFINITY, f32::min);
+        assert!(lowest > 0.0, "a log-sum-exp channel is {lowest}");
+    }
 }
 
 /// The forward pass runs on the opening position and lands inside `tanh`'s
@@ -102,7 +125,7 @@ fn the_incremental_path_matches_a_rebuild() {
         for color in [Color::Black, Color::White] {
             let a = derived.perspective(color);
             let b = rebuilt.perspective(color);
-            for block in 0..ORDER {
+            for block in 0..GROUPS * ORDER {
                 let span = block * DIM..(block + 1) * DIM;
                 let scale = b[span.clone()].iter().fold(0.0f32, |m, v| m.max(v.abs()));
                 let worst = a[span.clone()]
@@ -112,9 +135,19 @@ fn the_incremental_path_matches_a_rebuild() {
                     .fold(0.0f32, f32::max);
                 assert!(
                     worst <= 2e-6 * scale.max(1.0),
-                    "ply {ply}, {color:?}, order {}: incremental drifted {worst} from a \
+                    "ply {ply}, {color:?}, block {}: incremental drifted {worst} from a \
                      rebuild, against a largest sum of {scale}",
                     block + 1
+                );
+            }
+            let (pa, pb) = (derived.pair(color), rebuilt.pair(color));
+            for channel in 0..PAIR {
+                let worst = (pa[channel] - pb[channel]).abs();
+                assert!(
+                    worst <= 2e-6 * pb[channel].abs().max(1.0),
+                    "ply {ply}, {color:?}, pair channel {channel}: incremental drifted \
+                     {worst} from a rebuild, against a sum of {}",
+                    pb[channel]
                 );
             }
         }
@@ -189,8 +222,17 @@ fn the_opening_is_not_a_saturated_value() {
 /// This one is what the search does at every node, and it is random so that it
 /// reaches what a fixed line does not: captures of promoted pieces, drops of
 /// every kind of piece and of later copies, promotions, and a king that walks.
-/// Three games of two hundred plies, none of them rebuilt on the way, so that
-/// drift would show as a bound failing late in a game and not early.
+/// Three games of up to four hundred plies (a random game can end sooner, in
+/// mate), none of them rebuilt on the way, so that drift would show as a bound
+/// failing late in a game and not early. The search rebuilds at its root every
+/// iteration and so never carries a sum nearly that far; this is the worst it
+/// could be. `ATTIC_SYM_PLIES` sets the length.
+///
+/// A shape with a pair table is held to two more things, and prints how close
+/// it came. Its sums are compared as the search sees them, and its log-sum-exp
+/// channels are compared after the logarithm, which is where a large `exp θ`
+/// that came and went would show as an error in a small sum left behind:
+/// `docs/network.md` asks for under `1e-4` there.
 ///
 /// The bound is relative to the largest sum of its block, for the reason the
 /// test above gives. It also compares what the search would be handed, the
@@ -207,7 +249,12 @@ fn the_search_path_stays_with_a_rebuild_over_long_random_games() {
     let net = load_network(&path).expect("the file loads");
     let mut cache = FinnyCache::new();
     let (mut worst_relative, mut worst_score) = (0.0f32, 0i32);
+    let (mut worst_pair, mut worst_ln, mut worst_value) = (0.0f32, 0.0f32, 0.0f32);
     let mut moves = 0usize;
+    let plies = std::env::var("ATTIC_SYM_PLIES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(400);
 
     for seed in 1..=3u64 {
         let mut rng = 0x9E37_79B9_7F4A_7C15u64 ^ seed.wrapping_mul(0xD1B5_4A32_D192_ED03);
@@ -217,7 +264,7 @@ fn the_search_path_stays_with_a_rebuild_over_long_random_games() {
         let mut derived = Accumulator::new();
         let mut legal = Vec::new();
 
-        for ply in 0..200 {
+        for ply in 0..plies {
             legal.clear();
             pos.generate_legal_all(&mut legal);
             if legal.is_empty() {
@@ -238,7 +285,7 @@ fn the_search_path_stays_with_a_rebuild_over_long_random_games() {
             for color in [Color::Black, Color::White] {
                 let a = derived.perspective(color);
                 let b = rebuilt.perspective(color);
-                for block in 0..ORDER {
+                for block in 0..GROUPS * ORDER {
                     let span = block * DIM..(block + 1) * DIM;
                     let scale = b[span.clone()].iter().fold(0.0f32, |m, v| m.max(v.abs()));
                     let drift = a[span.clone()]
@@ -250,12 +297,35 @@ fn the_search_path_stays_with_a_rebuild_over_long_random_games() {
                     worst_relative = worst_relative.max(relative);
                     assert!(
                         relative <= 1e-5,
-                        "seed {seed}, ply {ply}, {color:?}, order {}: derived drifted {drift} \
+                        "seed {seed}, ply {ply}, {color:?}, block {}: derived drifted {drift} \
                          from a rebuild, against a largest sum of {scale}",
                         block + 1
                     );
                 }
+                let (pa, pb) = (derived.pair(color), rebuilt.pair(color));
+                for channel in 0..PAIR {
+                    let drift = (pa[channel] - pb[channel]).abs();
+                    let relative = drift / pb[channel].abs().max(1.0);
+                    worst_pair = worst_pair.max(relative);
+                    assert!(
+                        relative <= 1e-5,
+                        "seed {seed}, ply {ply}, {color:?}, pair channel {channel}: derived \
+                         drifted {drift} from a rebuild, against a sum of {}",
+                        pb[channel]
+                    );
+                    if channel >= MEAN {
+                        let ln = (pa[channel].max(1e-6).ln() - pb[channel].max(1e-6).ln()).abs();
+                        worst_ln = worst_ln.max(ln);
+                        assert!(
+                            ln < 1e-4,
+                            "seed {seed}, ply {ply}, {color:?}, channel {channel}: ln drifted {ln}"
+                        );
+                    }
+                }
             }
+            let value =
+                (evaluate_value(&net, &pos) - evaluate_value_with(&net, &derived, &pos)).abs();
+            worst_value = worst_value.max(value);
             let score = (evaluate_with(&net, &derived, &pos) - evaluate(&net, &pos)).abs();
             worst_score = worst_score.max(score);
             assert!(
@@ -269,4 +339,10 @@ fn the_search_path_stays_with_a_rebuild_over_long_random_games() {
         "{moves} moves; worst drift {worst_relative:.3e} of the block's largest sum; \
          worst score difference {worst_score}"
     );
+    if PAIR > 0 {
+        eprintln!(
+            "pair sums: worst relative drift {worst_pair:.3e}; log-sum-exp ln drift \
+             {worst_ln:.3e}; value drift {worst_value:.3e}"
+        );
+    }
 }

@@ -10,7 +10,14 @@ use crate::features::{
 #[cfg(feature = "sym_token")]
 use crate::tokens::{FeatureIndex, MAX_ACTIVE_FEATURES, MoveDelta, active_features};
 
-use super::{DIM, ORDER, SymNetwork};
+#[cfg(feature = "sym_token")]
+use super::pair::{theirs, touch_pairs};
+use super::{DIM, ORDER, PAIR, POWER_LEN, SPLIT, SymNetwork};
+
+/// What the pair sums are accumulated in. `f64`, which is not what the tables
+/// are stored in or the forward pass computes in (both `f32`): see the note on
+/// [`Accumulator`].
+pub(super) type PairSum = f64;
 
 /// The accumulator the search threads through the tree.
 ///
@@ -50,10 +57,30 @@ use super::{DIM, ORDER, SymNetwork};
 /// has the set it needs at the point it needs it: [`Accumulator::apply`] takes
 /// each removed token out of `active` *before* it subtracts the token's row, and
 /// puts each added one in *after* it adds the row.
+///
+/// ## The pair table
+///
+/// A pair table is the one sum here that is over *pairs* of tokens, so a token
+/// that arrives adds one row for every token already present and one that
+/// leaves subtracts the same rows. That is why `active` is kept, and why the
+/// order above matters: a capture takes the victim out, then the lifted piece,
+/// and the lifted piece's rows against the victim are gone with the victim's.
+///
+/// Each of those is a floating-point sum taken out of a larger one, which is
+/// where `f32` drifts, and the log-sum-exp channels are the worst case: they
+/// sum `exp θ`, up to about 1e4, and a logarithm of what is left over after a
+/// large term has come and gone reads the rounding of that large term. The
+/// search seeds the root with [`Accumulator::refresh`] every iteration, which
+/// is what keeps the drift to a few plies' worth; see `tests/sym_network.rs` for
+/// how much that is on a trained net.
 #[derive(Debug, Clone)]
 pub struct Accumulator {
-    /// `[perspective][ORDER * DIM]`, indexed by [`Color::index`].
+    /// `[perspective][POWER_LEN]`, indexed by [`Color::index`]; within one
+    /// perspective `[group][order][channel]`, a split shape having two groups.
     sums: [Vec<f32>; Color::COUNT],
+    /// `[perspective][PAIR]`: the sum over the pair table of every pair of
+    /// tokens present. Empty for a shape without one.
+    pair: [Vec<PairSum>; Color::COUNT],
     /// What each half was built from, kept so a derive can diff against it (KP,
     /// HalfKP) or so that the tokens present are known (the token shapes).
     active: [Vec<FeatureIndex>; Color::COUNT],
@@ -68,7 +95,8 @@ impl Default for Accumulator {
 impl Accumulator {
     pub fn new() -> Self {
         Accumulator {
-            sums: [vec![0.0; ORDER * DIM], vec![0.0; ORDER * DIM]],
+            sums: [vec![0.0; POWER_LEN], vec![0.0; POWER_LEN]],
+            pair: [vec![0.0; PAIR], vec![0.0; PAIR]],
             active: [
                 Vec::with_capacity(MAX_ACTIVE_FEATURES),
                 Vec::with_capacity(MAX_ACTIVE_FEATURES),
@@ -88,12 +116,27 @@ impl Accumulator {
             for &feature in &self.active[i] {
                 accumulate(&mut self.sums[i], net, feature, 1.0);
             }
+            // Every pair once: each token against the ones before it.
+            self.pair[i].fill(0.0);
+            #[cfg(feature = "sym_token")]
+            for (at, &feature) in self.active[i].iter().enumerate() {
+                touch_pairs(&mut self.pair[i], net, feature, &self.active[i][..at], 1.0);
+            }
         }
     }
 
-    /// The power sums for one perspective.
+    /// The power sums for one perspective, `[group][order][channel]`.
     pub fn perspective(&self, color: Color) -> &[f32] {
         &self.sums[color.index()]
+    }
+
+    /// The pair table's sum for one perspective, `[channel]`; empty without one.
+    /// The last `LSE` channels hold `Σ exp θ`, not yet a logarithm.
+    ///
+    /// Accumulated in `f64` and handed over rounded to `f32`, which is what the
+    /// forward pass computes in; see [`Accumulator`].
+    pub fn pair(&self, color: Color) -> [f32; PAIR] {
+        std::array::from_fn(|channel| self.pair[color.index()][channel] as f32)
     }
 
     /// The tokens present in one perspective, in no particular order.
@@ -238,9 +281,11 @@ impl Accumulator {
                     .expect("a removed token was not in the accumulator it is removed from");
                 self.active[i].swap_remove(at);
                 accumulate(&mut self.sums[i], net, token, -1.0);
+                touch_pairs(&mut self.pair[i], net, token, &self.active[i], -1.0);
             }
             for &token in half.added() {
                 accumulate(&mut self.sums[i], net, token, 1.0);
+                touch_pairs(&mut self.pair[i], net, token, &self.active[i], 1.0);
                 self.active[i].push(token);
             }
         }
@@ -258,13 +303,31 @@ impl Accumulator {
 /// start of every search.
 fn accumulate(sums: &mut [f32], net: &SymNetwork, feature: FeatureIndex, sign: f32) {
     let row = &net.embed[feature as usize * DIM..(feature as usize + 1) * DIM];
+    let base = group(feature) * ORDER * DIM;
     for (channel, &value) in row.iter().enumerate() {
         let mut power = value;
         for k in 0..ORDER {
-            sums[k * DIM + channel] += sign * power;
+            sums[base + k * DIM + channel] += sign * power;
             power *= value;
         }
     }
+}
+
+/// Which group of power sums a feature goes into: always the first, unless the
+/// shape is split by owner, in which case the second takes the opponent's.
+#[cfg(feature = "sym_token")]
+#[inline]
+fn group(feature: FeatureIndex) -> usize {
+    if SPLIT { theirs(feature) } else { 0 }
+}
+
+/// The KP and HalfKP spaces have no `split`: their numbering says nothing about
+/// whose a feature is.
+#[cfg(not(feature = "sym_token"))]
+#[inline]
+fn group(_feature: FeatureIndex) -> usize {
+    const { assert!(!SPLIT) };
+    0
 }
 
 /// The buffers a derive needs, owned across the whole search.
