@@ -49,22 +49,16 @@ shielune 版の `least_significant_square_bb` を戻さずに比べると、`sfn
 
 ## 探索速度
 
-YaneuraOu を 1 とした比です。YaneuraOu 側も同じ評価関数で動かしています。1 スレッドで、1 局面 10 万ノード × 128 局面を交互に測定しました。
+YaneuraOu を 1 とした比です。YaneuraOu 側も同じ評価関数で動かしています。表は、ビルドの方法ごとに測ったうち速い方の値です。1 スレッドで、1 局面 10 万ノード × 128 局面を交互に測定しました。
 
 | ビルド                                     | コマンド                | 速度比 |
 | ------------------------------------------ | ----------------------- | ------ |
 | `nnue_kp_256x2_32_32`                      | `cargo xtask build-pgo` | 1.053  |
-| `nnue_kp_256x2_32_32`                      | `cargo build --release` | 1.012  |
 | `nnue_halfkp_256x2_32_32`                  | `cargo xtask build-pgo` | 1.022  |
-| `nnue_halfkp_256x2_32_32`                  | `cargo build --release` | 0.980  |
 | `nnue_halfkp_128x2_32_32`                  | `cargo xtask build-pgo` | 0.998  |
-| `nnue_halfkp_128x2_32_32`                  | `cargo build --release` | 0.946  |
 | `nnue_halfkp_768x2_16_64`                  | `cargo xtask build-pgo` | 1.008  |
-| `nnue_halfkp_768x2_16_64`                  | `cargo build --release` | 0.971  |
 | `sfnn_halfkahm2_1024_15_64_progress8kpabs` | `cargo xtask build-pgo` | 0.424  |
-| `sfnn_halfkahm2_1024_15_64_progress8kpabs` | `cargo build --release` | 0.410  |
 | `sfnn_halfkahm2_2304_15_64_progress8ek`    | `cargo xtask build-pgo` | 0.416  |
-| `sfnn_halfkahm2_2304_15_64_progress8ek`    | `cargo build --release` | 0.416  |
 
 SFNN の 2 つは、YaneuraOu 側が shielune 版です。遅い原因は調べていません。AVX-512 のカーネルと、表にない評価関数の速度は測っていません。
 
