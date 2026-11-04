@@ -16,6 +16,7 @@ use attic_eval::manaka::{
     Accumulator, DIM, FEATURE_LEN, HEAD, HIDDEN, HIDDEN2, ORDER, TOKENS, evaluate_value,
     load_network,
 };
+use attic_eval::{FinnyCache, MoveDelta, evaluate, evaluate_with};
 use attic_state::{Color, Position};
 
 fn network_path() -> Option<PathBuf> {
@@ -178,4 +179,94 @@ fn the_opening_is_not_a_saturated_value() {
     let net = load_network(&path).expect("the file loads");
     let value = evaluate_value(&net, &Position::startpos());
     assert!(value.abs() < 0.999, "value saturated at {value}");
+}
+
+/// The search's own path on a trained network: an accumulator carried down long
+/// random games by `derive_into_cached` alone, each step from the move's
+/// `MoveDelta`, against a rebuild of the same position.
+///
+/// The test above walks a fixed line with `update_after_move` for thirty plies.
+/// This one is what the search does at every node, and it is random so that it
+/// reaches what a fixed line does not: captures of promoted pieces, drops of
+/// every kind of piece and of later copies, promotions, and a king that walks.
+/// Three games of two hundred plies, none of them rebuilt on the way, so that
+/// drift would show as a bound failing late in a game and not early.
+///
+/// The bound is relative to the largest sum of its block, for the reason the
+/// test above gives. It also compares what the search would be handed, the
+/// integer score, which may differ by the rounding of the last bit of a float
+/// and not by more.
+///
+/// Ignored because it needs a trained file, which is what
+/// `ATTIC_SYM_MNW=/path/to/nn.bin cargo test -p attic-eval --features <shape>
+/// --test sym_network -- --ignored` supplies.
+#[test]
+#[ignore = "needs ATTIC_SYM_MNW to name a trained nn.bin"]
+fn the_search_path_stays_with_a_rebuild_over_long_random_games() {
+    let path = network_path().expect("set ATTIC_SYM_MNW to a Manaka nn.bin");
+    let net = load_network(&path).expect("the file loads");
+    let mut cache = FinnyCache::new();
+    let (mut worst_relative, mut worst_score) = (0.0f32, 0i32);
+    let mut moves = 0usize;
+
+    for seed in 1..=3u64 {
+        let mut rng = 0x9E37_79B9_7F4A_7C15u64 ^ seed.wrapping_mul(0xD1B5_4A32_D192_ED03);
+        let mut pos = Position::startpos();
+        let mut acc = Accumulator::new();
+        acc.refresh(&net, &pos);
+        let mut derived = Accumulator::new();
+        let mut legal = Vec::new();
+
+        for ply in 0..200 {
+            legal.clear();
+            pos.generate_legal_all(&mut legal);
+            if legal.is_empty() {
+                break;
+            }
+            rng ^= rng >> 12;
+            rng ^= rng << 25;
+            rng ^= rng >> 27;
+            let mv = legal[(rng.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 33) as usize % legal.len()];
+
+            let delta = MoveDelta::from_move(&pos, mv);
+            let _ = pos.do_move(mv);
+            Accumulator::derive_into_cached(&acc, &mut derived, &net, &pos, &delta, &mut cache);
+            moves += 1;
+
+            let mut rebuilt = Accumulator::new();
+            rebuilt.refresh(&net, &pos);
+            for color in [Color::Black, Color::White] {
+                let a = derived.perspective(color);
+                let b = rebuilt.perspective(color);
+                for block in 0..ORDER {
+                    let span = block * DIM..(block + 1) * DIM;
+                    let scale = b[span.clone()].iter().fold(0.0f32, |m, v| m.max(v.abs()));
+                    let drift = a[span.clone()]
+                        .iter()
+                        .zip(&b[span])
+                        .map(|(x, y)| (x - y).abs())
+                        .fold(0.0f32, f32::max);
+                    let relative = drift / scale.max(1.0);
+                    worst_relative = worst_relative.max(relative);
+                    assert!(
+                        relative <= 1e-5,
+                        "seed {seed}, ply {ply}, {color:?}, order {}: derived drifted {drift} \
+                         from a rebuild, against a largest sum of {scale}",
+                        block + 1
+                    );
+                }
+            }
+            let score = (evaluate_with(&net, &derived, &pos) - evaluate(&net, &pos)).abs();
+            worst_score = worst_score.max(score);
+            assert!(
+                score <= 2,
+                "seed {seed}, ply {ply}: scores differ by {score}"
+            );
+            acc.clone_from(&derived);
+        }
+    }
+    eprintln!(
+        "{moves} moves; worst drift {worst_relative:.3e} of the block's largest sum; \
+         worst score difference {worst_score}"
+    );
 }

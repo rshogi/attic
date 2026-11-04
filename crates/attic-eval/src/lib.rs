@@ -11,10 +11,14 @@
 mod aligned;
 // The hand-crafted shapes count pieces and attacks straight off the `Position`
 // and number nothing in BonaPiece's space, so there is no feature index for
-// this module to hand them.
-#[cfg(not(feature = "hce"))]
+// this module to hand them. Manaka's own token space is numbered in a space
+// that is not BonaPiece's either, and takes `tokens` in its place: the two
+// modules offer the search the same names.
+#[cfg(not(any(feature = "hce", feature = "sym_token")))]
 mod features;
 mod scale;
+#[cfg(feature = "sym_token")]
+mod tokens;
 mod types;
 
 #[cfg(not(any(feature = "sym", feature = "hce")))]
@@ -56,8 +60,12 @@ pub use hce::{
 };
 
 pub use aligned::Aligned64;
-#[cfg(not(feature = "hce"))]
+#[cfg(not(any(feature = "hce", feature = "sym_token")))]
 pub use features::{
+    FeatureIndex, MAX_ACTIVE_FEATURES, active_features, active_features_both, requires_full_refresh,
+};
+#[cfg(feature = "sym_token")]
+pub use tokens::{
     FeatureIndex, MAX_ACTIVE_FEATURES, active_features, active_features_both, requires_full_refresh,
 };
 // The scale is what the network evaluators divide their fixed-point output by,
@@ -73,7 +81,7 @@ pub use types::{NUM_FEATURES, NnueError};
 #[cfg(feature = "sfnn")]
 pub use features::FEATURE_DIMENSION;
 
-#[cfg(not(feature = "hce"))]
+#[cfg(not(any(feature = "hce", feature = "sym_token")))]
 pub use features::{MoveDelta, PerspectiveDelta};
 #[cfg(not(any(feature = "sym", feature = "hce")))]
 pub use finny::FinnyCache;
@@ -83,6 +91,8 @@ pub use loader::{load_network, load_network_with_dims, load_network_with_warning
 pub use network::{evaluate, evaluate_with, layer_stack_index};
 #[cfg(not(any(feature = "sym", feature = "hce")))]
 pub use simd::{Backend, active_backend};
+#[cfg(feature = "sym_token")]
+pub use tokens::{MoveDelta, PerspectiveDelta};
 #[cfg(not(any(feature = "sym", feature = "hce")))]
 pub use transformer::{Accumulator, FT_OUTPUT_DIMS};
 #[cfg(not(any(feature = "sym", feature = "hce")))]

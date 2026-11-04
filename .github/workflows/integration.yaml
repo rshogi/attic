@@ -38,10 +38,10 @@ env:
 # The network shape is a build-time feature and exactly one must be selected
 # (`attic-eval` refuses to compile with none or two), so `--all-features` can
 # neither build nor test anything. Each job below runs once per shape instead.
-# `args` is what follows `cargo <verb>` to pick it; the nineteenth entry is the
+# `args` is what follows `cargo <verb>` to pick it; the twenty-third entry is the
 # build that must match YaneuraOu node for node (`ref_check_time` moves the
 # time checks to where the reference's are), which turns off the defaults.
-# The list is written out in each job on purpose: it is the same nineteen entries
+# The list is written out in each job on purpose: it is the same twenty-three entries
 # three times, and kept that way rather than behind a YAML anchor so that no
 # workflow parser has to support one for CI to start at all.
 #
@@ -102,6 +102,14 @@ jobs:
             args: --features sym_kp_256x2_o1_32_32
           - name: sym-halfkp-256-o1
             args: --features sym_halfkp_256x2_o1_32_32
+          - name: sym-token-64
+            args: --features sym_token_64x2_512
+          - name: sym-token
+            args: --features sym_token_128x2_512
+          - name: sym-token-256
+            args: --features sym_token_256x2_512
+          - name: sym-token-256-o1
+            args: --features sym_token_256x2_o1_32_32
           - name: hce-material
             args: --features hce_material_17
           - name: hce-mobility
@@ -168,6 +176,14 @@ jobs:
             args: --features sym_kp_256x2_o1_32_32
           - name: sym-halfkp-256-o1
             args: --features sym_halfkp_256x2_o1_32_32
+          - name: sym-token-64
+            args: --features sym_token_64x2_512
+          - name: sym-token
+            args: --features sym_token_128x2_512
+          - name: sym-token-256
+            args: --features sym_token_256x2_512
+          - name: sym-token-256-o1
+            args: --features sym_token_256x2_o1_32_32
           - name: hce-material
             args: --features hce_material_17
           - name: hce-mobility
@@ -222,6 +238,14 @@ jobs:
             args: --features sym_kp_256x2_o1_32_32
           - name: sym-halfkp-256-o1
             args: --features sym_halfkp_256x2_o1_32_32
+          - name: sym-token-64
+            args: --features sym_token_64x2_512
+          - name: sym-token
+            args: --features sym_token_128x2_512
+          - name: sym-token-256
+            args: --features sym_token_256x2_512
+          - name: sym-token-256-o1
+            args: --features sym_token_256x2_o1_32_32
           - name: hce-material
             args: --features hce_material_17
           - name: hce-mobility

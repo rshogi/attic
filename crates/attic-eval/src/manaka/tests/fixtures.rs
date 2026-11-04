@@ -19,7 +19,10 @@ use super::super::{
 ///
 /// The d64 / d256 hashes are from the 34-shape export of `atmos-34`; the d128
 /// ones are from files the same exporter wrote for a randomly initialised net,
-/// since `atmos-34` has no d128 KP or HalfKP shape.
+/// since `atmos-34` has no d128 KP or HalfKP shape. The token shapes' `SYMscaled`
+/// and `SYMf32` hashes are `atmos-34`'s too (all four have weights there,
+/// d128 included); their `SYM` hashes are from the first exporter, the one that
+/// wrote `ModelType=SYM` and nothing else, run over the same four `.mnw`.
 pub(super) struct Exported {
     /// Everything after `ModelType=<word>;Features=`.
     pub(super) rest: &'static str,
@@ -83,6 +86,35 @@ pub(super) const EXPORTED: Exported = Exported {
     scaled: 0x079b_c6a8,
     f32: 0xf554_4019,
     legacy: 0xc1e0_8026,
+};
+
+#[cfg(feature = "sym_token_64x2_512")]
+pub(super) const EXPORTED: Exported = Exported {
+    rest: "Tokens[64x2],Network=Dense[1<-512](ReLU[512](Dense[512<-384](RmsNormScaled[192](Newton[3](PowerSum[3](InputSlice[192(0:192)])))))",
+    scaled: 0xdef0_e7d3,
+    f32: 0x47bb_126c,
+    legacy: 0x04b9_13ad,
+};
+#[cfg(feature = "sym_token_128x2_512")]
+pub(super) const EXPORTED: Exported = Exported {
+    rest: "Tokens[128x2],Network=Dense[1<-512](ReLU[512](Dense[512<-768](RmsNormScaled[384](Newton[3](PowerSum[3](InputSlice[384(0:384)])))))",
+    scaled: 0xa7a2_7b4d,
+    f32: 0x7171_d448,
+    legacy: 0xaf66_abaf,
+};
+#[cfg(feature = "sym_token_256x2_512")]
+pub(super) const EXPORTED: Exported = Exported {
+    rest: "Tokens[256x2],Network=Dense[1<-512](ReLU[512](Dense[512<-1536](RmsNormScaled[768](Newton[3](PowerSum[3](InputSlice[768(0:768)])))))",
+    scaled: 0x1a1a_b599,
+    f32: 0x4fe7_ad9e,
+    legacy: 0x8927_1ae7,
+};
+#[cfg(feature = "sym_token_256x2_o1_32_32")]
+pub(super) const EXPORTED: Exported = Exported {
+    rest: "Tokens[256x2],Network=Dense[1<-32](ReLU[32](Dense[32<-32](ReLU[32](Dense[32<-512](RmsNormScaled[256](Newton[1](PowerSum[1](InputSlice[256(0:256)])))))))",
+    scaled: 0x3433_856e,
+    f32: 0x9620_ac1f,
+    legacy: 0xa1f8_aca4,
 };
 
 /// A network no trainer made, with weights small enough to stay inside the
@@ -260,17 +292,48 @@ pub(super) fn game(plies: usize) -> Vec<(Position, Move)> {
     line
 }
 
+/// Legal moves chosen at random from the opening, each with the position it was
+/// played from. `game` above is the same line every run and stays out of most
+/// captures and all drops in its first forty plies; this one reaches them, and
+/// is still the same line for a given `seed`.
+pub(super) fn random_game(seed: u64, plies: usize) -> Vec<(Position, Move)> {
+    let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ seed.wrapping_mul(0xD1B5_4A32_D192_ED03));
+    let mut pos = Position::startpos();
+    let mut line = Vec::new();
+    let mut legal = Vec::new();
+    for _ in 0..plies {
+        legal.clear();
+        pos.generate_legal_all(&mut legal);
+        if legal.is_empty() {
+            break;
+        }
+        let mv = legal[rng.below(legal.len())];
+        line.push((pos.clone(), mv));
+        let _ = pos.do_move(mv);
+    }
+    line
+}
+
 /// A small deterministic generator (xorshift64*), so a failure is the same
 /// failure on every run and every machine.
 struct Rng(u64);
 
 impl Rng {
-    /// Uniform in `[-amplitude, amplitude)`.
-    fn next(&mut self, amplitude: f32) -> f32 {
+    fn advance(&mut self) -> u64 {
         self.0 ^= self.0 >> 12;
         self.0 ^= self.0 << 25;
         self.0 ^= self.0 >> 27;
-        let bits = self.0.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 40;
+        self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    /// Uniform in `0..n`.
+    fn below(&mut self, n: usize) -> usize {
+        (self.advance() >> 33) as usize % n
+    }
+
+    /// Uniform in `[-amplitude, amplitude)`.
+    fn next(&mut self, amplitude: f32) -> f32 {
+        let bits = self.advance() >> 40;
         (bits as f32 / (1u64 << 24) as f32 * 2.0 - 1.0) * amplitude
     }
 

@@ -28,7 +28,7 @@ use attic_storage::{ArenaLayout, ArenaSlice, LargePageArena, Section};
 // alone selects anything. What separates the shapes *within* a family is
 // counted by a `const` assertion after the chain: it does not grow with the
 // square of the shapes the way a pairwise chain does, and Manaka alone has
-// eight. And `hce_fit_qsearched` is a qualifier on a shape, not a shape, so it
+// twelve. And `hce_fit_qsearched` is a qualifier on a shape, not a shape, so it
 // is in no list at all.
 #[cfg(not(any(
     feature = "sfnn_halfkahm2_1536_15_32_k3k3",
@@ -47,6 +47,10 @@ use attic_storage::{ArenaLayout, ArenaSlice, LargePageArena, Section};
     feature = "sym_halfkp_256x2_512",
     feature = "sym_kp_256x2_o1_32_32",
     feature = "sym_halfkp_256x2_o1_32_32",
+    feature = "sym_token_64x2_512",
+    feature = "sym_token_128x2_512",
+    feature = "sym_token_256x2_512",
+    feature = "sym_token_256x2_o1_32_32",
     feature = "hce_material_17",
     feature = "hce_mobility_107_57"
 )))]
@@ -56,7 +60,9 @@ compile_error!(
      sfnn_halfkahm2_2304_15_64_progress8ek, nnue_kp_256x2_32_32, nnue_halfkp_256x2_32_32, \
      nnue_halfkp_128x2_32_32, nnue_halfkp_768x2_16_64, sym_kp_64x2_512, sym_halfkp_64x2_512, \
      sym_kp_128x2_512, sym_halfkp_128x2_512, sym_kp_256x2_512, sym_halfkp_256x2_512, \
-     sym_kp_256x2_o1_32_32, sym_halfkp_256x2_o1_32_32, hce_material_17 or hce_mobility_107_57"
+     sym_kp_256x2_o1_32_32, sym_halfkp_256x2_o1_32_32, sym_token_64x2_512, \
+     sym_token_128x2_512, sym_token_256x2_512, sym_token_256x2_o1_32_32, hce_material_17 or \
+     hce_mobility_107_57"
 );
 
 #[cfg(all(
@@ -176,7 +182,11 @@ const _: () = {
         + cfg!(feature = "sym_kp_256x2_512") as usize
         + cfg!(feature = "sym_halfkp_256x2_512") as usize
         + cfg!(feature = "sym_kp_256x2_o1_32_32") as usize
-        + cfg!(feature = "sym_halfkp_256x2_o1_32_32") as usize;
+        + cfg!(feature = "sym_halfkp_256x2_o1_32_32") as usize
+        + cfg!(feature = "sym_token_64x2_512") as usize
+        + cfg!(feature = "sym_token_128x2_512") as usize
+        + cfg!(feature = "sym_token_256x2_512") as usize
+        + cfg!(feature = "sym_token_256x2_o1_32_32") as usize;
     assert!(
         selected == 1,
         "select exactly one Manaka shape: they differ in their dimensions"
@@ -226,6 +236,12 @@ pub const NUM_FEATURES: usize = 125_388;
 /// Manaka's HalfKP carries the padding row YaneuraOu's does not.
 #[cfg(feature = "sym_halfkp")]
 pub const NUM_FEATURES: usize = 125_389;
+/// Manaka's own space: 14 kinds x 2 owners x 81 squares on the board, then
+/// 2 x 38 unary hand slots. Smaller than HalfKP and larger than KP, because KP
+/// folds the four minor promotions into gold and numbers the hands in ninety
+/// slots where this spends a kind for each and a slot for every copy.
+#[cfg(feature = "sym_token")]
+pub const NUM_FEATURES: usize = 2_344;
 /// The hand-crafted shapes have no feature transformer, so for them this is
 /// simply how many coefficients the shape was fitted with: see `crate::hce`.
 #[cfg(feature = "hce")]

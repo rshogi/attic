@@ -17,9 +17,9 @@ struct Dims {
     hidden2: usize,
 }
 
-/// One row per set of dimensions, shared by the KP and HalfKP shape that carry
-/// them. The feature space is not here: it is `sym_kp` or `sym_halfkp` and
-/// decides the token count, not these four numbers.
+/// One row per set of dimensions, shared by the KP, HalfKP and token shape that
+/// carry them. The feature space is not here: it is `sym_kp`, `sym_halfkp` or
+/// `sym_token` and decides the token count, not these four numbers.
 ///
 /// A chain of `cfg!` rather than a `#[cfg]` per row, so that selecting two
 /// shapes at once is not a pile of duplicate-definition errors but the one
@@ -27,7 +27,8 @@ struct Dims {
 /// shape, which that assertion reports as well.
 const DIMS: Dims = if cfg!(any(
     feature = "sym_kp_64x2_512",
-    feature = "sym_halfkp_64x2_512"
+    feature = "sym_halfkp_64x2_512",
+    feature = "sym_token_64x2_512"
 )) {
     Dims {
         dim: 64,
@@ -37,7 +38,8 @@ const DIMS: Dims = if cfg!(any(
     }
 } else if cfg!(any(
     feature = "sym_kp_128x2_512",
-    feature = "sym_halfkp_128x2_512"
+    feature = "sym_halfkp_128x2_512",
+    feature = "sym_token_128x2_512"
 )) {
     Dims {
         dim: 128,
@@ -47,7 +49,8 @@ const DIMS: Dims = if cfg!(any(
     }
 } else if cfg!(any(
     feature = "sym_kp_256x2_512",
-    feature = "sym_halfkp_256x2_512"
+    feature = "sym_halfkp_256x2_512",
+    feature = "sym_token_256x2_512"
 )) {
     Dims {
         dim: 256,
@@ -57,7 +60,8 @@ const DIMS: Dims = if cfg!(any(
     }
 } else if cfg!(any(
     feature = "sym_kp_256x2_o1_32_32",
-    feature = "sym_halfkp_256x2_o1_32_32"
+    feature = "sym_halfkp_256x2_o1_32_32",
+    feature = "sym_token_256x2_o1_32_32"
 )) {
     Dims {
         dim: 256,
@@ -98,7 +102,8 @@ pub const HEAD: usize = if SECOND_LAYER { HIDDEN2 } else { HIDDEN };
 ///
 /// KP is `fe_end + 2 · 81`. HalfKP is `81 · fe_end + 1` — the `+ 1` is the
 /// padding row both kings point at, which YaneuraOu has no equivalent of;
-/// see [`crate::features::king_feature`].
+/// see [`crate::features::king_feature`]. Manaka's own space is
+/// `14 · 2 · 81 + 2 · 38`: see `tokens.rs`.
 pub const TOKENS: usize = crate::types::NUM_FEATURES;
 
 /// What the first hidden layer reads: both perspectives, every order.
