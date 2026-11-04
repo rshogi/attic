@@ -7,9 +7,12 @@
 //!
 //! Nothing below it is NNUE. The shapes served here (`sym_*`, listed with the
 //! dimensions of each in `shape.rs`) borrow YaneuraOu's *feature numbering* (see
-//! [`crate::features`], shared with the standard shapes) and nothing else: the
+//! `features.rs`, shared with the standard shapes) and nothing else: the
 //! accumulator carries power sums rather than a single sum, and each block is
-//! divided by its own root-mean-square where NNUE clips.
+//! divided by its own root-mean-square where NNUE clips. The `sym_token_*`
+//! shapes borrow not even that: they number Manaka's own token space, in
+//! `tokens.rs`, and update their accumulator from the move's delta instead of
+//! by diffing two feature lists.
 //!
 //! ## Three encodings of one layout
 //!
@@ -27,7 +30,10 @@
 //! `Cargo.toml` (pass-through included, in every crate that re-exports the
 //! shapes), one row in `DIMS` (`shape.rs`), and one name in the guard in `types.rs`. Nothing
 //! else here changes: every length below is derived from the row, and the
-//! architecture string is assembled from the same constants.
+//! architecture string is assembled from the same constants. A new feature
+//! *space* is more than that — `sym_token` had to touch `loader.rs` (the
+//! `Features=` word) and `accumulator.rs` (how a move is applied) as well — but
+//! another shape in a space that exists is not.
 //!
 //! ## Why the legacy encoding needs no per-order correction
 //!

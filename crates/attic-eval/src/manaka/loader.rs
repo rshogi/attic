@@ -70,9 +70,14 @@ impl Encoding {
 /// the file, not a detail of it: a name that left it out would describe a net
 /// whose value row is `HIDDEN` wide when it is `HIDDEN2` wide.
 pub(super) fn expected_arch(encoding: Encoding) -> String {
-    let features = match cfg!(feature = "sym_kp") {
-        true => format!("K+P[{TOKENS}->"),
-        false => format!("HalfKP(Friend)[{TOKENS}->"),
+    // Manaka's own space is the one that does not name its row count: the
+    // exporter writes `Tokens[<d>x2]`, and the 2,344 is implied by the word.
+    let features = if cfg!(feature = "sym_token") {
+        "Tokens[".to_string()
+    } else if cfg!(feature = "sym_kp") {
+        format!("K+P[{TOKENS}->")
+    } else {
+        format!("HalfKP(Friend)[{TOKENS}->")
     };
     let model = encoding.model_type();
     let block = ORDER * DIM;

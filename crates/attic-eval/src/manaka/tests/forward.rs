@@ -6,8 +6,8 @@ use super::super::{
     Accumulator, DIM, FEATURE_LEN, FinnyCache, ORDER, RMS_EPS, SECOND_LAYER, SymNetwork,
     evaluate_pre, evaluate_value, value_from_sums,
 };
-use super::fixtures::{assert_close, game, synthetic};
-use crate::features::{MoveDelta, active_features};
+use super::fixtures::{assert_close, game, random_game, synthetic};
+use crate::{MoveDelta, active_features};
 
 /// The value is a number in `[-1, 1]` and is the `tanh` of the pre-activation
 /// it reports, on a position with hands and promoted pieces as well as the
@@ -172,5 +172,52 @@ fn the_incremental_path_matches_a_rebuild() {
         let got = value_from_sums(net, &derived, pos.side_to_move());
         assert!((want - got).abs() < 1e-4, "value {got} against {want}");
         acc.clone_from(&derived);
+    }
+}
+
+/// The same, over games that reach what the opening line does not: captures,
+/// drops of every kind of piece, promotions, and a king that walks. Several of
+/// them and long, so that drift would show, and an accumulator carried the whole
+/// way down each game by derivation alone — never rebuilt — so that a rebuild
+/// is not what makes it agree.
+///
+/// Where the token shapes keep the set of tokens they hold, that is checked too:
+/// the set is what a table over pairs of tokens would be read from.
+#[test]
+fn the_incremental_path_survives_long_random_games() {
+    let net = synthetic();
+    let mut cache = FinnyCache::new();
+    for seed in 1..=4 {
+        let game = random_game(seed, 160);
+        let mut acc = Accumulator::new();
+        acc.refresh(net, &game[0].0);
+        let mut derived = Accumulator::new();
+        let mut post = game[0].0.clone();
+        for (before, mv) in &game {
+            let delta = MoveDelta::from_move(before, *mv);
+            post.clone_from(before);
+            let _ = post.do_move(*mv);
+            Accumulator::derive_into_cached(&acc, &mut derived, net, &post, &delta, &mut cache);
+
+            let mut rebuilt = Accumulator::new();
+            rebuilt.refresh(net, &post);
+            for color in [Color::Black, Color::White] {
+                assert_close(
+                    "derive",
+                    derived.perspective(color),
+                    rebuilt.perspective(color),
+                    1e-3,
+                );
+                #[cfg(feature = "sym_token")]
+                {
+                    let mut held = derived.tokens(color).to_vec();
+                    let mut want = active_features(&post, color);
+                    held.sort_unstable();
+                    want.sort_unstable();
+                    assert_eq!(held, want, "seed {seed}, {color:?}: the tokens held");
+                }
+            }
+            acc.clone_from(&derived);
+        }
     }
 }
