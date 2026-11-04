@@ -68,6 +68,11 @@ sym_token_128x2_512_pair16_lse16 = ["attic-eval/sym_token_128x2_512_pair16_lse16
 sym_token_128x2_512_pair16_lse4_ks = ["attic-eval/sym_token_128x2_512_pair16_lse4_ks", "attic-search/sym_token_128x2_512_pair16_lse4_ks"]
 sym_token_128x2_512_pair16_ks = ["attic-eval/sym_token_128x2_512_pair16_ks", "attic-search/sym_token_128x2_512_pair16_ks"]
 sym_token_128x2_512_pair16_split = ["attic-eval/sym_token_128x2_512_pair16_split", "attic-search/sym_token_128x2_512_pair16_split"]
+sym_token_128x2_512_pair16_m16 = ["attic-eval/sym_token_128x2_512_pair16_m16", "attic-search/sym_token_128x2_512_pair16_m16"]
+sym_token_128x2_512_pair16_m32 = ["attic-eval/sym_token_128x2_512_pair16_m32", "attic-search/sym_token_128x2_512_pair16_m32"]
+sym_token_128x2_512_pair16_f2 = ["attic-eval/sym_token_128x2_512_pair16_f2", "attic-search/sym_token_128x2_512_pair16_f2"]
+sym_token_128x2_512_pair16_f4 = ["attic-eval/sym_token_128x2_512_pair16_f4", "attic-search/sym_token_128x2_512_pair16_f4"]
+sym_token_128x2_512_pair16_f8 = ["attic-eval/sym_token_128x2_512_pair16_f8", "attic-search/sym_token_128x2_512_pair16_f8"]
 hce_material_17 = ["attic-eval/hce_material_17", "attic-search/hce_material_17", "hce"]
 hce_mobility_107_57 = ["attic-eval/hce_mobility_107_57", "attic-search/hce_mobility_107_57", "hce"]
 # Qualifies one of the two shapes above; it is not a shape of its own.

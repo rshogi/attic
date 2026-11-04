@@ -61,6 +61,11 @@ sym_token_128x2_512_pair16_lse16 = ["attic-protocol/sym_token_128x2_512_pair16_l
 sym_token_128x2_512_pair16_lse4_ks = ["attic-protocol/sym_token_128x2_512_pair16_lse4_ks"]
 sym_token_128x2_512_pair16_ks = ["attic-protocol/sym_token_128x2_512_pair16_ks"]
 sym_token_128x2_512_pair16_split = ["attic-protocol/sym_token_128x2_512_pair16_split"]
+sym_token_128x2_512_pair16_m16 = ["attic-protocol/sym_token_128x2_512_pair16_m16"]
+sym_token_128x2_512_pair16_m32 = ["attic-protocol/sym_token_128x2_512_pair16_m32"]
+sym_token_128x2_512_pair16_f2 = ["attic-protocol/sym_token_128x2_512_pair16_f2"]
+sym_token_128x2_512_pair16_f4 = ["attic-protocol/sym_token_128x2_512_pair16_f4"]
+sym_token_128x2_512_pair16_f8 = ["attic-protocol/sym_token_128x2_512_pair16_f8"]
 hce_material_17 = ["attic-protocol/hce_material_17", "hce"]
 hce_mobility_107_57 = ["attic-protocol/hce_mobility_107_57", "hce"]
 # Qualifies one of the two shapes above; it is not a shape of its own.
