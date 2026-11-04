@@ -2,9 +2,10 @@
 
 use attic_state::{Color, Position, parse_sfen};
 
+use super::super::forward::RMS_EPS;
 use super::super::{
-    Accumulator, DIM, FEATURE_LEN, FinnyCache, ORDER, RMS_EPS, SECOND_LAYER, SymNetwork,
-    evaluate_pre, evaluate_value, value_from_sums,
+    Accumulator, DIM, FEATURE_LEN, FinnyCache, ORDER, SECOND_LAYER, SymNetwork, evaluate_pre,
+    evaluate_value, value_from_sums,
 };
 use super::fixtures::{assert_close, game, random_game, synthetic};
 use crate::{MoveDelta, active_features};
