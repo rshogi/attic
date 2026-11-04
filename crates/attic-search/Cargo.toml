@@ -28,8 +28,14 @@ nnue_kp_256x2_32_32 = ["attic-eval/nnue_kp_256x2_32_32"]
 nnue_halfkp_256x2_32_32 = ["attic-eval/nnue_halfkp_256x2_32_32"]
 nnue_halfkp_128x2_32_32 = ["attic-eval/nnue_halfkp_128x2_32_32"]
 nnue_halfkp_768x2_16_64 = ["attic-eval/nnue_halfkp_768x2_16_64"]
-sym_kp_128x2_512 = ["attic-eval/sym_kp_128x2_512"]
-sym_halfkp_128x2_512 = ["attic-eval/sym_halfkp_128x2_512"]
+sym_kp_64x2_512 = ["attic-eval/sym_kp_64x2_512", "sym"]
+sym_halfkp_64x2_512 = ["attic-eval/sym_halfkp_64x2_512", "sym"]
+sym_kp_128x2_512 = ["attic-eval/sym_kp_128x2_512", "sym"]
+sym_halfkp_128x2_512 = ["attic-eval/sym_halfkp_128x2_512", "sym"]
+sym_kp_256x2_512 = ["attic-eval/sym_kp_256x2_512", "sym"]
+sym_halfkp_256x2_512 = ["attic-eval/sym_halfkp_256x2_512", "sym"]
+sym_kp_256x2_o1_32_32 = ["attic-eval/sym_kp_256x2_o1_32_32", "sym"]
+sym_halfkp_256x2_o1_32_32 = ["attic-eval/sym_halfkp_256x2_o1_32_32", "sym"]
 hce_material_17 = ["attic-eval/hce_material_17", "hce"]
 hce_mobility_107_57 = ["attic-eval/hce_mobility_107_57", "hce"]
 # Qualifies one of the two shapes above; it is not a shape of its own. See
@@ -40,10 +46,13 @@ hce_fit_qsearched = ["attic-eval/hce_fit_qsearched"]
 # selects a network; a shape turns on the ones that describe it.
 #   sfnn            every SFNN shape: HalfKA_hm2, a shortcut row in fc_0
 #   sfnn_progress   ... whose stack comes from a `progress.bin` beside `nn.bin`
+#   sym             every Manaka shape: a network, but one the tests cannot build
+#                   synthetically, because it exists only as a trained file
 #   hce             every hand-crafted shape: no network, so nothing for the
 #                   tests that build a synthetic one to build
 sfnn = []
 sfnn_progress = ["sfnn"]
+sym = []
 hce = []
 # Make `go nodes N` stop where the reference does: leave the `check_time` poll out
 # of `qsearch` and start each `go` with `callsCnt` at 0. For comparing against

@@ -1105,14 +1105,7 @@ impl<'a> QSearch<'a> {
     /// It generates and matches, which reconstructs the full move and proves
     /// legality in one step. Both forms are repetition-blind, so the two agree
     /// even on a move that continues a perpetual check.
-    #[cfg(all(
-        test,
-        not(any(
-            feature = "sym_kp_128x2_512",
-            feature = "sym_halfkp_128x2_512",
-            feature = "hce"
-        ))
-    ))]
+    #[cfg(all(test, not(any(feature = "sym", feature = "hce"))))]
     fn widen_tt_move(pos: &Position, move16: u16) -> Option<Move> {
         if move16 == 0 {
             return None;
@@ -1126,14 +1119,7 @@ impl<'a> QSearch<'a> {
     /// `Move16` equals `move16`. A total comparison: no bit of the fragment is
     /// decoded into a `Move`. Split out from [`widen_tt_move`] so that the
     /// torn-entry test can drive all 65536 fragments against one generated list.
-    #[cfg(all(
-        test,
-        not(any(
-            feature = "sym_kp_128x2_512",
-            feature = "sym_halfkp_128x2_512",
-            feature = "hce"
-        ))
-    ))]
+    #[cfg(all(test, not(any(feature = "sym", feature = "hce"))))]
     fn select_tt_move(legal: &[Move], move16: u16) -> Option<Move> {
         legal.iter().copied().find(|&m| move16_of(m) == move16)
     }
@@ -3461,14 +3447,7 @@ impl QSearch<'_> {
 // as trained `MNW1` files, so there is nothing for these tests to evaluate with.
 // The hand-crafted shapes have no network to build at all, and the evaluation
 // they would give these tests is not zero.
-#[cfg(all(
-    test,
-    not(any(
-        feature = "sym_kp_128x2_512",
-        feature = "sym_halfkp_128x2_512",
-        feature = "hce"
-    ))
-))]
+#[cfg(all(test, not(any(feature = "sym", feature = "hce"))))]
 mod tests {
     use super::*;
     use attic_eval::{NetHeader, NnueNetwork, NnueNetworkBuilder};

@@ -88,10 +88,7 @@ const SQ_NB: usize = Square::COUNT;
 /// so a king-plane is `FE_END + 81` wide.
 // Manaka's shapes cross nothing on a king plane, so outside the tests they
 // never read it.
-#[cfg(any(
-    test,
-    not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512"))
-))]
+#[cfg(any(test, not(feature = "sym")))]
 const E_KING: usize = FE_END + SQ_NB;
 
 /// Number of distinct mirrored king squares (files 1–5 × 9 ranks).
@@ -105,12 +102,7 @@ pub const FEATURE_DIMENSION: usize = SQ_K_COUNT * E_KING;
 
 /// Maximum number of simultaneously active features (`PIECE_NUMBER_NB`). Every
 /// legal shogi position has exactly 40 pieces across board and hands.
-#[cfg(any(
-    feature = "sfnn",
-    feature = "nnue_kp_256x2_32_32",
-    feature = "sym_kp_128x2_512",
-    feature = "sym_halfkp_128x2_512"
-))]
+#[cfg(any(feature = "sfnn", feature = "nnue_kp_256x2_32_32", feature = "sym"))]
 pub const MAX_ACTIVE_FEATURES: usize = 40;
 
 /// HalfKP stops at `PIECE_NUMBER_KING`.
@@ -231,7 +223,7 @@ fn encode_feature(sq_k_code: usize, p_adj: usize) -> FeatureIndex {
 }
 
 /// Locate `color`'s king.
-#[cfg(any(feature = "nnue_halfkp", feature = "sym_halfkp_128x2_512"))]
+#[cfg(any(feature = "nnue_halfkp", feature = "sym_halfkp"))]
 #[inline]
 fn encode_feature(sq_k_code: usize, p_adj: usize) -> FeatureIndex {
     debug_assert!(sq_k_code < SQ_NB);
@@ -240,7 +232,7 @@ fn encode_feature(sq_k_code: usize, p_adj: usize) -> FeatureIndex {
     debug_assert!(idx < NUM_FEATURES);
     idx as FeatureIndex
 }
-#[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "sym_kp_128x2_512"))]
+#[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "sym_kp"))]
 #[inline]
 fn encode_feature(_sq_k_code: usize, p_adj: usize) -> FeatureIndex {
     debug_assert!(p_adj < NUM_FEATURES);
@@ -255,14 +247,14 @@ fn king_code(pos: &Position, perspective: Color) -> (usize, bool) {
     let mirror = needs_mirror(own);
     (mirror_if_needed(own, mirror).index() as usize, mirror)
 }
-#[cfg(any(feature = "nnue_halfkp", feature = "sym_halfkp_128x2_512"))]
+#[cfg(any(feature = "nnue_halfkp", feature = "sym_halfkp"))]
 fn king_code(pos: &Position, perspective: Color) -> (usize, bool) {
     (
         from_persp(king_square(pos, perspective), perspective).index() as usize,
         false,
     )
 }
-#[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "sym_kp_128x2_512"))]
+#[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "sym_kp"))]
 fn king_code(_pos: &Position, _perspective: Color) -> (usize, bool) {
     (0, false)
 }
@@ -278,7 +270,7 @@ fn king_code(_pos: &Position, _perspective: Color) -> (usize, bool) {
 fn king_feature(_is_friend: bool, sq_code: usize, sq_k_code: usize) -> Option<FeatureIndex> {
     Some(encode_feature(sq_k_code, FE_END + sq_code))
 }
-#[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "sym_kp_128x2_512"))]
+#[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "sym_kp"))]
 #[inline]
 fn king_feature(is_friend: bool, sq_code: usize, sq_k_code: usize) -> Option<FeatureIndex> {
     let side = if is_friend { 0 } else { SQ_NB };
@@ -289,7 +281,7 @@ fn king_feature(is_friend: bool, sq_code: usize, sq_k_code: usize) -> Option<Fea
 fn king_feature(_is_friend: bool, _sq_code: usize, _sq_k_code: usize) -> Option<FeatureIndex> {
     None
 }
-#[cfg(feature = "sym_halfkp_128x2_512")]
+#[cfg(feature = "sym_halfkp")]
 #[inline]
 fn king_feature(_is_friend: bool, _sq_code: usize, _sq_k_code: usize) -> Option<FeatureIndex> {
     Some((NUM_FEATURES - 1) as FeatureIndex)
@@ -301,10 +293,7 @@ fn king_feature(_is_friend: bool, _sq_code: usize, _sq_k_code: usize) -> Option<
 /// # Panics
 /// Panics if `color` has no king: every position fed to the evaluator must have
 /// both, as the reference's `pos.king_square` contract requires.
-#[cfg(any(
-    test,
-    not(any(feature = "nnue_kp_256x2_32_32", feature = "sym_kp_128x2_512"))
-))]
+#[cfg(any(test, not(any(feature = "nnue_kp_256x2_32_32", feature = "sym_kp"))))]
 pub(crate) fn king_square(pos: &Position, color: Color) -> Square {
     pos.king_square(color)
         .unwrap_or_else(|| panic!("position has no {color:?} king"))
@@ -438,10 +427,7 @@ pub fn requires_full_refresh(mv: Move, perspective: Color) -> bool {
     // A KP index does not embed the own king at all (`king_code` is a constant
     // there and the kings are ordinary features of the shared king plane), so
     // there a king move is an add/sub like any other.
-    const INDEX_EMBEDS_KING: bool = !cfg!(any(
-        feature = "nnue_kp_256x2_32_32",
-        feature = "sym_kp_128x2_512"
-    ));
+    const INDEX_EMBEDS_KING: bool = !cfg!(any(feature = "nnue_kp_256x2_32_32", feature = "sym_kp"));
     if !INDEX_EMBEDS_KING || mv.is_drop() {
         return false;
     }
@@ -453,11 +439,11 @@ pub fn requires_full_refresh(mv: Move, perspective: Color) -> bool {
 /// Offsets a feature can have within one own-king bucket: every shape's index
 /// is `bucket_base + offset` with the offset below this (`encode_feature` adds
 /// `p_adj < FE_END + 2 * SQ_NB` to a base that depends only on the own king).
-#[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
+#[cfg(not(feature = "sym"))]
 const BUCKET_FEATURES: usize = FE_END + 2 * SQ_NB;
-#[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
+#[cfg(not(feature = "sym"))]
 const BUCKET_WORDS: usize = BUCKET_FEATURES.div_ceil(64);
-#[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
+#[cfg(not(feature = "sym"))]
 const _: () = assert!(E_KING <= BUCKET_FEATURES);
 
 /// The active-feature multiset of one position and perspective, as a bitset over
@@ -472,7 +458,7 @@ const _: () = assert!(E_KING <= BUCKET_FEATURES);
 /// Only two sets from the **same bucket** (same perspective and own-king
 /// square, hence the same `base`) can be compared, which is exactly how the
 /// finny table uses them.
-#[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
+#[cfg(not(feature = "sym"))]
 #[derive(Clone, Debug)]
 pub(crate) struct FeatureSet {
     bits: [u64; BUCKET_WORDS],
@@ -482,7 +468,7 @@ pub(crate) struct FeatureSet {
     padding: u32,
 }
 
-#[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
+#[cfg(not(feature = "sym"))]
 impl FeatureSet {
     pub(crate) fn new() -> Self {
         FeatureSet {
@@ -547,7 +533,7 @@ impl FeatureSet {
 ///
 /// # Panics
 /// Panics if the sets are from different buckets.
-#[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
+#[cfg(not(feature = "sym"))]
 pub(crate) fn diff_feature_sets(
     before: &FeatureSet,
     after: &FeatureSet,
@@ -590,10 +576,7 @@ pub(crate) fn diff_feature_sets(
 /// The inputs carry their `BONA_PIECE_ZERO` padding, but a legal move conserves
 /// total piece count, so for any perspective updated incrementally the padding
 /// multiplicity is equal on both sides and cancels.
-#[cfg(any(
-    test,
-    not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512"))
-))]
+#[cfg(any(test, not(feature = "sym")))]
 pub(crate) fn changed_indices(
     before: &[FeatureIndex],
     after: &[FeatureIndex],
@@ -933,19 +916,19 @@ mod tests {
     /// Startpos puts forty pieces on distinct squares, so the list carries
     /// forty distinct features — except under Manaka's HalfKP, where both kings
     /// land on the one padding row it appends and the duplicate is deliberate.
-    #[cfg(not(feature = "sym_halfkp_128x2_512"))]
+    #[cfg(not(feature = "sym_halfkp"))]
     const DISTINCT_AT_STARTPOS: usize = MAX_ACTIVE_FEATURES;
-    #[cfg(feature = "sym_halfkp_128x2_512")]
+    #[cfg(feature = "sym_halfkp")]
     const DISTINCT_AT_STARTPOS: usize = MAX_ACTIVE_FEATURES - 1;
 
     /// How many distinct feature values those twelve pieces produce. The two
     /// that move between shapes are the kings: YaneuraOu's HalfKP has no row
     /// for them at all, and Manaka's HalfKP sends both to the same padding row.
-    #[cfg(not(any(feature = "nnue_halfkp", feature = "sym_halfkp_128x2_512")))]
+    #[cfg(not(any(feature = "nnue_halfkp", feature = "sym_halfkp")))]
     const DISTINCT_REAL_IN_DROP_HEAVY: usize = 12;
     #[cfg(feature = "nnue_halfkp")]
     const DISTINCT_REAL_IN_DROP_HEAVY: usize = 10;
-    #[cfg(feature = "sym_halfkp_128x2_512")]
+    #[cfg(feature = "sym_halfkp")]
     const DISTINCT_REAL_IN_DROP_HEAVY: usize = 11;
 
     fn sorted(list: &[FeatureIndex]) -> Vec<FeatureIndex> {
@@ -1070,7 +1053,7 @@ mod tests {
     /// BonaPiece's 1,548, friend below enemy. That second plane is what makes
     /// the table 1,710 wide rather than 1,629, and it is the one place the KP
     /// shapes and `HalfKA_hm2` disagree about where a king goes.
-    #[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "sym_kp_128x2_512"))]
+    #[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "sym_kp"))]
     #[test]
     fn startpos_kings_take_one_slot_in_each_king_plane() {
         let pos = parse_sfen(STARTPOS).unwrap();
@@ -1256,10 +1239,7 @@ mod tests {
         let king_move = parse_usi_move("5i5h", &pos).unwrap();
         // Where the index embeds the own king the mover's half rebuilds; where
         // it does not (KP) a king move is an ordinary add/sub.
-        let embeds_king = !cfg!(any(
-            feature = "nnue_kp_256x2_32_32",
-            feature = "sym_kp_128x2_512"
-        ));
+        let embeds_king = !cfg!(any(feature = "nnue_kp_256x2_32_32", feature = "sym_kp"));
         assert_eq!(requires_full_refresh(king_move, Color::Black), embeds_king);
         assert!(!requires_full_refresh(king_move, Color::White));
 
@@ -1372,7 +1352,7 @@ mod tests {
     /// and in the same order -- on real games (full 40-piece positions, same
     /// bucket revisited many times) and on sparse positions, where the padding
     /// count differs between the two sides.
-    #[cfg(not(any(feature = "sym_kp_128x2_512", feature = "sym_halfkp_128x2_512")))]
+    #[cfg(not(feature = "sym"))]
     #[test]
     fn feature_set_diff_equals_the_sorted_merge() {
         use std::collections::HashMap;
