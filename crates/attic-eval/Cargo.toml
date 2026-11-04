@@ -71,10 +71,10 @@ hce = []
 # Manaka's own shapes, spelled the way YaneuraOu spells its architectures:
 # feature space, transformer width by two perspectives, then the dense widths.
 # `SYM` is the prefix Manaka's `network_type` already uses. They read the
-# `nn.bin` container with `ModelType=SYM` in the architecture string (or
-# `SYMf32`, for the unquantised encoding): an RMS norm where NNUE clips, and
-# a tanh on the value. They share this crate's feature extraction and nothing
-# else, see `src/manaka.rs`.
+# `nn.bin` container with `ModelType=SYMscaled` in the architecture string (or
+# `SYMf32`, or the first encoding, `SYM`): an RMS norm where NNUE clips, and a
+# tanh on the value. They share this crate's feature extraction and nothing
+# else, see `src/manaka/`.
 #
 # The name carries the power-sum order only when it is not three: `_o1_` is the
 # first power alone, with nothing for Newton's identities to do. Without it the

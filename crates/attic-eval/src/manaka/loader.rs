@@ -1,9 +1,17 @@
-//! Reading the `nn.bin` container, quantised or not.
+//! Reading the `nn.bin` container, in each of the three encodings of its numbers.
+//!
+//! One layout, three encodings, and `ModelType` in the architecture string says
+//! which. Each encoding has a reader of its own that takes the body from the
+//! first section to the last, so a new encoding is one more function and one
+//! more arm of the `match` in [`parse_network`]; nothing else here knows how a
+//! number is stored. Whatever the encoding, the result is the same `f32` tables,
+//! which is what keeps the forward pass free of any of them.
 
 use std::path::Path;
 
 use crate::types::NnueError;
 
+use super::reader::Reader;
 use super::{DIM, FEATURE_LEN, HEAD, HIDDEN, HIDDEN2, ORDER, SymNetwork, TOKENS};
 
 /// The container's version word, shared with every `nn.bin` YaneuraOu writes.
@@ -13,83 +21,39 @@ use super::{DIM, FEATURE_LEN, HEAD, HIDDEN, HIDDEN2, ORDER, SymNetwork, TOKENS};
 /// open both and decide from the header which it is holding.
 pub(super) const VERSION: u32 = 0x7AF3_2F16;
 
-/// What one embedding channel was multiplied by on its way to `i16`.
+/// What one embedding channel was multiplied by on its way to `i16`, in the
+/// legacy encoding. `SYMscaled` carries a scale per group instead.
 pub(super) const EMBED_SCALE: f32 = 512.0;
 
-/// What a dense weight or bias was multiplied by: six bits of fraction, the
-/// same `1 << kWeightScaleBits` NNUE uses.
+/// What a dense weight or bias was multiplied by in the legacy encoding: six
+/// bits of fraction, the same `1 << kWeightScaleBits` NNUE uses.
 pub(super) const WEIGHT_SCALE: f32 = 64.0;
 
-struct Reader<'a> {
-    bytes: &'a [u8],
-    pos: usize,
+/// How the numbers of a file are stored. The three differ in the `ModelType`
+/// word of the architecture string and nowhere else.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Encoding {
+    /// `i16` arrays, each with a scale per group that the file carries; biases,
+    /// gains and the value row `f32`. What `export-nnue` writes by default.
+    Scaled,
+    /// Every array `f32`, exactly as the trainer holds it.
+    F32,
+    /// `i16` embedding at one scale and `i8`/`i32` dense arrays at another. It
+    /// clamps any trained weight past 1.98, so it is read for the files already
+    /// written and no longer produced.
+    Legacy,
 }
 
-impl<'a> Reader<'a> {
-    fn take(&mut self, n: usize) -> Result<&'a [u8], NnueError> {
-        let end = self
-            .pos
-            .checked_add(n)
-            .ok_or_else(|| NnueError::InvalidFormat {
-                reason: "read offset overflows usize".to_string(),
-            })?;
-        if end > self.bytes.len() {
-            return Err(NnueError::SizeMismatch {
-                expected: end,
-                got: self.bytes.len(),
-            });
+impl Encoding {
+    const ALL: [Encoding; 3] = [Encoding::Scaled, Encoding::F32, Encoding::Legacy];
+
+    /// The `ModelType` word.
+    pub(super) fn model_type(self) -> &'static str {
+        match self {
+            Encoding::Scaled => "SYMscaled",
+            Encoding::F32 => "SYMf32",
+            Encoding::Legacy => "SYM",
         }
-        let s = &self.bytes[self.pos..end];
-        self.pos = end;
-        Ok(s)
-    }
-
-    fn u32_le(&mut self) -> Result<u32, NnueError> {
-        let s = self.take(4)?;
-        Ok(u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
-    }
-
-    fn f32s(&mut self, n: usize) -> Result<Vec<f32>, NnueError> {
-        let s = self.take(n * 4)?;
-        let (words, _) = s.as_chunks::<4>();
-        Ok(words.iter().map(|c| f32::from_le_bytes(*c)).collect())
-    }
-
-    /// Read a quantised block back onto the scale it was trained at.
-    ///
-    /// One division by the one constant that array was multiplied by — see
-    /// the module docs on why the power sums need no per-order correction.
-    fn i16s_scaled(&mut self, n: usize, scale: f32) -> Result<Vec<f32>, NnueError> {
-        let s = self.take(n * 2)?;
-        let (pairs, _) = s.as_chunks::<2>();
-        Ok(pairs
-            .iter()
-            .map(|c| f32::from(i16::from_le_bytes(*c)) / scale)
-            .collect())
-    }
-
-    fn i8s_scaled(&mut self, n: usize, scale: f32) -> Result<Vec<f32>, NnueError> {
-        let s = self.take(n)?;
-        Ok(s.iter().map(|&b| f32::from(b as i8) / scale).collect())
-    }
-
-    fn i32s_scaled(&mut self, n: usize, scale: f32) -> Result<Vec<f32>, NnueError> {
-        let s = self.take(n * 4)?;
-        let (words, _) = s.as_chunks::<4>();
-        Ok(words
-            .iter()
-            .map(|c| i32::from_le_bytes(*c) as f32 / scale)
-            .collect())
-    }
-
-    fn expect_hash(&mut self, want: u32, section: &str) -> Result<(), NnueError> {
-        let got = self.u32_le()?;
-        if got == want {
-            return Ok(());
-        }
-        Err(NnueError::InvalidFormat {
-            reason: format!("{section} hash is {got:#010x}, this build expects {want:#010x}"),
-        })
     }
 }
 
@@ -105,15 +69,12 @@ impl<'a> Reader<'a> {
 /// The second hidden layer is spelled out when there is one. It is a layer in
 /// the file, not a detail of it: a name that left it out would describe a net
 /// whose value row is `HIDDEN` wide when it is `HIDDEN2` wide.
-pub(super) fn expected_arch(quantised: bool) -> String {
+pub(super) fn expected_arch(encoding: Encoding) -> String {
     let features = match cfg!(feature = "sym_kp") {
         true => format!("K+P[{TOKENS}->"),
         false => format!("HalfKP(Friend)[{TOKENS}->"),
     };
-    let model = match quantised {
-        true => "SYM",
-        false => "SYMf32",
-    };
+    let model = encoding.model_type();
     let block = ORDER * DIM;
     let inner = format!(
         "Dense[{HIDDEN}<-{input}](\
@@ -144,7 +105,7 @@ pub(super) fn arch_hash(arch: &str) -> u32 {
 /// Read a network from the `nn.bin` container, checking the architecture
 /// string before a single weight.
 ///
-/// The header is the whole of the identification: `ModelType=SYM` says this is
+/// The header is the whole of the identification: `ModelType=SYM…` says this is
 /// not one of YaneuraOu's, and the rest of the string spells the structure. A
 /// file for a different shape — another width, another feature space, another
 /// order — produces a different string and is refused here rather than read at
@@ -169,25 +130,24 @@ pub(super) fn parse_network(bytes: &[u8]) -> Result<SymNetwork, NnueError> {
         });
     }
 
-    // Both spellings of this shape are accepted, and which one the file
-    // carries decides how the body is read. Keeping one reader for the two is
-    // the point: a rating run that wants to price the quantisation has to be
-    // able to put the same binary behind both files.
-    let quantised_arch = expected_arch(true);
-    let float_arch = expected_arch(false);
-
+    // Every spelling of this shape is accepted, and which one the file carries
+    // decides how the body is read. Keeping one reader for all is the point: a
+    // rating run that wants to price the quantisation has to be able to put the
+    // same binary behind each file.
     let hash = r.u32_le()?;
     let len = r.u32_le()? as usize;
     let arch = std::str::from_utf8(r.take(len)?).map_err(|_| NnueError::InvalidFormat {
         reason: "architecture string is not UTF-8".to_string(),
     })?;
-    let quantised = if arch == quantised_arch {
-        true
-    } else if arch == float_arch {
-        false
-    } else {
+    let Some(encoding) = Encoding::ALL
+        .into_iter()
+        .find(|e| arch == expected_arch(*e))
+    else {
         return Err(NnueError::InvalidFormat {
-            reason: format!("file says {arch:?}, this build reads {quantised_arch:?}"),
+            reason: format!(
+                "file says {arch:?}, this build reads {:?}",
+                expected_arch(Encoding::Scaled)
+            ),
         });
     };
     let want_hash = arch_hash(arch);
@@ -202,36 +162,10 @@ pub(super) fn parse_network(bytes: &[u8]) -> Result<SymNetwork, NnueError> {
         });
     }
 
-    r.expect_hash(want_hash.wrapping_add(1), "feature transformer")?;
-    let embed = match quantised {
-        true => r.i16s_scaled(TOKENS * DIM, EMBED_SCALE)?,
-        false => r.f32s(TOKENS * DIM)?,
-    };
-
-    r.expect_hash(want_hash.wrapping_add(2), "dense stack")?;
-    // `gamma` was never quantised in either encoding: it applies immediately
-    // after the norm, the one place in the forward where a rounding error is
-    // not divided back out again.
-    let gamma = r.f32s(ORDER * DIM)?;
-    // The second layer's arrays sit between the first's and the value row, and
-    // are zero long for a shape with one layer, so they read nothing there.
-    let (w1, b1, w2, b2, value_w, value_b) = match quantised {
-        true => (
-            r.i8s_scaled(HIDDEN * FEATURE_LEN, WEIGHT_SCALE)?,
-            r.i32s_scaled(HIDDEN, WEIGHT_SCALE)?,
-            r.i8s_scaled(HIDDEN2 * HIDDEN, WEIGHT_SCALE)?,
-            r.i32s_scaled(HIDDEN2, WEIGHT_SCALE)?,
-            r.i8s_scaled(HEAD, WEIGHT_SCALE)?,
-            r.i32s_scaled(1, WEIGHT_SCALE)?[0],
-        ),
-        false => (
-            r.f32s(HIDDEN * FEATURE_LEN)?,
-            r.f32s(HIDDEN)?,
-            r.f32s(HIDDEN2 * HIDDEN)?,
-            r.f32s(HIDDEN2)?,
-            r.f32s(HEAD)?,
-            r.f32s(1)?[0],
-        ),
+    let net = match encoding {
+        Encoding::Scaled => read_scaled(&mut r, want_hash)?,
+        Encoding::F32 => read_f32(&mut r, want_hash)?,
+        Encoding::Legacy => read_legacy(&mut r, want_hash)?,
     };
 
     if r.pos != bytes.len() {
@@ -240,7 +174,93 @@ pub(super) fn parse_network(bytes: &[u8]) -> Result<SymNetwork, NnueError> {
             got: bytes.len(),
         });
     }
+    Ok(net)
+}
 
+/// `SYMscaled`: section 1 is the embedding and section 2 is everything dense,
+/// with a scale per group on the arrays that have one. `gamma`, the biases and
+/// the value row are `f32`: the value row because its entries multiply hidden
+/// units that are not bounded, so a step that is invisible in `W1` is amplified
+/// there, and the rest because they are a few thousand numbers.
+///
+/// The shapes served here have none of the optional sections (pair, moment,
+/// field, kept scale), so the file ends where section 2 does.
+fn read_scaled(r: &mut Reader<'_>, hash: u32) -> Result<SymNetwork, NnueError> {
+    r.expect_hash(hash.wrapping_add(1), "feature transformer")?;
+    let embed = r.scaled_per_column(TOKENS, DIM, "embed")?;
+
+    r.expect_hash(hash.wrapping_add(2), "dense stack")?;
+    let gamma = r.f32s(ORDER * DIM)?;
+    let w1 = r.scaled_per_row(HIDDEN, FEATURE_LEN, "w1")?;
+    let b1 = r.f32s(HIDDEN)?;
+    let w2 = r.scaled_per_row(HIDDEN2, HIDDEN, "w2")?;
+    let b2 = r.f32s(HIDDEN2)?;
+    let value_w = r.f32s(HEAD)?;
+    let value_b = r.f32s(1)?[0];
+    Ok(SymNetwork {
+        embed,
+        gamma,
+        w1,
+        b1,
+        w2,
+        b2,
+        value_w,
+        value_b,
+    })
+}
+
+/// `SYMf32`: the trainer's own numbers, verbatim.
+fn read_f32(r: &mut Reader<'_>, hash: u32) -> Result<SymNetwork, NnueError> {
+    r.expect_hash(hash.wrapping_add(1), "feature transformer")?;
+    let embed = r.f32s(TOKENS * DIM)?;
+
+    r.expect_hash(hash.wrapping_add(2), "dense stack")?;
+    let gamma = r.f32s(ORDER * DIM)?;
+    // The second layer's arrays sit between the first's and the value row, and
+    // are zero long for a shape with one layer, so they read nothing there.
+    let w1 = r.f32s(HIDDEN * FEATURE_LEN)?;
+    let b1 = r.f32s(HIDDEN)?;
+    let w2 = r.f32s(HIDDEN2 * HIDDEN)?;
+    let b2 = r.f32s(HIDDEN2)?;
+    let value_w = r.f32s(HEAD)?;
+    let value_b = r.f32s(1)?[0];
+    Ok(SymNetwork {
+        embed,
+        gamma,
+        w1,
+        b1,
+        w2,
+        b2,
+        value_w,
+        value_b,
+    })
+}
+
+/// `SYM`, the first quantised encoding: one scale per kind of array, as NNUE
+/// does. An `i8` at 64 holds ±1.98 and trained weights reach 28, so the writer
+/// clamped them; this reads what is in the file and cannot know what was lost.
+///
+/// `embed` is stored at [`EMBED_SCALE`], so `p_k` arrives at `S^k` — a
+/// different scale per order, which would normally have to be tracked and
+/// undone one at a time. It does not, because the next thing each block meets
+/// is a division by its own root-mean-square, and a constant factor divides
+/// out of that exactly. Dividing each array by the one constant it was
+/// multiplied by on the way in is therefore all there is to do.
+fn read_legacy(r: &mut Reader<'_>, hash: u32) -> Result<SymNetwork, NnueError> {
+    r.expect_hash(hash.wrapping_add(1), "feature transformer")?;
+    let embed = r.i16s_scaled(TOKENS * DIM, EMBED_SCALE)?;
+
+    r.expect_hash(hash.wrapping_add(2), "dense stack")?;
+    // `gamma` was never quantised in any encoding: it applies immediately
+    // after the norm, the one place in the forward where a rounding error is
+    // not divided back out again.
+    let gamma = r.f32s(ORDER * DIM)?;
+    let w1 = r.i8s_scaled(HIDDEN * FEATURE_LEN, WEIGHT_SCALE)?;
+    let b1 = r.i32s_scaled(HIDDEN, WEIGHT_SCALE)?;
+    let w2 = r.i8s_scaled(HIDDEN2 * HIDDEN, WEIGHT_SCALE)?;
+    let b2 = r.i32s_scaled(HIDDEN2, WEIGHT_SCALE)?;
+    let value_w = r.i8s_scaled(HEAD, WEIGHT_SCALE)?;
+    let value_b = r.i32s_scaled(1, WEIGHT_SCALE)?[0];
     Ok(SymNetwork {
         embed,
         gamma,

@@ -1,6 +1,6 @@
 //! Loading and evaluating one of Manaka's own networks from a file.
 //!
-//! Gated on `ATTIC_SYM_MNW` naming a `ModelType=SYM` file that matches
+//! Gated on `ATTIC_SYM_MNW` naming a `ModelType=SYM…` file that matches
 //! whichever `sym_*` shape the crate was built with. These are training
 //! artefacts and none of them live in the repository; `src/manaka/tests/` is
 //! what covers every shape without one.
@@ -128,13 +128,14 @@ fn the_incremental_path_matches_a_rebuild() {
 /// rounding and nothing else. Point `ATTIC_SYM_NN_F32` at the `--f32` export
 /// of whatever `ATTIC_SYM_MNW` names.
 ///
-/// This measures and does not judge unless asked to. It used to assert that the
-/// two agree to 0.05, which holds for a network whose weights sit inside the
-/// quantised range and is false for the trained ones measured so far: their
-/// dense weights reach 28 where an `i8` at scale 64 stops at 1.98, and the value
-/// row sums terms hundreds large into a result near one, so rounding anywhere
-/// in it moves the answer. `ATTIC_SYM_QUANT_TOLERANCE` sets a bound for a file
-/// that is expected to meet one.
+/// This measures and does not judge unless asked to, because the answer depends
+/// on the encoding. The first one (`ModelType=SYM`) fails any bound worth
+/// stating on the trained nets measured: their dense weights reach 28 where an
+/// `i8` at scale 64 stops at 1.98, and the value row sums terms hundreds large
+/// into a result near one, so a clamp anywhere in it moves the answer. A
+/// `SYMscaled` file keeps within 0.03 of the f32 one on the same nets over 4,000
+/// positions. `ATTIC_SYM_QUANT_TOLERANCE` sets a bound for a file that is
+/// expected to meet one.
 #[test]
 fn the_quantisation_moves_the_value_only_slightly() {
     let (Some(q), Some(f)) = (

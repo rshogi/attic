@@ -1,7 +1,7 @@
 //! Manaka's own evaluator, in the shared `nn.bin` container.
 //!
 //! The file is the same container every network here arrives in; what differs
-//! is the architecture string, which leads with `ModelType=SYM` and spells a
+//! is the architecture string, which leads with `ModelType=SYM…` and spells a
 //! structure YaneuraOu has no reader for. That is the whole identification —
 //! one format, and the header says which shape is inside.
 //!
@@ -11,6 +11,16 @@
 //! accumulator carries power sums rather than a single sum, and each block is
 //! divided by its own root-mean-square where NNUE clips.
 //!
+//! ## Three encodings of one layout
+//!
+//! `ModelType` says how the numbers are stored, and `loader.rs` has a reader for
+//! each: `SYMscaled` (`i16` arrays with a scale per group, what the exporter
+//! writes by default), `SYMf32` (the trainer's own numbers) and `SYM`, the
+//! first encoding, which fixed one scale per kind of array and clamps any
+//! trained weight past 1.98. All three are turned into the same `f32` tables at
+//! load, so the forward pass below does not know which it was given, and runs
+//! no integer arithmetic in any of them.
+//!
 //! ## Adding a shape
 //!
 //! A shape that differs from these in dimensions alone is one `sym_*` entry in
@@ -19,15 +29,18 @@
 //! else here changes: every length below is derived from the row, and the
 //! architecture string is assembled from the same constants.
 //!
-//! ## Why the quantisation needs no per-order correction
+//! ## Why the legacy encoding needs no per-order correction
 //!
-//! `embed` is stored at `EMBED_SCALE` (`loader.rs`), so `p_k` arrives at `S^k` — a
-//! different scale per order, which would normally have to be tracked and
-//! undone one at a time. It does not, because the next thing each block meets
-//! is a division by its own root-mean-square, and a constant factor divides
-//! out of that exactly: `e_k / rms(e_k)` is the same number whether `e_k` was
-//! built from `v` or from `v·S`. Every array is therefore divisible by the one
-//! constant it was multiplied by, which is what the reader does on the way in.
+//! Its `embed` is stored at `EMBED_SCALE` (`loader.rs`), so `p_k` arrives at
+//! `S^k` — a different scale per order, which would normally have to be tracked
+//! and undone one at a time. It does not, because the next thing each block
+//! meets is a division by its own root-mean-square, and a constant factor
+//! divides out of that exactly: `e_k / rms(e_k)` is the same number whether
+//! `e_k` was built from `v` or from `v·S`. Every array is therefore divisible by
+//! the one constant it was multiplied by, which is what that reader does on the
+//! way in. `SYMscaled` has a scale per embedding *channel*, which does not divide
+//! out of a sum over channels, so its reader divides each element by its own
+//! channel's scale at load and the accumulator never sees a scale at all.
 //!
 //! ## The forward pass
 //!
@@ -48,6 +61,7 @@
 
 mod accumulator;
 mod loader;
+mod reader;
 mod shape;
 #[cfg(test)]
 mod tests;

@@ -6,6 +6,9 @@
 //!     --net kp_pair0_d256_o3_h512.q.nn.bin --sfens positions.sfen [--limit N]
 //! ```
 //!
+//! The file may be in any of the three encodings (`SYMscaled`, `SYMf32`, `SYM`);
+//! the header says which.
+//!
 //! One tab-separated row per position: index, sfen, `value` (after the `tanh`,
 //! side to move's view) and `pre` (before it). The values are printed to nine
 //! significant digits, which is what an `f32` round-trips through.
