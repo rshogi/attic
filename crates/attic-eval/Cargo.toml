@@ -118,6 +118,18 @@ hce_mobility_107_57 = ["hce"]
 # describe.
 hce_fit_qsearched = []
 
+# Tools for putting a network beside the trainer's own evaluation of it (see
+# `scripts/manaka_compare.py`). Each is built only for the shapes it can read:
+# the networks are tens to hundreds of megabytes and live outside the repository,
+# so these are not tests.
+[[example]]
+name = "sym_dump"
+required-features = ["sym"]
+
+[[example]]
+name = "nnue_dump"
+required-features = ["nnue_standard"]
+
 [dev-dependencies]
 proptest = "~1.11"
 serde_json = "~1.0"
