@@ -38,18 +38,21 @@ env:
 # The network shape is a build-time feature and exactly one must be selected
 # (`attic-eval` refuses to compile with none or two), so `--all-features` can
 # neither build nor test anything. Each job below runs once per shape instead.
-# `args` is what follows `cargo <verb>` to pick it; the thirteenth entry is the
+# `args` is what follows `cargo <verb>` to pick it; the nineteenth entry is the
 # build that must match YaneuraOu node for node (`ref_check_time` moves the
 # time checks to where the reference's are), which turns off the defaults.
-# The list is written out in each job on purpose: it is the same thirteen entries
+# The list is written out in each job on purpose: it is the same nineteen entries
 # three times, and kept that way rather than behind a YAML anchor so that no
 # workflow parser has to support one for CI to start at all.
 #
 # Nothing here has a network file: the tests that read one skip with a notice
 # when it is absent, so a green run says the code builds and its self-contained
-# tests pass, not that the shape evaluates correctly. The two hce shapes are the
-# exception, because they read no file at all: `hce_golden` runs in full and
-# holds their feature vectors to the reference engine's own. Their fit variant
+# tests pass, not that the shape evaluates correctly. Two groups are the
+# exception. The `sym` shapes build a network in memory and run it against a
+# forward pass written from the definition, and against its own file format
+# (`manaka/tests.rs`), though never against a trained one. The two hce shapes
+# read no file at all: `hce_golden` runs in full and holds their feature vectors
+# to the reference engine's own. Their fit variant
 # (`hce_fit_qsearched`) changes only the coefficients, which that test does not
 # read, so it is not a row of its own.
 jobs:
@@ -83,10 +86,22 @@ jobs:
             args: --features nnue_halfkp_128x2_32_32
           - name: nnue-halfkp-768
             args: --features nnue_halfkp_768x2_16_64
+          - name: sym-kp-64
+            args: --features sym_kp_64x2_512
+          - name: sym-halfkp-64
+            args: --features sym_halfkp_64x2_512
           - name: sym-kp
             args: --features sym_kp_128x2_512
           - name: sym-halfkp
             args: --features sym_halfkp_128x2_512
+          - name: sym-kp-256
+            args: --features sym_kp_256x2_512
+          - name: sym-halfkp-256
+            args: --features sym_halfkp_256x2_512
+          - name: sym-kp-256-o1
+            args: --features sym_kp_256x2_o1_32_32
+          - name: sym-halfkp-256-o1
+            args: --features sym_halfkp_256x2_o1_32_32
           - name: hce-material
             args: --features hce_material_17
           - name: hce-mobility
@@ -137,10 +152,22 @@ jobs:
             args: --features nnue_halfkp_128x2_32_32
           - name: nnue-halfkp-768
             args: --features nnue_halfkp_768x2_16_64
+          - name: sym-kp-64
+            args: --features sym_kp_64x2_512
+          - name: sym-halfkp-64
+            args: --features sym_halfkp_64x2_512
           - name: sym-kp
             args: --features sym_kp_128x2_512
           - name: sym-halfkp
             args: --features sym_halfkp_128x2_512
+          - name: sym-kp-256
+            args: --features sym_kp_256x2_512
+          - name: sym-halfkp-256
+            args: --features sym_halfkp_256x2_512
+          - name: sym-kp-256-o1
+            args: --features sym_kp_256x2_o1_32_32
+          - name: sym-halfkp-256-o1
+            args: --features sym_halfkp_256x2_o1_32_32
           - name: hce-material
             args: --features hce_material_17
           - name: hce-mobility
@@ -179,10 +206,22 @@ jobs:
             args: --features nnue_halfkp_128x2_32_32
           - name: nnue-halfkp-768
             args: --features nnue_halfkp_768x2_16_64
+          - name: sym-kp-64
+            args: --features sym_kp_64x2_512
+          - name: sym-halfkp-64
+            args: --features sym_halfkp_64x2_512
           - name: sym-kp
             args: --features sym_kp_128x2_512
           - name: sym-halfkp
             args: --features sym_halfkp_128x2_512
+          - name: sym-kp-256
+            args: --features sym_kp_256x2_512
+          - name: sym-halfkp-256
+            args: --features sym_halfkp_256x2_512
+          - name: sym-kp-256-o1
+            args: --features sym_kp_256x2_o1_32_32
+          - name: sym-halfkp-256-o1
+            args: --features sym_halfkp_256x2_o1_32_32
           - name: hce-material
             args: --features hce_material_17
           - name: hce-mobility
