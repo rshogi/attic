@@ -24,12 +24,13 @@ use attic_storage::{ArenaLayout, ArenaSlice, LargePageArena, Section};
 // Two families are spelled differently, because each has several shapes that
 // would otherwise widen every guard above it. `hce` and `sym` stand for all of
 // theirs in the pairwise lists: an HCE or a Manaka shape is exactly what the
-// feature being on means. The first guard still names the shapes, since neither
-// alone selects anything. What separates the shapes *within* a family is
-// counted by a `const` assertion after the chain: it does not grow with the
-// square of the shapes the way a pairwise chain does, and Manaka alone has
-// twelve. And `hce_fit_qsearched` is a qualifier on a shape, not a shape, so it
-// is in no list at all.
+// feature being on means. The first guard names the HCE shapes, but for Manaka
+// `sym` itself: it alone selects nothing, and the count in `manaka/shape.rs`
+// reports that. What separates the shapes *within* a family is counted by a
+// `const` assertion there, beside the table of their dimensions: it does not grow
+// with the square of the shapes the way a pairwise chain does, and Manaka alone
+// has twenty-eight. And `hce_fit_qsearched` is a qualifier on a shape, not a
+// shape, so it is in no list at all.
 #[cfg(not(any(
     feature = "sfnn_halfkahm2_1536_15_32_k3k3",
     feature = "sfnn_halfkahm2_1024_15_64_progress8kpabs",
@@ -39,18 +40,7 @@ use attic_storage::{ArenaLayout, ArenaSlice, LargePageArena, Section};
     feature = "nnue_halfkp_256x2_32_32",
     feature = "nnue_halfkp_128x2_32_32",
     feature = "nnue_halfkp_768x2_16_64",
-    feature = "sym_kp_64x2_512",
-    feature = "sym_halfkp_64x2_512",
-    feature = "sym_kp_128x2_512",
-    feature = "sym_halfkp_128x2_512",
-    feature = "sym_kp_256x2_512",
-    feature = "sym_halfkp_256x2_512",
-    feature = "sym_kp_256x2_o1_32_32",
-    feature = "sym_halfkp_256x2_o1_32_32",
-    feature = "sym_token_64x2_512",
-    feature = "sym_token_128x2_512",
-    feature = "sym_token_256x2_512",
-    feature = "sym_token_256x2_o1_32_32",
+    feature = "sym",
     feature = "hce_material_17",
     feature = "hce_mobility_107_57"
 )))]
@@ -58,11 +48,8 @@ compile_error!(
     "select a network: --features sfnn_halfkahm2_1536_15_32_k3k3, \
      sfnn_halfkahm2_1024_15_64_progress8kpabs, sfnn_halfkahm2_1024_15_64_progress8ek, \
      sfnn_halfkahm2_2304_15_64_progress8ek, nnue_kp_256x2_32_32, nnue_halfkp_256x2_32_32, \
-     nnue_halfkp_128x2_32_32, nnue_halfkp_768x2_16_64, sym_kp_64x2_512, sym_halfkp_64x2_512, \
-     sym_kp_128x2_512, sym_halfkp_128x2_512, sym_kp_256x2_512, sym_halfkp_256x2_512, \
-     sym_kp_256x2_o1_32_32, sym_halfkp_256x2_o1_32_32, sym_token_64x2_512, \
-     sym_token_128x2_512, sym_token_256x2_512, sym_token_256x2_o1_32_32, hce_material_17 or \
-     hce_mobility_107_57"
+     nnue_halfkp_128x2_32_32, nnue_halfkp_768x2_16_64, one of the sym_* shapes listed in \
+     attic-eval's Cargo.toml, hce_material_17 or hce_mobility_107_57"
 );
 
 #[cfg(all(
@@ -169,29 +156,6 @@ compile_error!("a Manaka shape is a different evaluation from a hand-crafted one
 
 #[cfg(all(feature = "hce_material_17", feature = "hce_mobility_107_57"))]
 compile_error!("the two hand-crafted evaluations have different weights; select one");
-
-// The Manaka shapes differ in dimensions alone, and `crate::manaka` picks its
-// row of the table by testing these in turn, so two at once would silently take
-// the first. `sym` on its own, which no shape is, counts zero and fails here too.
-#[cfg(feature = "sym")]
-const _: () = {
-    let selected = cfg!(feature = "sym_kp_64x2_512") as usize
-        + cfg!(feature = "sym_halfkp_64x2_512") as usize
-        + cfg!(feature = "sym_kp_128x2_512") as usize
-        + cfg!(feature = "sym_halfkp_128x2_512") as usize
-        + cfg!(feature = "sym_kp_256x2_512") as usize
-        + cfg!(feature = "sym_halfkp_256x2_512") as usize
-        + cfg!(feature = "sym_kp_256x2_o1_32_32") as usize
-        + cfg!(feature = "sym_halfkp_256x2_o1_32_32") as usize
-        + cfg!(feature = "sym_token_64x2_512") as usize
-        + cfg!(feature = "sym_token_128x2_512") as usize
-        + cfg!(feature = "sym_token_256x2_512") as usize
-        + cfg!(feature = "sym_token_256x2_o1_32_32") as usize;
-    assert!(
-        selected == 1,
-        "select exactly one Manaka shape: they differ in their dimensions"
-    );
-};
 
 // Manaka's own shapes carry power sums and an RMS norm where NNUE clips, in
 // f32 or quantised on their own scales, so none of the dimensions below apply

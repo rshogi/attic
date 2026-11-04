@@ -12,7 +12,10 @@ use std::path::Path;
 use crate::types::NnueError;
 
 use super::reader::Reader;
-use super::{DIM, FEATURE_LEN, HEAD, HIDDEN, HIDDEN2, ORDER, SymNetwork, TOKENS};
+use super::{
+    DIM, FEATURE_LEN, HAS_PAIR, HEAD, HIDDEN, HIDDEN2, KS, LSE, MEAN, ORDER, PAIR, PAIR_AT,
+    PAIR_ROWS, SCALE_LEN, SPLIT, SymNetwork, TOKENS,
+};
 
 /// The container's version word, shared with every `nn.bin` YaneuraOu writes.
 ///
@@ -45,7 +48,17 @@ pub(super) enum Encoding {
 }
 
 impl Encoding {
-    const ALL: [Encoding; 3] = [Encoding::Scaled, Encoding::F32, Encoding::Legacy];
+    pub(super) const ALL: [Encoding; 3] = [Encoding::Scaled, Encoding::F32, Encoding::Legacy];
+
+    /// Whether a file of this shape can be in this encoding.
+    ///
+    /// The legacy one has no section for the pair table or for the kept
+    /// magnitudes' gains, and Manaka's writer refuses a net with either rather
+    /// than leave them out, so there is no such file to read: matching one
+    /// would be reading a string no exporter wrote.
+    pub(super) fn exists(self) -> bool {
+        self != Encoding::Legacy || !(HAS_PAIR || KS)
+    }
 
     /// The `ModelType` word.
     pub(super) fn model_type(self) -> &'static str {
@@ -81,15 +94,40 @@ pub(super) fn expected_arch(encoding: Encoding) -> String {
     };
     let model = encoding.model_type();
     let block = ORDER * DIM;
-    let inner = format!(
-        "Dense[{HIDDEN}<-{input}](\
-         RmsNormScaled[{block}](Newton[{ORDER}](PowerSum[{ORDER}](InputSlice[{block}(0:{block})])))))",
-        input = 2 * block,
+
+    // The head's input, block by block, as the exporter spells them. The power
+    // block comes first and is wrapped when it is split; the others follow in
+    // the order `shape.rs` lays them out, each only if the shape has it.
+    let power = format!(
+        "RmsNormScaled[{block}](Newton[{ORDER}](PowerSum[{ORDER}](InputSlice[{block}(0:{block})])))"
     );
+    let mut input = if SPLIT {
+        format!("OwnerSplit[2]({power})")
+    } else {
+        power
+    };
+    if MEAN != 0 {
+        let end = PAIR_AT + MEAN;
+        input += &format!(
+            ",RmsNormScaled[{MEAN}](PairSum[{MEAN}](InputSlice[{MEAN}({PAIR_AT}:{end})]))"
+        );
+    }
+    if LSE != 0 {
+        let (start, end) = (PAIR_AT + MEAN, PAIR_AT + PAIR);
+        input += &format!(",LogSumExp[{LSE}](PairSum[{LSE}](InputSlice[{LSE}({start}:{end})]))");
+    }
+    if KS {
+        input += &format!(",KeepScale[{SCALE_LEN}]");
+    }
+
+    // One `)` short, as the exporter's is: the outermost `Dense` is never
+    // closed. What is closed here is the first layer and its ReLU, and with a
+    // second layer, that one and its ReLU too.
     let network = match HIDDEN2 {
-        0 => format!("Dense[1<-{HIDDEN}](ReLU[{HIDDEN}]({inner}"),
+        0 => format!("Dense[1<-{HIDDEN}](ReLU[{HIDDEN}](Dense[{HIDDEN}<-{FEATURE_LEN}]({input}))"),
         _ => format!(
-            "Dense[1<-{HIDDEN2}](ReLU[{HIDDEN2}](Dense[{HIDDEN2}<-{HIDDEN}](ReLU[{HIDDEN}]({inner}))"
+            "Dense[1<-{HIDDEN2}](ReLU[{HIDDEN2}](Dense[{HIDDEN2}<-{HIDDEN}]\
+             (ReLU[{HIDDEN}](Dense[{HIDDEN}<-{FEATURE_LEN}]({input}))))"
         ),
     };
     format!("ModelType={model};Features={features}{DIM}x2],Network={network}")
@@ -146,6 +184,7 @@ pub(super) fn parse_network(bytes: &[u8]) -> Result<SymNetwork, NnueError> {
     })?;
     let Some(encoding) = Encoding::ALL
         .into_iter()
+        .filter(|e| e.exists())
         .find(|e| arch == expected_arch(*e))
     else {
         return Err(NnueError::InvalidFormat {
@@ -188,8 +227,16 @@ pub(super) fn parse_network(bytes: &[u8]) -> Result<SymNetwork, NnueError> {
 /// units that are not bounded, so a step that is invisible in `W1` is amplified
 /// there, and the rest because they are a few thousand numbers.
 ///
-/// The shapes served here have none of the optional sections (pair, moment,
-/// field, kept scale), so the file ends where section 2 does.
+/// The optional sections follow in the order of their numbers, each only when its
+/// knob is on: the pair table (3, with its gains) and the kept magnitudes'
+/// gains (6). The moment and field sections (4 and 5) sit between them.
+///
+/// The pair table is a `SYMscaled` array like the embedding, with a scale per
+/// channel, and its log-sum-exp channels are stored as `θ`, not the `exp θ` the
+/// accumulator adds: `exp θ` spans `e⁻⁶ … e⁶`, which no linear integer scale
+/// holds at both ends, while `θ` is clamped to ±6 by the trainer and quantises
+/// like any other channel. They are exponentiated here once, so that from this
+/// point both encodings carry `exp θ`.
 fn read_scaled(r: &mut Reader<'_>, hash: u32) -> Result<SymNetwork, NnueError> {
     r.expect_hash(hash.wrapping_add(1), "feature transformer")?;
     let embed = r.scaled_per_column(TOKENS, DIM, "embed")?;
@@ -202,6 +249,15 @@ fn read_scaled(r: &mut Reader<'_>, hash: u32) -> Result<SymNetwork, NnueError> {
     let b2 = r.f32s(HIDDEN2)?;
     let value_w = r.f32s(HEAD)?;
     let value_b = r.f32s(1)?[0];
+
+    let (mut pair_gamma, mut pair) = (Vec::new(), Vec::new());
+    if HAS_PAIR {
+        r.expect_hash(hash.wrapping_add(3), "pair table")?;
+        pair_gamma = r.f32s(PAIR)?;
+        pair = r.scaled_per_column(PAIR_ROWS, PAIR, "pair")?;
+        exponentiate_thetas(&mut pair, PAIR, MEAN);
+    }
+    let scale_gamma = read_scale_gamma(r, hash)?;
     Ok(SymNetwork {
         embed,
         gamma,
@@ -211,7 +267,34 @@ fn read_scaled(r: &mut Reader<'_>, hash: u32) -> Result<SymNetwork, NnueError> {
         b2,
         value_w,
         value_b,
+        pair_gamma,
+        pair,
+        scale_gamma,
     })
+}
+
+/// `θ → exp θ` in the channels from `first` on of every `width`-wide row of
+/// `table`, which is what the accumulator adds.
+///
+/// The width is an argument and not the constant it always is, because a shape
+/// whose width is zero is compiled with this call in it, and a constant chunk
+/// size of zero is something clippy refuses to see.
+fn exponentiate_thetas(table: &mut [f32], width: usize, first: usize) {
+    for row in table.chunks_exact_mut(width) {
+        for theta in &mut row[first..] {
+            *theta = theta.exp();
+        }
+    }
+}
+
+/// Section 6, the gains on the kept magnitudes, which are `f32` in every
+/// encoding that has the section. Absent, and so empty, without `ks`.
+fn read_scale_gamma(r: &mut Reader<'_>, hash: u32) -> Result<Vec<f32>, NnueError> {
+    if !KS {
+        return Ok(Vec::new());
+    }
+    r.expect_hash(hash.wrapping_add(6), "kept magnitudes")?;
+    r.f32s(SCALE_LEN)
 }
 
 /// `SYMf32`: the trainer's own numbers, verbatim.
@@ -229,6 +312,16 @@ fn read_f32(r: &mut Reader<'_>, hash: u32) -> Result<SymNetwork, NnueError> {
     let b2 = r.f32s(HIDDEN2)?;
     let value_w = r.f32s(HEAD)?;
     let value_b = r.f32s(1)?[0];
+
+    // Already `exp θ` in the last channels: the trainer bakes the exponential in
+    // so that its accumulator can stay a plain add, and this file is its table.
+    let (mut pair_gamma, mut pair) = (Vec::new(), Vec::new());
+    if HAS_PAIR {
+        r.expect_hash(hash.wrapping_add(3), "pair table")?;
+        pair_gamma = r.f32s(PAIR)?;
+        pair = r.f32s(PAIR_ROWS * PAIR)?;
+    }
+    let scale_gamma = read_scale_gamma(r, hash)?;
     Ok(SymNetwork {
         embed,
         gamma,
@@ -238,6 +331,9 @@ fn read_f32(r: &mut Reader<'_>, hash: u32) -> Result<SymNetwork, NnueError> {
         b2,
         value_w,
         value_b,
+        pair_gamma,
+        pair,
+        scale_gamma,
     })
 }
 
@@ -266,6 +362,8 @@ fn read_legacy(r: &mut Reader<'_>, hash: u32) -> Result<SymNetwork, NnueError> {
     let b2 = r.i32s_scaled(HIDDEN2, WEIGHT_SCALE)?;
     let value_w = r.i8s_scaled(HEAD, WEIGHT_SCALE)?;
     let value_b = r.i32s_scaled(1, WEIGHT_SCALE)?[0];
+    // No pair table and no kept magnitudes: `Encoding::exists` refuses the
+    // encoding for a shape that has either, so this is only reached without.
     Ok(SymNetwork {
         embed,
         gamma,
@@ -275,6 +373,9 @@ fn read_legacy(r: &mut Reader<'_>, hash: u32) -> Result<SymNetwork, NnueError> {
         b2,
         value_w,
         value_b,
+        pair_gamma: Vec::new(),
+        pair: Vec::new(),
+        scale_gamma: Vec::new(),
     })
 }
 

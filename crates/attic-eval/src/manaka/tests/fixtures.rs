@@ -5,116 +5,13 @@ use std::sync::OnceLock;
 
 use attic_state::{Move, Position};
 
+use super::super::forward::LSE_FLOOR;
 use super::super::loader::{
     EMBED_SCALE, Encoding, VERSION, WEIGHT_SCALE, arch_hash, expected_arch,
 };
 use super::super::{
-    DIM, FEATURE_LEN, HEAD, HIDDEN, HIDDEN2, ORDER, SECOND_LAYER, SymNetwork, TOKENS,
-};
-
-/// What Manaka's exporter (`sym_arch_string`) wrote for this shape: the string
-/// without its `ModelType` word, and the file hash it stored for each of the
-/// three encodings. Copied from real exports, not from `expected_arch`:
-/// asserting a function against itself would pass for any string.
-///
-/// The d64 / d256 hashes are from the 34-shape export of `atmos-34`; the d128
-/// ones are from files the same exporter wrote for a randomly initialised net,
-/// since `atmos-34` has no d128 KP or HalfKP shape. The token shapes' `SYMscaled`
-/// and `SYMf32` hashes are `atmos-34`'s too (all four have weights there,
-/// d128 included); their `SYM` hashes are from the first exporter, the one that
-/// wrote `ModelType=SYM` and nothing else, run over the same four `.mnw`.
-pub(super) struct Exported {
-    /// Everything after `ModelType=<word>;Features=`.
-    pub(super) rest: &'static str,
-    pub(super) scaled: u32,
-    pub(super) f32: u32,
-    pub(super) legacy: u32,
-}
-
-#[cfg(feature = "sym_kp_64x2_512")]
-pub(super) const EXPORTED: Exported = Exported {
-    rest: "K+P[1710->64x2],Network=Dense[1<-512](ReLU[512](Dense[512<-384](RmsNormScaled[192](Newton[3](PowerSum[3](InputSlice[192(0:192)])))))",
-    scaled: 0xf6b9_acc7,
-    f32: 0x6e54_0c82,
-    legacy: 0x0ff7_e8cd,
-};
-#[cfg(feature = "sym_halfkp_64x2_512")]
-pub(super) const EXPORTED: Exported = Exported {
-    rest: "HalfKP(Friend)[125389->64x2],Network=Dense[1<-512](ReLU[512](Dense[512<-384](RmsNormScaled[192](Newton[3](PowerSum[3](InputSlice[192(0:192)])))))",
-    scaled: 0xcf53_3409,
-    f32: 0x6854_422a,
-    legacy: 0x6f7e_587b,
-};
-#[cfg(feature = "sym_kp_128x2_512")]
-pub(super) const EXPORTED: Exported = Exported {
-    rest: "K+P[1710->128x2],Network=Dense[1<-512](ReLU[512](Dense[512<-768](RmsNormScaled[384](Newton[3](PowerSum[3](InputSlice[384(0:384)])))))",
-    scaled: 0xbaff_2ef9,
-    f32: 0xe700_9396,
-    legacy: 0x4c53_92cf,
-};
-#[cfg(feature = "sym_halfkp_128x2_512")]
-pub(super) const EXPORTED: Exported = Exported {
-    rest: "HalfKP(Friend)[125389->128x2],Network=Dense[1<-512](ReLU[512](Dense[512<-768](RmsNormScaled[384](Newton[3](PowerSum[3](InputSlice[384(0:384)])))))",
-    scaled: 0x3798_f7d3,
-    f32: 0x1832_185e,
-    legacy: 0x70a3_ccf5,
-};
-#[cfg(feature = "sym_kp_256x2_512")]
-pub(super) const EXPORTED: Exported = Exported {
-    rest: "K+P[1710->256x2],Network=Dense[1<-512](ReLU[512](Dense[512<-1536](RmsNormScaled[768](Newton[3](PowerSum[3](InputSlice[768(0:768)])))))",
-    scaled: 0x4691_8805,
-    f32: 0xac38_e330,
-    legacy: 0x7cfa_4607,
-};
-#[cfg(feature = "sym_halfkp_256x2_512")]
-pub(super) const EXPORTED: Exported = Exported {
-    rest: "HalfKP(Friend)[125389->256x2],Network=Dense[1<-512](ReLU[512](Dense[512<-1536](RmsNormScaled[768](Newton[3](PowerSum[3](InputSlice[768(0:768)])))))",
-    scaled: 0xfe57_24cb,
-    f32: 0xc30f_72e8,
-    legacy: 0x779a_cf31,
-};
-#[cfg(feature = "sym_kp_256x2_o1_32_32")]
-pub(super) const EXPORTED: Exported = Exported {
-    rest: "K+P[1710->256x2],Network=Dense[1<-32](ReLU[32](Dense[32<-32](ReLU[32](Dense[32<-512](RmsNormScaled[256](Newton[1](PowerSum[1](InputSlice[256(0:256)])))))))",
-    scaled: 0x5eb6_71aa,
-    f32: 0x2df6_cba1,
-    legacy: 0x0f12_1c44,
-};
-#[cfg(feature = "sym_halfkp_256x2_o1_32_32")]
-pub(super) const EXPORTED: Exported = Exported {
-    rest: "HalfKP(Friend)[125389->256x2],Network=Dense[1<-32](ReLU[32](Dense[32<-32](ReLU[32](Dense[32<-512](RmsNormScaled[256](Newton[1](PowerSum[1](InputSlice[256(0:256)])))))))",
-    scaled: 0x079b_c6a8,
-    f32: 0xf554_4019,
-    legacy: 0xc1e0_8026,
-};
-
-#[cfg(feature = "sym_token_64x2_512")]
-pub(super) const EXPORTED: Exported = Exported {
-    rest: "Tokens[64x2],Network=Dense[1<-512](ReLU[512](Dense[512<-384](RmsNormScaled[192](Newton[3](PowerSum[3](InputSlice[192(0:192)])))))",
-    scaled: 0xdef0_e7d3,
-    f32: 0x47bb_126c,
-    legacy: 0x04b9_13ad,
-};
-#[cfg(feature = "sym_token_128x2_512")]
-pub(super) const EXPORTED: Exported = Exported {
-    rest: "Tokens[128x2],Network=Dense[1<-512](ReLU[512](Dense[512<-768](RmsNormScaled[384](Newton[3](PowerSum[3](InputSlice[384(0:384)])))))",
-    scaled: 0xa7a2_7b4d,
-    f32: 0x7171_d448,
-    legacy: 0xaf66_abaf,
-};
-#[cfg(feature = "sym_token_256x2_512")]
-pub(super) const EXPORTED: Exported = Exported {
-    rest: "Tokens[256x2],Network=Dense[1<-512](ReLU[512](Dense[512<-1536](RmsNormScaled[768](Newton[3](PowerSum[3](InputSlice[768(0:768)])))))",
-    scaled: 0x1a1a_b599,
-    f32: 0x4fe7_ad9e,
-    legacy: 0x8927_1ae7,
-};
-#[cfg(feature = "sym_token_256x2_o1_32_32")]
-pub(super) const EXPORTED: Exported = Exported {
-    rest: "Tokens[256x2],Network=Dense[1<-32](ReLU[32](Dense[32<-32](ReLU[32](Dense[32<-512](RmsNormScaled[256](Newton[1](PowerSum[1](InputSlice[256(0:256)])))))))",
-    scaled: 0x3433_856e,
-    f32: 0x9620_ac1f,
-    legacy: 0xa1f8_aca4,
+    DIM, FEATURE_LEN, HAS_PAIR, HEAD, HIDDEN, HIDDEN2, KS, MEAN, ORDER, PAIR, PAIR_ROWS, SCALE_LEN,
+    SECOND_LAYER, SymNetwork, TOKENS,
 };
 
 /// A network no trainer made, with weights small enough to stay inside the
@@ -133,8 +30,56 @@ pub(super) fn synthetic() -> &'static SymNetwork {
             b2: rng.fill(HIDDEN2, 0.3),
             value_w: rng.fill(HEAD, 0.3),
             value_b: 0.1,
+            pair_gamma: rng.fill(PAIR, 0.4).iter().map(|g| 1.0 + g).collect(),
+            pair: pair_table(&mut rng),
+            scale_gamma: rng.fill(SCALE_LEN, 0.4),
         }
     })
+}
+
+/// A pair table: `PAIR_ROWS` rows of ±0.3 in the mean channels and, in the last
+/// `LSE` channels, `exp θ` for a `θ` spread over ±1.5 — positive, as a trained
+/// table's are, and wide enough that a sum of 780 of them is a few hundred and
+/// its logarithm is not flat. Empty without a pair table.
+fn pair_table(rng: &mut Rng) -> Vec<f32> {
+    let mut table = rng.fill(PAIR_ROWS * PAIR, 0.3);
+    map_channels(&mut table, PAIR, MEAN, |v| (v * 5.0).exp());
+    table
+}
+
+/// The column an element of a row-major array of `width` columns is in. The
+/// width is an argument for the reason [`map_channels`]'s is: `i % PAIR` written
+/// out is a remainder by zero in a shape without a pair table, which rustc
+/// refuses to compile even in a branch that shape never takes.
+pub(super) fn column_of(width: usize) -> impl Fn(usize) -> usize {
+    move |i| i % width
+}
+
+/// `f` applied to the channels from `first` on of every `width`-wide row of
+/// `table`. The width is an argument and not the constant it always is, because
+/// a shape without a pair table is compiled with this in it and clippy refuses a
+/// constant chunk size of zero.
+pub(super) fn map_channels(table: &mut [f32], width: usize, first: usize, f: impl Fn(f32) -> f32) {
+    // A table that is off has no rows, and `chunks_exact` refuses a width of zero.
+    if width == 0 {
+        return;
+    }
+    for row in table.chunks_exact_mut(width) {
+        for v in &mut row[first..] {
+            *v = f(*v);
+        }
+    }
+}
+
+/// The encoded file of the synthetic net, once per encoding. A pair table makes
+/// each of these tens to hundreds of megabytes, and nearly every test wants one.
+pub(super) fn encoded(encoding: Encoding) -> &'static [u8] {
+    static FILES: [OnceLock<Vec<u8>>; 3] = [OnceLock::new(), OnceLock::new(), OnceLock::new()];
+    let slot = Encoding::ALL
+        .iter()
+        .position(|e| *e == encoding)
+        .expect("a known encoding");
+    FILES[slot].get_or_init(|| encode(synthetic(), encoding))
 }
 
 /// The scale `export-nnue` gives one group of a `SYMscaled` array: the largest
@@ -153,9 +98,20 @@ pub(super) fn group_scale<'a>(group: impl Iterator<Item = &'a f32>) -> f32 {
 }
 
 /// The scales of a `rows × cols` array grouped by column (`i mod cols`).
+///
+/// One pass over the rows rather than a strided pass per column: the pair table
+/// is `PAIR` columns of 2.7 million, and walking it `PAIR` times is the slowest
+/// thing a test here would do.
 pub(super) fn column_scales(values: &[f32], cols: usize) -> Vec<f32> {
-    (0..cols)
-        .map(|c| group_scale(values.iter().skip(c).step_by(cols)))
+    let mut largest = vec![0.0f32; cols];
+    for row in values.chunks_exact(cols) {
+        for (max, v) in largest.iter_mut().zip(row) {
+            *max = max.max(v.abs());
+        }
+    }
+    largest
+        .into_iter()
+        .map(|max| group_scale(std::iter::once(&max)))
         .collect()
 }
 
@@ -231,6 +187,15 @@ pub(super) fn encode(net: &SymNetwork, encoding: Encoding) -> Vec<u8> {
             put_f32s(&mut out, &net.b2);
             put_f32s(&mut out, &net.value_w);
             put_f32s(&mut out, &[net.value_b]);
+            if HAS_PAIR {
+                out.extend_from_slice(&hash.wrapping_add(3).to_le_bytes());
+                put_f32s(&mut out, &net.pair_gamma);
+                // `θ`, not `exp θ`: the reader exponentiates the last channels.
+                let mut theta = net.pair.clone();
+                map_channels(&mut theta, PAIR, MEAN, |v| v.max(LSE_FLOOR).ln());
+                let scales = column_scales(&theta, PAIR);
+                put_scaled(&mut out, &theta, &scales, column_of(PAIR));
+            }
         }
         Encoding::F32 => {
             put_f32s(&mut out, &net.w1);
@@ -239,6 +204,11 @@ pub(super) fn encode(net: &SymNetwork, encoding: Encoding) -> Vec<u8> {
             put_f32s(&mut out, &net.b2);
             put_f32s(&mut out, &net.value_w);
             put_f32s(&mut out, &[net.value_b]);
+            if HAS_PAIR {
+                out.extend_from_slice(&hash.wrapping_add(3).to_le_bytes());
+                put_f32s(&mut out, &net.pair_gamma);
+                put_f32s(&mut out, &net.pair);
+            }
         }
         Encoding::Legacy => {
             let i8s = |out: &mut Vec<u8>, values: &[f32]| {
@@ -259,6 +229,10 @@ pub(super) fn encode(net: &SymNetwork, encoding: Encoding) -> Vec<u8> {
             i8s(&mut out, &net.value_w);
             i32s(&mut out, &[net.value_b]);
         }
+    }
+    if KS && encoding != Encoding::Legacy {
+        out.extend_from_slice(&hash.wrapping_add(6).to_le_bytes());
+        put_f32s(&mut out, &net.scale_gamma);
     }
     out
 }
@@ -339,5 +313,59 @@ impl Rng {
 
     fn fill(&mut self, len: usize, amplitude: f32) -> Vec<f32> {
         (0..len).map(|_| self.next(amplitude)).collect()
+    }
+}
+
+/// Every token of `pos` as `frame` reads it, each with whether the opponent of
+/// the frame owns it.
+///
+/// The owner comes from the position (the piece's colour, the hand's owner) and
+/// not from the token's number, so that what reads the number back out can be
+/// checked against it. The shapes whose numbering says nothing about ownership
+/// have no `split`, and report every token as the frame's own.
+#[cfg(feature = "sym_token")]
+pub(super) fn owned_tokens(pos: &Position, frame: attic_state::Color) -> Vec<(u32, bool)> {
+    use crate::tokens::{HAND_KINDS, board_row, hand_row};
+    use attic_state::{Color, Square};
+
+    let mut tokens = Vec::new();
+    for index in 0..Square::COUNT as u8 {
+        let sq = Square::from_index(index).expect("a square");
+        if let Some(piece) = pos.board().get(sq) {
+            tokens.push((board_row(piece, sq, frame), piece.color != frame));
+        }
+    }
+    for owner in [Color::Black, Color::White] {
+        for kind in HAND_KINDS {
+            for copy in 0..usize::from(pos.hand(owner).count(kind)) {
+                tokens.push((hand_row(owner, kind, copy, frame), owner != frame));
+            }
+        }
+    }
+    tokens
+}
+
+/// The KP and HalfKP shapes have no ownership in their numbering and no `split`:
+/// every token is the frame's own as far as a group is concerned.
+#[cfg(not(feature = "sym_token"))]
+pub(super) fn owned_tokens(pos: &Position, frame: attic_state::Color) -> Vec<(u32, bool)> {
+    crate::active_features(pos, frame)
+        .into_iter()
+        .map(|token| (token, false))
+        .collect()
+}
+
+/// [`assert_close`] with a tolerance that grows with the size of the numbers: a
+/// sum of `exp θ` over 780 pairs is in the hundreds, and the rounding of an
+/// `f32` there is a fraction of its own size, which an absolute bound meant for
+/// sums of order one cannot be right for.
+pub(super) fn assert_close_relative(what: &str, got: &[f32], want: &[f32], relative: f32) {
+    assert_eq!(got.len(), want.len(), "{what}: length");
+    for (i, (g, w)) in got.iter().zip(want).enumerate() {
+        let allowed = relative * w.abs().max(1.0);
+        assert!(
+            (g - w).abs() <= allowed,
+            "{what}[{i}]: {g} against {w}, allowed {allowed}"
+        );
     }
 }

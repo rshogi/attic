@@ -51,7 +51,7 @@ pub type FeatureIndex = u32;
 /// included.
 pub const MAX_ACTIVE_FEATURES: usize = 40;
 
-const SQUARES: usize = Square::COUNT;
+pub(crate) const SQUARES: usize = Square::COUNT;
 
 /// Piece kinds in token order: the eight [`PieceKind`]s, then the promoted
 /// pawn, lance, knight, silver, bishop and rook. A promoted gold or king does
@@ -76,7 +76,7 @@ const BOARD_KIND: [[u8; 2]; PieceKind::COUNT] = {
 const BOARD_KINDS: usize = 14;
 
 /// Rows taken by the board: kind x ours-or-theirs x square.
-const BOARD_ROWS: usize = BOARD_KINDS * 2 * SQUARES;
+pub(crate) const BOARD_ROWS: usize = BOARD_KINDS * 2 * SQUARES;
 
 /// The kinds that can be held, in token order, which is [`PieceKind`]'s order
 /// with the king left off.
@@ -94,7 +94,7 @@ pub(crate) const HAND_KINDS: [PieceKind; 7] = [
 const HAND_MAX: [usize; 7] = [18, 4, 4, 4, 4, 2, 2];
 
 /// Hand rows for one owner, which is what [`HAND_MAX`] sums to.
-const HAND_SIDE: usize = 38;
+pub(crate) const HAND_SIDE: usize = 38;
 
 /// Where each hand kind's block of copies starts within one owner's hand rows.
 const HAND_OFFSET: [usize; 7] = {

@@ -26,14 +26,17 @@
 //!
 //! ## Adding a shape
 //!
-//! A shape that differs from these in dimensions alone is one `sym_*` entry in
-//! `Cargo.toml` (pass-through included, in every crate that re-exports the
-//! shapes), one row in `DIMS` (`shape.rs`), and one name in the guard in `types.rs`. Nothing
-//! else here changes: every length below is derived from the row, and the
-//! architecture string is assembled from the same constants. A new feature
-//! *space* is more than that — `sym_token` had to touch `loader.rs` (the
-//! `Features=` word) and `accumulator.rs` (how a move is applied) as well — but
-//! another shape in a space that exists is not.
+//! A shape that differs from these in dimensions or in which of the pair,
+//! log-sum-exp, kept-magnitude and split knobs it turns on is one `sym_*` entry
+//! in `Cargo.toml` (pass-through included, in every crate that re-exports the
+//! shapes), and one row in `DIMS` and one name in the count beside it
+//! (`shape.rs`). Nothing else here changes: every length below is derived from
+//! the row, and the architecture string is assembled from the same constants. A new
+//! feature *space* is more than that — `sym_token` had to touch `loader.rs` (the
+//! `Features=` word) and `accumulator.rs` (how a move is applied) as well — and
+//! so is a new *kind of block*, as the pair table was: that is a table in
+//! `SymNetwork`, a section in each reader, a sum in the accumulator and a step
+//! in `forward.rs`.
 //!
 //! ## Why the legacy encoding needs no per-order correction
 //!
@@ -56,18 +59,26 @@
 //! 2. Newton's identities turn those into elementary symmetric polynomials:
 //!    `k·e_k = Σ_{j=1..k} (−1)^{j−1} · e_{k−j} · p_j`, with `e_0 = 1`.
 //! 3. Each `e_k` block is RMS-normalised and scaled by its own `gamma`.
+//! 4. A shape with a pair table adds its sum, `Σ_{a<b} pair[row(a, b)]` over the
+//!    forty tokens' 780 pairs, which is normalised like an order block in its
+//!    first `MEAN` channels and read as `ln Σ exp θ` in its last `LSE`. With
+//!    `ks` each norm's divisor is also reported, as a logarithm.
 //!
 //! The two perspectives' blocks are concatenated — side to move first — into
-//! `2 · order · dim` values, which one or two hidden layers (each followed by a
+//! `FEATURE_LEN` values, which one or two hidden layers (each followed by a
 //! ReLU) and a `tanh` value row reduce to a scalar in `[-1, 1]`. The value row
-//! reads whichever hidden layer is last, which is [`HEAD`] wide.
+//! reads whichever hidden layer is last, which is [`HEAD`] wide. A `split` shape
+//! takes step 1 twice, over the frame's own pieces and over the opponent's.
 //!
 //! Ported from `manaka-core`: `params.rs` (the file), `accum/newton.rs` (step
-//! 2) and `eval.rs` (steps 1 and 3, and the head).
+//! 2) and `eval.rs` (steps 1, 3 and 4, and the head). The format is specified
+//! in tideborn's `docs/network.md`.
 
 mod accumulator;
 mod forward;
 mod loader;
+#[cfg(feature = "sym_token")]
+mod pair;
 mod reader;
 mod shape;
 #[cfg(test)]
@@ -78,19 +89,24 @@ use attic_state::Position;
 pub use accumulator::{Accumulator, FinnyCache};
 use forward::{pre_from_sums, value_from_sums};
 pub use loader::{load_network, load_network_with_warnings};
-pub use shape::{DIM, FEATURE_LEN, HEAD, HIDDEN, HIDDEN2, ORDER, SECOND_LAYER, TOKENS};
+pub use shape::{
+    BLOCK_LEN, DIM, FEATURE_LEN, GROUPS, HAS_PAIR, HEAD, HIDDEN, HIDDEN2, KS, LSE, MEAN, ORDER,
+    PAIR, PAIR_AT, PAIR_ROWS, POWER_LEN, SCALE_AT, SCALE_LEN, SECOND_LAYER, SPLIT, TOKENS,
+};
 
 /// A loaded network, with the tables this shape actually reads.
 ///
-/// The pair, moment and field tables are absent by construction — Manaka's
-/// shape grammar refuses them outside its own token space, because each wants
-/// a row per token and these spaces have up to 125,389 of them — so the file
-/// carries them at length zero and this does not name them at all.
+/// The moment and field tables are absent by construction, as is the pair table
+/// in every shape that has none: the file carries a table that is off at length
+/// zero and this holds it as an empty `Vec`. Manaka's shape grammar refuses all
+/// three outside its own token space, because each wants a row per token (or per
+/// pair of them) and the other spaces have up to 125,389 tokens.
 #[derive(Debug)]
 pub struct SymNetwork {
     /// `[TOKENS][DIM]`.
     pub embed: Vec<f32>,
-    /// `[ORDER][DIM]` — the per-channel scale each normalised block is given.
+    /// `[ORDER][DIM]` — the per-channel scale each normalised block is given,
+    /// shared by both groups of a `split` shape.
     pub gamma: Vec<f32>,
     /// `[HIDDEN][FEATURE_LEN]`.
     pub w1: Vec<f32>,
@@ -103,6 +119,15 @@ pub struct SymNetwork {
     /// `[HEAD]`.
     pub value_w: Vec<f32>,
     pub value_b: f32,
+    /// `[PAIR]` — the gain on each pair channel, mean and log-sum-exp alike.
+    pub pair_gamma: Vec<f32>,
+    /// `[PAIR_ROWS][PAIR]`. In the last `LSE` channels of a row it holds
+    /// `exp θ`, which is what the accumulator adds: a `SYMscaled` file stores
+    /// `θ` and the reader exponentiates it once at load. Empty without a pair
+    /// table.
+    pub pair: Vec<f32>,
+    /// `[SCALE_LEN]` — the gain on each kept magnitude. Empty without `ks`.
+    pub scale_gamma: Vec<f32>,
 }
 
 /// Static evaluation of `pos` from the side to move's perspective, in
@@ -166,8 +191,18 @@ impl SymNetwork {
             b2: self.b2.clone(),
             value_w: self.value_w.clone(),
             value_b: self.value_b,
+            pair_gamma: self.pair_gamma.clone(),
+            pair: self.pair.clone(),
+            scale_gamma: self.scale_gamma.clone(),
         }
     }
+}
+
+/// The value in `[-1, 1]` from an already-built accumulator, before it is turned
+/// into a score: what [`evaluate_with`] scales, for measuring an accumulator
+/// that was carried by derivation against one that was rebuilt.
+pub fn evaluate_value_with(net: &SymNetwork, acc: &Accumulator, pos: &Position) -> f32 {
+    value_from_sums(net, acc, pos.side_to_move())
 }
 
 /// Static evaluation from an already-built accumulator.
@@ -175,6 +210,6 @@ impl SymNetwork {
 /// The entry point for search: no feature extraction and no power sums, just
 /// the polynomials, the norm and the head.
 pub fn evaluate_with(net: &SymNetwork, acc: &Accumulator, pos: &Position) -> i32 {
-    let raw = value_from_sums(net, acc, pos.side_to_move()) * RAW_SCALE;
+    let raw = evaluate_value_with(net, acc, pos) * RAW_SCALE;
     (raw / crate::fv_scale() as f32) as i32
 }
