@@ -69,14 +69,36 @@ sym_kp = ["sym"]
 sym_halfkp = ["sym"]
 hce = []
 # Manaka's own shapes, spelled the way YaneuraOu spells its architectures:
-# feature space, transformer width by two perspectives, then the dense width.
-# `SYM` is the prefix Manaka's `network_type` already uses. Both are order
-# three — the power sums the name has no room for — and both carry `MNW1`
-# files rather than `nn.bin`: f32 weights, and an RMS norm where NNUE clips.
-# They share this crate's feature extraction and nothing else, see
-# `src/manaka.rs`.
+# feature space, transformer width by two perspectives, then the dense widths.
+# `SYM` is the prefix Manaka's `network_type` already uses. They read the
+# `nn.bin` container with `ModelType=SYM` in the architecture string (or
+# `SYMf32`, for the unquantised encoding): an RMS norm where NNUE clips, and
+# a tanh on the value. They share this crate's feature extraction and nothing
+# else, see `src/manaka.rs`.
+#
+# The name carries the power-sum order only when it is not three: `_o1_` is the
+# first power alone, with nothing for Newton's identities to do. Without it the
+# order is three. A second dense width follows the first, as in NNUE's names.
+#
+#   feature                    Manaka's shape code
+#   sym_kp_64x2_512            kp_pair0_d64_o3_h512
+#   sym_halfkp_64x2_512        halfkp_pair0_d64_o3_h512
+#   sym_kp_128x2_512           kp_pair0_d128_o3_h512
+#   sym_halfkp_128x2_512       halfkp_pair0_d128_o3_h512
+#   sym_kp_256x2_512           kp_pair0_d256_o3_h512
+#   sym_halfkp_256x2_512       halfkp_pair0_d256_o3_h512
+#   sym_kp_256x2_o1_32_32      kp_pair0_d256_o1_h32_h232
+#   sym_halfkp_256x2_o1_32_32  halfkp_pair0_d256_o1_h32_h232
+#
+# The dimensions of each are one row of the table in `src/manaka.rs`.
+sym_kp_64x2_512 = ["sym_kp"]
+sym_halfkp_64x2_512 = ["sym_halfkp"]
 sym_kp_128x2_512 = ["sym_kp"]
 sym_halfkp_128x2_512 = ["sym_halfkp"]
+sym_kp_256x2_512 = ["sym_kp"]
+sym_halfkp_256x2_512 = ["sym_halfkp"]
+sym_kp_256x2_o1_32_32 = ["sym_kp"]
+sym_halfkp_256x2_o1_32_32 = ["sym_halfkp"]
 # The two hand-crafted evaluations (HCE), spelled the same way: how many
 # coefficients, then how they are grouped. Material is 10 board slots and 7
 # hand slots; Mobility is 107 board features and 57 for a piece in hand.

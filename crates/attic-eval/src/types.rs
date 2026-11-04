@@ -27,9 +27,9 @@ use attic_storage::{ArenaLayout, ArenaSlice, LargePageArena, Section};
 // feature being on means. The first guard still names the shapes, since neither
 // alone selects anything. What separates the shapes *within* a family is
 // counted by a `const` assertion after the chain: it does not grow with the
-// square of the shapes the way a pairwise chain does. And `hce_fit_qsearched`
-// is a qualifier on a shape, not a shape, so it is in no list at all.
-
+// square of the shapes the way a pairwise chain does, and Manaka alone has
+// eight. And `hce_fit_qsearched` is a qualifier on a shape, not a shape, so it
+// is in no list at all.
 #[cfg(not(any(
     feature = "sfnn_halfkahm2_1536_15_32_k3k3",
     feature = "sfnn_halfkahm2_1024_15_64_progress8kpabs",
@@ -39,18 +39,24 @@ use attic_storage::{ArenaLayout, ArenaSlice, LargePageArena, Section};
     feature = "nnue_halfkp_256x2_32_32",
     feature = "nnue_halfkp_128x2_32_32",
     feature = "nnue_halfkp_768x2_16_64",
+    feature = "sym_kp_64x2_512",
+    feature = "sym_halfkp_64x2_512",
     feature = "sym_kp_128x2_512",
     feature = "sym_halfkp_128x2_512",
+    feature = "sym_kp_256x2_512",
+    feature = "sym_halfkp_256x2_512",
+    feature = "sym_kp_256x2_o1_32_32",
+    feature = "sym_halfkp_256x2_o1_32_32",
     feature = "hce_material_17",
     feature = "hce_mobility_107_57"
 )))]
-
 compile_error!(
     "select a network: --features sfnn_halfkahm2_1536_15_32_k3k3, \
      sfnn_halfkahm2_1024_15_64_progress8kpabs, sfnn_halfkahm2_1024_15_64_progress8ek, \
      sfnn_halfkahm2_2304_15_64_progress8ek, nnue_kp_256x2_32_32, nnue_halfkp_256x2_32_32, \
-     nnue_halfkp_128x2_32_32, nnue_halfkp_768x2_16_64, sym_kp_128x2_512, sym_halfkp_128x2_512, \
-     hce_material_17 or hce_mobility_107_57"
+     nnue_halfkp_128x2_32_32, nnue_halfkp_768x2_16_64, sym_kp_64x2_512, sym_halfkp_64x2_512, \
+     sym_kp_128x2_512, sym_halfkp_128x2_512, sym_kp_256x2_512, sym_halfkp_256x2_512, \
+     sym_kp_256x2_o1_32_32, sym_halfkp_256x2_o1_32_32, hce_material_17 or hce_mobility_107_57"
 );
 
 #[cfg(all(
@@ -67,7 +73,6 @@ compile_error!(
         feature = "hce"
     )
 ))]
-
 compile_error!("sfnn_halfkahm2_1536_15_32_k3k3 is a different network from the rest; select one");
 
 #[cfg(all(
@@ -83,7 +88,6 @@ compile_error!("sfnn_halfkahm2_1536_15_32_k3k3 is a different network from the r
         feature = "hce"
     )
 ))]
-
 compile_error!(
     "sfnn_halfkahm2_1024_15_64_progress8kpabs is a different network from the rest; select one"
 );
@@ -100,7 +104,6 @@ compile_error!(
         feature = "hce"
     )
 ))]
-
 compile_error!(
     "sfnn_halfkahm2_1024_15_64_progress8ek is a different network from the rest; select one"
 );
@@ -116,7 +119,6 @@ compile_error!(
         feature = "hce"
     )
 ))]
-
 compile_error!(
     "sfnn_halfkahm2_2304_15_64_progress8ek is a different network from the rest; select one"
 );
@@ -131,7 +133,6 @@ compile_error!(
         feature = "hce"
     )
 ))]
-
 compile_error!("nnue_kp_256x2_32_32 is a different network from the rest; select one");
 
 #[cfg(all(
@@ -143,21 +144,18 @@ compile_error!("nnue_kp_256x2_32_32 is a different network from the rest; select
         feature = "hce"
     )
 ))]
-
 compile_error!("nnue_halfkp_256x2_32_32 is a different network from the rest; select one");
 
 #[cfg(all(
     feature = "nnue_halfkp_128x2_32_32",
     any(feature = "nnue_halfkp_768x2_16_64", feature = "sym", feature = "hce")
 ))]
-
 compile_error!("nnue_halfkp_128x2_32_32 is a different network from the rest; select one");
 
 #[cfg(all(
     feature = "nnue_halfkp_768x2_16_64",
     any(feature = "sym", feature = "hce")
 ))]
-
 compile_error!("nnue_halfkp_768x2_16_64 is a different network from the rest; select one");
 
 #[cfg(all(feature = "sym", feature = "hce"))]
@@ -166,23 +164,30 @@ compile_error!("a Manaka shape is a different evaluation from a hand-crafted one
 #[cfg(all(feature = "hce_material_17", feature = "hce_mobility_107_57"))]
 compile_error!("the two hand-crafted evaluations have different weights; select one");
 
-// The Manaka shapes differ in dimensions alone, and `crate::manaka` picks them
-// by testing these features, so two at once would silently take the first.
+// The Manaka shapes differ in dimensions alone, and `crate::manaka` picks its
+// row of the table by testing these in turn, so two at once would silently take
+// the first. `sym` on its own, which no shape is, counts zero and fails here too.
 #[cfg(feature = "sym")]
 const _: () = {
-    let selected = cfg!(feature = "sym_kp_128x2_512") as usize
-        + cfg!(feature = "sym_halfkp_128x2_512") as usize;
+    let selected = cfg!(feature = "sym_kp_64x2_512") as usize
+        + cfg!(feature = "sym_halfkp_64x2_512") as usize
+        + cfg!(feature = "sym_kp_128x2_512") as usize
+        + cfg!(feature = "sym_halfkp_128x2_512") as usize
+        + cfg!(feature = "sym_kp_256x2_512") as usize
+        + cfg!(feature = "sym_halfkp_256x2_512") as usize
+        + cfg!(feature = "sym_kp_256x2_o1_32_32") as usize
+        + cfg!(feature = "sym_halfkp_256x2_o1_32_32") as usize;
     assert!(
         selected == 1,
-        "select exactly one Manaka shape: they differ in their feature space"
+        "select exactly one Manaka shape: they differ in their dimensions"
     );
 };
 
-// Manaka's own shapes carry `MNW1` files — f32 weights, power sums to the
-// third order, an RMS norm where NNUE clips — so none of the quantised
-// dimensions below apply to them. The hand-crafted shapes have no network file
-// at all. Both are gated off individually rather than by a guard here, and
-// `crate::manaka` and `crate::hce` hold what they use instead.
+// Manaka's own shapes carry power sums and an RMS norm where NNUE clips, in
+// f32 or quantised on their own scales, so none of the dimensions below apply
+// to them. The hand-crafted shapes have no network file at all. Both are gated
+// off individually rather than by a guard here, and `crate::manaka` and
+// `crate::hce` hold what they use instead.
 
 /// One perspective's transformed width, before the two halves are joined.
 ///
