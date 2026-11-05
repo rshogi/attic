@@ -15,8 +15,9 @@
 /// and `SYMf32` hashes are `atmos-34`'s too (all of them have weights there,
 /// d128 included); the plain ones' `SYM` hashes are from the first exporter, the
 /// one that wrote `ModelType=SYM` and nothing else, run over the same `.mnw`.
-/// The shapes with a pair table or kept magnitudes have no `SYM` file at all:
-/// that encoding has no section for them, so the exporter refuses to write one.
+/// The shapes with a pair table, a second moment, a square field or kept
+/// magnitudes have no `SYM` file at all: that encoding has no section for them,
+/// so the exporter refuses to write one.
 pub(super) struct Exported {
     /// Everything after `ModelType=<word>;Features=`.
     pub(super) rest: &'static str,
@@ -246,5 +247,45 @@ pub(super) const EXPORTED: Exported = Exported {
     rest: "Tokens[128x2],Network=Dense[1<-512](ReLU[512](Dense[512<-1568](OwnerSplit[2](RmsNormScaled[384](Newton[3](PowerSum[3](InputSlice[384(0:384)])))),RmsNormScaled[16](PairSum[16](InputSlice[16(768:784)]))))",
     scaled: 0xa79f_cab5,
     f32: 0x0631_3a80,
+    legacy: None,
+};
+
+#[cfg(feature = "sym_token_128x2_512_pair16_m16")]
+pub(super) const EXPORTED: Exported = Exported {
+    rest: "Tokens[128x2],Network=Dense[1<-512](ReLU[512](Dense[512<-1072](RmsNormScaled[384](Newton[3](PowerSum[3](InputSlice[384(0:384)]))),RmsNormScaled[16](PairSum[16](InputSlice[16(384:400)])),RmsNormScaled[136](SecondMoment[16](InputSlice[136(400:536)]))))",
+    scaled: 0xc958_e2b0,
+    f32: 0xa581_dc89,
+    legacy: None,
+};
+
+#[cfg(feature = "sym_token_128x2_512_pair16_m32")]
+pub(super) const EXPORTED: Exported = Exported {
+    rest: "Tokens[128x2],Network=Dense[1<-512](ReLU[512](Dense[512<-1856](RmsNormScaled[384](Newton[3](PowerSum[3](InputSlice[384(0:384)]))),RmsNormScaled[16](PairSum[16](InputSlice[16(384:400)])),RmsNormScaled[528](SecondMoment[32](InputSlice[528(400:928)]))))",
+    scaled: 0xa7a5_bb99,
+    f32: 0x7bc8_1be0,
+    legacy: None,
+};
+
+#[cfg(feature = "sym_token_128x2_512_pair16_f2")]
+pub(super) const EXPORTED: Exported = Exported {
+    rest: "Tokens[128x2],Network=Dense[1<-512](ReLU[512](Dense[512<-1124](RmsNormScaled[384](Newton[3](PowerSum[3](InputSlice[384(0:384)]))),RmsNormScaled[16](PairSum[16](InputSlice[16(384:400)])),RmsNormScaled[162](SquareField[2](InputSlice[162(400:562)]))))",
+    scaled: 0x999c_e9a5,
+    f32: 0x95c4_dfa4,
+    legacy: None,
+};
+
+#[cfg(feature = "sym_token_128x2_512_pair16_f4")]
+pub(super) const EXPORTED: Exported = Exported {
+    rest: "Tokens[128x2],Network=Dense[1<-512](ReLU[512](Dense[512<-1448](RmsNormScaled[384](Newton[3](PowerSum[3](InputSlice[384(0:384)]))),RmsNormScaled[16](PairSum[16](InputSlice[16(384:400)])),RmsNormScaled[324](SquareField[4](InputSlice[324(400:724)]))))",
+    scaled: 0xbefd_e46c,
+    f32: 0x6d34_6b05,
+    legacy: None,
+};
+
+#[cfg(feature = "sym_token_128x2_512_pair16_f8")]
+pub(super) const EXPORTED: Exported = Exported {
+    rest: "Tokens[128x2],Network=Dense[1<-512](ReLU[512](Dense[512<-2096](RmsNormScaled[384](Newton[3](PowerSum[3](InputSlice[384(0:384)]))),RmsNormScaled[16](PairSum[16](InputSlice[16(384:400)])),RmsNormScaled[648](SquareField[8](InputSlice[648(400:1048)]))))",
+    scaled: 0x0e09_b526,
+    f32: 0x769d_f041,
     legacy: None,
 };

@@ -1,14 +1,15 @@
 //! The file format: the architecture string, the lengths, and the three encodings.
 
 use super::super::loader::{Encoding, arch_hash, expected_arch, parse_network};
+use super::super::shape::SQUARES;
 use super::super::{
-    BLOCK_LEN, DIM, FEATURE_LEN, GROUPS, HAS_PAIR, HEAD, HIDDEN, HIDDEN2, KS, LSE, MEAN, ORDER,
-    PAIR, PAIR_ROWS, POWER_LEN, SCALE_LEN, SECOND_LAYER, TOKENS, evaluate_value,
+    BLOCK_LEN, DIM, FEATURE_LEN, FIELD, FIELD_AT, FIELD_LEN, GROUPS, HAS_FIELD, HAS_MOMENT,
+    HAS_PAIR, HEAD, HIDDEN, HIDDEN2, KS, LSE, MEAN, MOMENT, MOMENT_AT, MOMENT_LEN, ORDER, PAIR,
+    PAIR_AT, PAIR_ROWS, POWER_LEN, SCALE_AT, SCALE_LEN, SECOND_LAYER, TOKENS, evaluate_value,
 };
+use super::encode::{column_of, column_scales, encode, encoded, map_channels, row_scales};
 use super::exported::EXPORTED;
-use super::fixtures::{
-    column_of, column_scales, encode, encoded, game, map_channels, row_scales, synthetic,
-};
+use super::fixtures::{game, synthetic};
 
 /// The string a build expects is the string Manaka's exporter writes for the
 /// same shape in each encoding, byte for byte, and hashes to what the exporter
@@ -46,17 +47,38 @@ fn the_expected_architecture_is_what_the_exporter_writes() {
 /// lacks is absent rather than present and empty by accident.
 #[test]
 fn the_derived_lengths_agree_with_each_other() {
-    // The head reads both perspectives, each the power blocks, the pair channels
-    // and the kept magnitudes, in that order and with nothing between.
+    // The head reads both perspectives, each the power blocks, the pair channels,
+    // the second moment, the square field and the kept magnitudes, in that order
+    // and with nothing between.
     assert_eq!(POWER_LEN, GROUPS * ORDER * DIM);
-    assert_eq!(BLOCK_LEN, POWER_LEN + PAIR + SCALE_LEN);
+    assert_eq!(
+        BLOCK_LEN,
+        POWER_LEN + PAIR + MOMENT_LEN + FIELD_LEN + SCALE_LEN
+    );
+    assert_eq!(PAIR_AT, POWER_LEN);
+    assert_eq!(MOMENT_AT, PAIR_AT + PAIR);
+    assert_eq!(FIELD_AT, MOMENT_AT + MOMENT_LEN);
+    assert_eq!(SCALE_AT, FIELD_AT + FIELD_LEN);
     assert_eq!(FEATURE_LEN, 2 * BLOCK_LEN);
     assert_eq!(PAIR, MEAN + LSE);
+    // The triangle of a symmetric `m × m` matrix, diagonal once, and 81 squares of
+    // `f` channels.
+    assert_eq!(
+        MOMENT_LEN,
+        if HAS_MOMENT {
+            MOMENT * (MOMENT + 1) / 2
+        } else {
+            0
+        }
+    );
+    assert_eq!(FIELD_LEN, SQUARES * FIELD);
+    assert_eq!(SQUARES, 81);
     assert_eq!(HEAD, if SECOND_LAYER { HIDDEN2 } else { HIDDEN });
     assert_eq!(TOKENS, crate::NUM_FEATURES);
     // One magnitude per normalised block: every order of every group, and the
-    // pair's mean channels when there are any.
-    let norms = GROUPS * ORDER + usize::from(MEAN != 0);
+    // pair's mean channels, the moment and the field when there are any.
+    let norms =
+        GROUPS * ORDER + usize::from(MEAN != 0) + usize::from(HAS_MOMENT) + usize::from(HAS_FIELD);
     assert_eq!(SCALE_LEN, if KS { norms } else { 0 });
     assert_eq!(PAIR_ROWS, if HAS_PAIR { 2_745_996 } else { 0 });
     let net = synthetic();
@@ -68,6 +90,10 @@ fn the_derived_lengths_agree_with_each_other() {
     assert_eq!(net.pair_gamma.len(), PAIR);
     assert_eq!(net.pair.len(), PAIR_ROWS * PAIR);
     assert_eq!(net.scale_gamma.len(), SCALE_LEN);
+    assert_eq!(net.moment_gamma.len(), MOMENT_LEN);
+    assert_eq!(net.moment_embed.len(), TOKENS * MOMENT);
+    assert_eq!(net.field_gamma.len(), FIELD);
+    assert_eq!(net.field.len(), TOKENS * FIELD_LEN);
 }
 
 /// An f32 file is read back as the network that was written, exactly.
@@ -86,6 +112,10 @@ fn an_f32_file_reads_back_exactly() {
     assert_eq!(read.pair_gamma, net.pair_gamma);
     assert_eq!(read.pair, net.pair);
     assert_eq!(read.scale_gamma, net.scale_gamma);
+    assert_eq!(read.moment_gamma, net.moment_gamma);
+    assert_eq!(read.moment_embed, net.moment_embed);
+    assert_eq!(read.field_gamma, net.field_gamma);
+    assert_eq!(read.field, net.field);
 }
 
 /// Every element of a `SYMscaled` array is within half a step of its own group's
@@ -140,12 +170,32 @@ fn a_scaled_file_reads_back_within_half_a_step_of_its_own_group() {
             );
         }
     }
+    if HAS_MOMENT {
+        let scales = column_scales(&net.moment_embed, MOMENT);
+        let channel = column_of(MOMENT);
+        within(
+            "moment_embed",
+            &read.moment_embed,
+            &net.moment_embed,
+            &|i| scales[channel(i)],
+        );
+    }
+    if HAS_FIELD {
+        // The group is the channel, the last of the three indices, and not the
+        // slot: a scale for each of the `81 · f` positions of a row would be a
+        // different file.
+        let scales = column_scales(&net.field, FIELD);
+        let channel = column_of(FIELD);
+        within("field", &read.field, &net.field, &|i| scales[channel(i)]);
+    }
     assert_eq!(read.gamma, net.gamma);
     assert_eq!(read.b1, net.b1);
     assert_eq!(read.b2, net.b2);
     assert_eq!(read.value_w, net.value_w);
     assert_eq!(read.value_b, net.value_b);
     assert_eq!(read.pair_gamma, net.pair_gamma);
+    assert_eq!(read.moment_gamma, net.moment_gamma);
+    assert_eq!(read.field_gamma, net.field_gamma);
     assert_eq!(read.scale_gamma, net.scale_gamma);
 }
 
@@ -229,13 +279,18 @@ fn a_damaged_file_is_refused_in_every_encoding() {
         // The word that opens each section: the first, and each optional one a
         // shape has. Each is found by its value, so that this does not repeat
         // the layout it is checking.
+        let (optional, end) = optional_sections(encoding, section_one);
+        // The legacy encoding is sized differently and has no optional section,
+        // so there is nothing there for the model to find.
+        if encoding != Encoding::Legacy {
+            assert_eq!(
+                end,
+                bytes.len(),
+                "{encoding:?}: the sizes add up to the file"
+            );
+        }
         let mut words = vec![(section_one, "feature transformer")];
-        if HAS_PAIR {
-            words.push((pair_section(encoding, section_one), "pair table"));
-        }
-        if KS {
-            words.push((bytes.len() - 4 - 4 * SCALE_LEN, "kept magnitudes"));
-        }
+        words.extend(optional);
         for (at, name) in words {
             bytes[at] ^= 0x01;
             let error = parse_network(&bytes).expect_err("a damaged section word");
@@ -272,28 +327,54 @@ fn a_damaged_file_is_refused_in_every_encoding() {
     }
 }
 
-/// Where the pair table's section word is, from the sizes of the two sections
-/// before it, written out from the format's description (`docs/network.md`,
-/// "Sections") and not from the reader. A scaled array is its scales and then
-/// two bytes an element; an `f32` one is four bytes an element; gains, biases and
-/// the value row are `f32` in both.
-fn pair_section(encoding: Encoding, section_one: usize) -> usize {
-    let (embed, w1, w2) = match encoding {
-        Encoding::Scaled => (
-            4 * DIM + 2 * TOKENS * DIM,
-            4 * HIDDEN + 2 * HIDDEN * FEATURE_LEN,
-            if SECOND_LAYER {
-                4 * HIDDEN2 + 2 * HIDDEN2 * HIDDEN
-            } else {
-                0
-            },
-        ),
-        _ => (
-            4 * TOKENS * DIM,
-            4 * HIDDEN * FEATURE_LEN,
-            4 * HIDDEN2 * HIDDEN,
-        ),
+/// Where the word of each optional section is, and where the file ends, from the
+/// sizes of the sections before it, written out from the format's description
+/// (`docs/network.md`, "Sections") and not from the reader. A scaled array is its
+/// scales and then two bytes an element; an `f32` one is four bytes an element;
+/// gains, biases and the value row are `f32` in both, and an empty array stores
+/// nothing, not even a scale.
+fn optional_sections(
+    encoding: Encoding,
+    section_one: usize,
+) -> (Vec<(usize, &'static str)>, usize) {
+    let array = |elements: usize, groups: usize| match (elements, encoding) {
+        (0, _) => 0,
+        (_, Encoding::Scaled) => 4 * groups + 2 * elements,
+        _ => 4 * elements,
     };
-    let dense = 4 * ORDER * DIM + w1 + 4 * HIDDEN + w2 + 4 * HIDDEN2 + 4 * HEAD + 4;
-    section_one + 4 + embed + 4 + dense
+    let embed = array(TOKENS * DIM, DIM);
+    let dense = 4 * ORDER * DIM
+        + array(HIDDEN * FEATURE_LEN, HIDDEN)
+        + 4 * HIDDEN
+        + array(HIDDEN2 * HIDDEN, HIDDEN2)
+        + 4 * HIDDEN2
+        + 4 * HEAD
+        + 4;
+
+    // Each section is its word, its gains and its table.
+    let mut at = section_one + 4 + embed + 4 + dense;
+    let mut words = Vec::new();
+    let mut section = |present: bool, name: &'static str, size: usize| {
+        if present {
+            words.push((at, name));
+            at += 4 + size;
+        }
+    };
+    section(
+        HAS_PAIR,
+        "pair table",
+        4 * PAIR + array(PAIR_ROWS * PAIR, PAIR),
+    );
+    section(
+        HAS_MOMENT,
+        "second moment",
+        4 * MOMENT_LEN + array(TOKENS * MOMENT, MOMENT),
+    );
+    section(
+        HAS_FIELD,
+        "square field",
+        4 * FIELD + array(TOKENS * FIELD_LEN, FIELD),
+    );
+    section(KS, "kept magnitudes", 4 * SCALE_LEN);
+    (words, at)
 }

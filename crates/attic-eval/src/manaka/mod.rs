@@ -16,7 +16,7 @@
 //!
 //! ## Three encodings of one layout
 //!
-//! `ModelType` says how the numbers are stored, and `loader.rs` has a reader for
+//! `ModelType` says how the numbers are stored, and `body.rs` has a reader for
 //! each: `SYMscaled` (`i16` arrays with a scale per group, what the exporter
 //! writes by default), `SYMf32` (the trainer's own numbers) and `SYM`, the
 //! first encoding, which fixed one scale per kind of array and clamps any
@@ -27,7 +27,8 @@
 //! ## Adding a shape
 //!
 //! A shape that differs from these in dimensions or in which of the pair,
-//! log-sum-exp, kept-magnitude and split knobs it turns on is one `sym_*` entry
+//! log-sum-exp, moment, field, kept-magnitude and split knobs it turns on is one
+//! `sym_*` entry
 //! in `Cargo.toml` (pass-through included, in every crate that re-exports the
 //! shapes), and one row in `DIMS` and one name in the count beside it
 //! (`shape.rs`). Nothing else here changes: every length below is derived from
@@ -61,8 +62,16 @@
 //! 3. Each `e_k` block is RMS-normalised and scaled by its own `gamma`.
 //! 4. A shape with a pair table adds its sum, `Σ_{a<b} pair[row(a, b)]` over the
 //!    forty tokens' 780 pairs, which is normalised like an order block in its
-//!    first `MEAN` channels and read as `ln Σ exp θ` in its last `LSE`. With
-//!    `ks` each norm's divisor is also reported, as a logarithm.
+//!    first `MEAN` channels and read as `ln Σ exp θ` in its last `LSE`.
+//! 5. A shape with a second moment adds the upper triangle of `Σ v vᵀ`, where `v`
+//!    is a token's `MOMENT`-channel row of a table of its own: the cross-channel
+//!    terms the element-wise power sums cannot reach. It is normalised as one
+//!    block, with a gain per entry.
+//! 6. A shape with a square field adds `A[s][c] = Σ field[token][s·FIELD + c]`,
+//!    81 slots of `FIELD` channels, normalised as one block with a gain per
+//!    channel that all 81 slots share.
+//!
+//! With `ks` each norm's divisor is also reported, as a logarithm.
 //!
 //! The two perspectives' blocks are concatenated — side to move first — into
 //! `FEATURE_LEN` values, which one or two hidden layers (each followed by a
@@ -71,12 +80,18 @@
 //! takes step 1 twice, over the frame's own pieces and over the opponent's.
 //!
 //! Ported from `manaka-core`: `params.rs` (the file), `accum/newton.rs` (step
-//! 2) and `eval.rs` (steps 1, 3 and 4, and the head). The format is specified
+//! 2) and `eval.rs` (steps 1 and 3 to 6, and the head). The format is specified
 //! in tideborn's `docs/network.md`.
 
 mod accumulator;
+mod body;
+mod cache;
+#[cfg(feature = "sym_token")]
+mod field;
 mod forward;
 mod loader;
+#[cfg(feature = "sym_token")]
+mod moment;
 #[cfg(feature = "sym_token")]
 mod pair;
 mod reader;
@@ -86,21 +101,23 @@ mod tests;
 
 use attic_state::Position;
 
-pub use accumulator::{Accumulator, FinnyCache};
+pub use accumulator::Accumulator;
+pub use cache::FinnyCache;
 use forward::{pre_from_sums, value_from_sums};
 pub use loader::{load_network, load_network_with_warnings};
 pub use shape::{
-    BLOCK_LEN, DIM, FEATURE_LEN, GROUPS, HAS_PAIR, HEAD, HIDDEN, HIDDEN2, KS, LSE, MEAN, ORDER,
-    PAIR, PAIR_AT, PAIR_ROWS, POWER_LEN, SCALE_AT, SCALE_LEN, SECOND_LAYER, SPLIT, TOKENS,
+    BLOCK_LEN, DIM, FEATURE_LEN, FIELD, FIELD_AT, FIELD_LEN, GROUPS, HAS_FIELD, HAS_MOMENT,
+    HAS_PAIR, HEAD, HIDDEN, HIDDEN2, KS, LSE, MEAN, MOMENT, MOMENT_AT, MOMENT_LEN, ORDER, PAIR,
+    PAIR_AT, PAIR_ROWS, POWER_LEN, SCALE_AT, SCALE_LEN, SECOND_LAYER, SPLIT, TOKENS,
 };
 
 /// A loaded network, with the tables this shape actually reads.
 ///
-/// The moment and field tables are absent by construction, as is the pair table
-/// in every shape that has none: the file carries a table that is off at length
-/// zero and this holds it as an empty `Vec`. Manaka's shape grammar refuses all
-/// three outside its own token space, because each wants a row per token (or per
-/// pair of them) and the other spaces have up to 125,389 tokens.
+/// The pair, moment and field tables are absent in every shape that has none of
+/// them: the file carries a table that is off at length zero and this holds it as
+/// an empty `Vec`. Manaka's shape grammar refuses all three outside its own token
+/// space, because each wants a row per token (or per pair of them) and the other
+/// spaces have up to 125,389 tokens.
 #[derive(Debug)]
 pub struct SymNetwork {
     /// `[TOKENS][DIM]`.
@@ -126,6 +143,17 @@ pub struct SymNetwork {
     /// `θ` and the reader exponentiates it once at load. Empty without a pair
     /// table.
     pub pair: Vec<f32>,
+    /// `[MOMENT_LEN]` — the gain on each entry of the second moment's upper
+    /// triangle. Empty without a second moment.
+    pub moment_gamma: Vec<f32>,
+    /// `[TOKENS][MOMENT]`. Empty without a second moment.
+    pub moment_embed: Vec<f32>,
+    /// `[FIELD]` — the gain on each channel of the square field, shared by all 81
+    /// squares. Empty without a field.
+    pub field_gamma: Vec<f32>,
+    /// `[TOKENS][SQUARES][FIELD]`: the entry for token `t`, square slot `s` and
+    /// channel `c` is at `t · FIELD_LEN + s · FIELD + c`. Empty without a field.
+    pub field: Vec<f32>,
     /// `[SCALE_LEN]` — the gain on each kept magnitude. Empty without `ks`.
     pub scale_gamma: Vec<f32>,
 }
@@ -193,6 +221,10 @@ impl SymNetwork {
             value_b: self.value_b,
             pair_gamma: self.pair_gamma.clone(),
             pair: self.pair.clone(),
+            moment_gamma: self.moment_gamma.clone(),
+            moment_embed: self.moment_embed.clone(),
+            field_gamma: self.field_gamma.clone(),
+            field: self.field.clone(),
             scale_gamma: self.scale_gamma.clone(),
         }
     }

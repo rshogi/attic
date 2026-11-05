@@ -58,7 +58,7 @@ nnue_halfkp_768x2_16_64 = ["nnue_standard", "nnue_halfkp"]
 #   sym_halfkp           ... whose features are Manaka's HalfKP
 #   sym_token            ... whose features are Manaka's own token space (2,344 rows,
 #                        nothing crossed with anything). The only space a pair
-#                        table can exist in
+#                        table, a second moment or a square field can exist in
 #   hce                  every hand-crafted shape. Unlike the others it also
 #                        stands for them in the guard's pairwise lists, because
 #                        an HCE shape is exactly what `hce` being on means.
@@ -101,10 +101,12 @@ hce = []
 #   sym_token_256x2_512        pair0_d256_o3_h512
 #   sym_token_256x2_o1_32_32   pair0_d256_o1_h32_h232
 #
-# The token space is also the only one with a pair table, and a shape that has
-# one is spelled by what follows the dimensions: `_pair<N>` for its width, then
-# `_lse<N>` for how many of its last channels read a log-sum-exp, `_ks` for the
-# kept magnitudes and `_split` for power sums taken per owner. The order is
+# The token space is also the only one with a pair table, a second moment or a
+# square field, and a shape that has one is spelled by what follows the
+# dimensions: `_pair<N>` for the table's width, then `_lse<N>` for how many of
+# its last channels read a log-sum-exp, `_ks` for the kept magnitudes, `_split`
+# for power sums taken per owner, `_m<N>` for a second moment over `N` channels
+# and `_f<N>` for a square field of `N` channels per square. The order is
 # spelled `_o<N>` when it is not three, and a second dense width follows the
 # first, both as in the names above.
 #
@@ -125,6 +127,11 @@ hce = []
 #   sym_token_128x2_512_pair16_lse4_ks       pair16_d128_o3_h512_lse4_ks
 #   sym_token_128x2_512_pair16_ks            pair16_d128_o3_h512_ks
 #   sym_token_128x2_512_pair16_split         pair16_d128_o3_h512_split
+#   sym_token_128x2_512_pair16_m16           pair16_d128_o3_h512_m16
+#   sym_token_128x2_512_pair16_m32           pair16_d128_o3_h512_m32
+#   sym_token_128x2_512_pair16_f2            pair16_d128_o3_h512_f2
+#   sym_token_128x2_512_pair16_f4            pair16_d128_o3_h512_f4
+#   sym_token_128x2_512_pair16_f8            pair16_d128_o3_h512_f8
 #
 # `pair16_d128_o3_h512_pair-tie` is `sym_token_128x2_512_pair16` too: tying the
 # pair rows is a way of training, and the exporter writes the sum, so the file
@@ -159,6 +166,11 @@ sym_token_128x2_512_pair16_lse16 = ["sym_token"]
 sym_token_128x2_512_pair16_lse4_ks = ["sym_token"]
 sym_token_128x2_512_pair16_ks = ["sym_token"]
 sym_token_128x2_512_pair16_split = ["sym_token"]
+sym_token_128x2_512_pair16_m16 = ["sym_token"]
+sym_token_128x2_512_pair16_m32 = ["sym_token"]
+sym_token_128x2_512_pair16_f2 = ["sym_token"]
+sym_token_128x2_512_pair16_f4 = ["sym_token"]
+sym_token_128x2_512_pair16_f8 = ["sym_token"]
 # The two hand-crafted evaluations (HCE), spelled the same way: how many
 # coefficients, then how they are grouped. Material is 10 board slots and 7
 # hand slots; Mobility is 107 board features and 57 for a piece in hand.

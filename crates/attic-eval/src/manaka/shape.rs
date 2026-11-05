@@ -22,6 +22,12 @@ struct Dims {
     /// How many of the pair table's *last* channels are read as a log-sum-exp
     /// instead of a mean. Carved out of `pair`, not added to it.
     lse: usize,
+    /// Channels of the second moment's embedding, or 0 for a shape without one.
+    /// The block it feeds is the upper triangle of `Σ v vᵀ`, `m(m+1)/2` long.
+    moment: usize,
+    /// Channels per square of the square field, or 0 for a shape without one.
+    /// The block it feeds is 81 squares of that many channels.
+    field: usize,
     /// Whether each normalised block also reports the magnitude the norm
     /// divided away (`ks`, for kept scale).
     ks: bool,
@@ -40,6 +46,8 @@ impl Dims {
             hidden2,
             pair: 0,
             lse: 0,
+            moment: 0,
+            field: 0,
             ks: false,
             split: false,
         }
@@ -51,6 +59,14 @@ impl Dims {
 
     const fn lse(self, lse: usize) -> Dims {
         Dims { lse, ..self }
+    }
+
+    const fn moment(self, moment: usize) -> Dims {
+        Dims { moment, ..self }
+    }
+
+    const fn field(self, field: usize) -> Dims {
+        Dims { field, ..self }
     }
 
     const fn ks(self) -> Dims {
@@ -131,6 +147,16 @@ const DIMS: Dims = if cfg!(any(
     Dims::new(128, 3, 512, 0).pair(16).ks()
 } else if cfg!(feature = "sym_token_128x2_512_pair16_split") {
     Dims::new(128, 3, 512, 0).pair(16).split()
+} else if cfg!(feature = "sym_token_128x2_512_pair16_m16") {
+    Dims::new(128, 3, 512, 0).pair(16).moment(16)
+} else if cfg!(feature = "sym_token_128x2_512_pair16_m32") {
+    Dims::new(128, 3, 512, 0).pair(16).moment(32)
+} else if cfg!(feature = "sym_token_128x2_512_pair16_f2") {
+    Dims::new(128, 3, 512, 0).pair(16).field(2)
+} else if cfg!(feature = "sym_token_128x2_512_pair16_f4") {
+    Dims::new(128, 3, 512, 0).pair(16).field(4)
+} else if cfg!(feature = "sym_token_128x2_512_pair16_f8") {
+    Dims::new(128, 3, 512, 0).pair(16).field(8)
 } else {
     panic!("a Manaka shape has to be selected: see the features of attic-eval")
 };
@@ -179,6 +205,12 @@ pub const LSE: usize = DIMS.lse;
 /// channels than there are channels would not subtract, and so does not compile.
 pub const MEAN: usize = PAIR - LSE;
 
+/// Channels of the second moment's embedding, or 0 when the shape has none.
+pub const MOMENT: usize = DIMS.moment;
+
+/// Channels per square of the square field, or 0 when the shape has none.
+pub const FIELD: usize = DIMS.field;
+
 /// Whether each normalised block also reports the magnitude the norm divided
 /// away. A constant for the same reason [`SECOND_LAYER`] is.
 pub const KS: bool = DIMS.ks;
@@ -203,28 +235,55 @@ pub const PAIR_ROWS: usize = if HAS_PAIR {
     0
 };
 
+/// Whether the shape has a second moment. Spelled `!= 0` for the reason
+/// [`SECOND_LAYER`] is.
+pub const HAS_MOMENT: bool = MOMENT != 0;
+
+/// Whether the shape has a square field.
+pub const HAS_FIELD: bool = FIELD != 0;
+
+/// The squares a field has a slice for: the board's. The reader never uses what
+/// a slice means, only that there are 81 of them.
+pub(super) const SQUARES: usize = attic_state::Square::COUNT;
+
+/// Entries of the second moment: the upper triangle of an `MOMENT × MOMENT`
+/// matrix, diagonal included, which is what the head reads. The rest is the same
+/// numbers again, since `Σ v vᵀ` is symmetric.
+pub const MOMENT_LEN: usize = MOMENT * (MOMENT + 1) / 2;
+
+/// Entries of the square field: a slice of `FIELD` channels for each square.
+pub const FIELD_LEN: usize = SQUARES * FIELD;
+
 /// The power sums one perspective carries: every order of every group.
 pub const POWER_LEN: usize = GROUPS * ORDER * DIM;
 
 /// Magnitudes the norms divided away that the head is told about, per
 /// perspective: one for each normalised block, which is every order of every
-/// group and the pair's mean channels when there are any. Zero without `ks`.
+/// group and the pair's mean channels, the moment and the field when there are
+/// any. Zero without `ks`.
 pub const SCALE_LEN: usize = if KS {
-    GROUPS * ORDER + (MEAN != 0) as usize
+    GROUPS * ORDER + (MEAN != 0) as usize + HAS_MOMENT as usize + HAS_FIELD as usize
 } else {
     0
 };
 
 /// One perspective's share of what the first hidden layer reads, laid out as
-/// the power blocks, then the pair channels, then the kept magnitudes. A block
-/// that a shape lacks is zero long, so its offset is where the next one starts.
-pub const BLOCK_LEN: usize = POWER_LEN + PAIR + SCALE_LEN;
+/// the power blocks, then the pair channels, the second moment, the square
+/// field and the kept magnitudes. A block that a shape lacks is zero long, so its
+/// offset is where the next one starts.
+pub const BLOCK_LEN: usize = POWER_LEN + PAIR + MOMENT_LEN + FIELD_LEN + SCALE_LEN;
 
 /// Where the pair channels start within a block.
 pub const PAIR_AT: usize = POWER_LEN;
 
+/// Where the second moment starts within a block.
+pub const MOMENT_AT: usize = PAIR_AT + PAIR;
+
+/// Where the square field starts within a block.
+pub const FIELD_AT: usize = MOMENT_AT + MOMENT_LEN;
+
 /// Where the kept magnitudes start within a block.
-pub const SCALE_AT: usize = PAIR_AT + PAIR;
+pub const SCALE_AT: usize = FIELD_AT + FIELD_LEN;
 
 /// What the first hidden layer reads: both perspectives' blocks.
 pub const FEATURE_LEN: usize = 2 * BLOCK_LEN;
@@ -267,6 +326,11 @@ const _: () = {
         "sym_token_128x2_512_pair16_lse4_ks",
         "sym_token_128x2_512_pair16_ks",
         "sym_token_128x2_512_pair16_split",
+        "sym_token_128x2_512_pair16_m16",
+        "sym_token_128x2_512_pair16_m32",
+        "sym_token_128x2_512_pair16_f2",
+        "sym_token_128x2_512_pair16_f4",
+        "sym_token_128x2_512_pair16_f8",
     );
     assert!(
         selected == 1,
@@ -280,5 +344,14 @@ const _: () = {
     assert!(
         !HAS_PAIR || cfg!(feature = "sym_token"),
         "a pair table exists only in the token space"
+    );
+    // The moment and the field want a row per token, as the embedding does, and
+    // the other spaces have up to 125,389 of them: a field of eight channels per
+    // square would be 81 million numbers in the HalfKP space. Manaka's shape
+    // grammar refuses both outside the token space for that reason, and so does
+    // this.
+    assert!(
+        !(HAS_MOMENT || HAS_FIELD) || cfg!(feature = "sym_token"),
+        "a second moment or a square field exists only in the token space"
     );
 };

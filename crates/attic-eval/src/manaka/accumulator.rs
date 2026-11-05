@@ -4,20 +4,32 @@ use attic_state::{Color, Position};
 
 #[cfg(not(feature = "sym_token"))]
 use crate::features::{
-    DiffScratch, FeatureIndex, MAX_ACTIVE_FEATURES, active_features, active_features_into,
-    changed_indices_into,
+    FeatureIndex, MAX_ACTIVE_FEATURES, active_features, active_features_into, changed_indices_into,
 };
 #[cfg(feature = "sym_token")]
 use crate::tokens::{FeatureIndex, MAX_ACTIVE_FEATURES, MoveDelta, active_features};
 
+use super::cache::FinnyCache;
+#[cfg(not(feature = "sym_token"))]
+use super::cache::Scratch;
+#[cfg(feature = "sym_token")]
+use super::field::touch_field;
+#[cfg(feature = "sym_token")]
+use super::moment::touch_moment;
 #[cfg(feature = "sym_token")]
 use super::pair::{theirs, touch_pairs};
-use super::{DIM, ORDER, PAIR, POWER_LEN, SPLIT, SymNetwork};
+use super::{DIM, FIELD_LEN, MOMENT_LEN, ORDER, PAIR, POWER_LEN, SPLIT, SymNetwork};
 
 /// What the pair sums are accumulated in. `f64`, which is not what the tables
 /// are stored in or the forward pass computes in (both `f32`): see the note on
 /// [`Accumulator`].
 pub(super) type PairSum = f64;
+
+/// What the second moment's sums are accumulated in.
+pub(super) type MomentSum = f64;
+
+/// What the square field's sums are accumulated in.
+pub(super) type FieldSum = f64;
 
 /// The accumulator the search threads through the tree.
 ///
@@ -81,6 +93,12 @@ pub struct Accumulator {
     /// `[perspective][PAIR]`: the sum over the pair table of every pair of
     /// tokens present. Empty for a shape without one.
     pair: [Vec<PairSum>; Color::COUNT],
+    /// `[perspective][MOMENT_LEN]`: the upper triangle of `Σ v vᵀ` over the
+    /// tokens present. Empty for a shape without a second moment.
+    moment: [Vec<MomentSum>; Color::COUNT],
+    /// `[perspective][FIELD_LEN]`: the sum of the present tokens' rows of the
+    /// field, `[square][channel]`. Empty for a shape without a field.
+    field: [Vec<FieldSum>; Color::COUNT],
     /// What each half was built from, kept so a derive can diff against it (KP,
     /// HalfKP) or so that the tokens present are known (the token shapes).
     active: [Vec<FeatureIndex>; Color::COUNT],
@@ -97,6 +115,8 @@ impl Accumulator {
         Accumulator {
             sums: [vec![0.0; POWER_LEN], vec![0.0; POWER_LEN]],
             pair: [vec![0.0; PAIR], vec![0.0; PAIR]],
+            moment: [vec![0.0; MOMENT_LEN], vec![0.0; MOMENT_LEN]],
+            field: [vec![0.0; FIELD_LEN], vec![0.0; FIELD_LEN]],
             active: [
                 Vec::with_capacity(MAX_ACTIVE_FEATURES),
                 Vec::with_capacity(MAX_ACTIVE_FEATURES),
@@ -118,9 +138,13 @@ impl Accumulator {
             }
             // Every pair once: each token against the ones before it.
             self.pair[i].fill(0.0);
+            self.moment[i].fill(0.0);
+            self.field[i].fill(0.0);
             #[cfg(feature = "sym_token")]
             for (at, &feature) in self.active[i].iter().enumerate() {
                 touch_pairs(&mut self.pair[i], net, feature, &self.active[i][..at], 1.0);
+                touch_moment(&mut self.moment[i], net, feature, 1.0);
+                touch_field(&mut self.field[i], net, feature, 1.0);
             }
         }
     }
@@ -137,6 +161,18 @@ impl Accumulator {
     /// forward pass computes in; see [`Accumulator`].
     pub fn pair(&self, color: Color) -> [f32; PAIR] {
         std::array::from_fn(|channel| self.pair[color.index()][channel] as f32)
+    }
+
+    /// The second moment's upper triangle for one perspective, `[entry]`; empty
+    /// without one. Rounded to `f32` from the `f64` it is accumulated in.
+    pub fn moment(&self, color: Color) -> [f32; MOMENT_LEN] {
+        std::array::from_fn(|entry| self.moment[color.index()][entry] as f32)
+    }
+
+    /// The square field's sum for one perspective, `[square][channel]` flattened;
+    /// empty without one. Rounded to `f32` from the `f64` it is accumulated in.
+    pub fn field(&self, color: Color) -> [f32; FIELD_LEN] {
+        std::array::from_fn(|at| self.field[color.index()][at] as f32)
     }
 
     /// The tokens present in one perspective, in no particular order.
@@ -282,10 +318,14 @@ impl Accumulator {
                 self.active[i].swap_remove(at);
                 accumulate(&mut self.sums[i], net, token, -1.0);
                 touch_pairs(&mut self.pair[i], net, token, &self.active[i], -1.0);
+                touch_moment(&mut self.moment[i], net, token, -1.0);
+                touch_field(&mut self.field[i], net, token, -1.0);
             }
             for &token in half.added() {
                 accumulate(&mut self.sums[i], net, token, 1.0);
                 touch_pairs(&mut self.pair[i], net, token, &self.active[i], 1.0);
+                touch_moment(&mut self.moment[i], net, token, 1.0);
+                touch_field(&mut self.field[i], net, token, 1.0);
                 self.active[i].push(token);
             }
         }
@@ -328,42 +368,4 @@ fn group(feature: FeatureIndex) -> usize {
 fn group(_feature: FeatureIndex) -> usize {
     const { assert!(!SPLIT) };
     0
-}
-
-/// The buffers a derive needs, owned across the whole search.
-///
-/// Two feature lists and the diff's four vectors. Held here rather than in
-/// [`Accumulator`] because the accumulator is copied down the tree and this is
-/// not — one worker needs one set of these, not one per ply.
-#[cfg(not(feature = "sym_token"))]
-#[derive(Debug, Default)]
-struct Scratch {
-    after: [Vec<FeatureIndex>; Color::COUNT],
-    diff: DiffScratch,
-}
-
-/// Where NNUE keeps its king-bucket refresh cache. Nothing here buckets by
-/// king, so what it carries instead is the derive's scratch — the name is
-/// NNUE's because the search allocates one per worker and hands it to every
-/// derive, which is exactly what this needs too.
-#[cfg(not(feature = "sym_token"))]
-#[derive(Debug, Default)]
-pub struct FinnyCache {
-    scratch: Scratch,
-}
-
-/// Where NNUE keeps its king-bucket refresh cache. The token shapes have
-/// neither a bucket nor a scan to buffer, so this holds nothing; it exists
-/// because the search allocates one per worker and hands it to every derive.
-#[cfg(feature = "sym_token")]
-#[derive(Debug, Default)]
-pub struct FinnyCache;
-
-impl FinnyCache {
-    pub fn new() -> Box<Self> {
-        // `Box::default`, not `Box::new(FinnyCache::default())`: the token
-        // shapes' cache is a unit struct, and clippy rejects calling `default`
-        // on one. This spelling is the same for both.
-        Box::default()
-    }
 }
