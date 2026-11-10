@@ -1,13 +1,13 @@
-//! The file format: the architecture string, the lengths, and the three encodings.
+//! The file format: the architecture string, the lengths, and the two encodings.
 
 use super::super::loader::{Encoding, arch_hash, expected_arch, parse_network};
 use super::super::shape::SQUARES;
 use super::super::{
-    BLOCK_LEN, DIM, FEATURE_LEN, FIELD, FIELD_AT, FIELD_LEN, GROUPS, HAS_FIELD, HAS_MOMENT,
-    HAS_PAIR, HEAD, HIDDEN, HIDDEN2, KS, LSE, MEAN, MOMENT, MOMENT_AT, MOMENT_LEN, ORDER, PAIR,
-    PAIR_AT, PAIR_ROWS, POWER_LEN, SCALE_AT, SCALE_LEN, SECOND_LAYER, TOKENS, evaluate_value,
+    BLOCK_LEN, DIM, FEATURE_LEN, FIELD, FIELD_AT, FIELD_LEN, HAS_FIELD, HAS_MOMENT, HAS_PAIR, HEAD,
+    HIDDEN, HIDDEN2, MOMENT, MOMENT_AT, MOMENT_LEN, ORDER, PAIR, PAIR_AT, PAIR_ROWS, POWER_LEN,
+    TOKENS, evaluate_value,
 };
-use super::encode::{column_of, column_scales, encode, encoded, map_channels, row_scales};
+use super::encode::{column_of, column_scales, encode, encoded, row_scales};
 use super::exported::EXPORTED;
 use super::fixtures::{game, synthetic};
 
@@ -22,17 +22,9 @@ use super::fixtures::{game, synthetic};
 fn the_expected_architecture_is_what_the_exporter_writes() {
     let exported = EXPORTED;
     for (encoding, hash) in [
-        (Encoding::Scaled, Some(exported.scaled)),
-        (Encoding::F32, Some(exported.f32)),
-        (Encoding::Legacy, exported.legacy),
+        (Encoding::Scaled, exported.scaled),
+        (Encoding::F32, exported.f32),
     ] {
-        // The exporter writes no such file, so there is no string to match; the
-        // reader has to agree that there is none.
-        let Some(hash) = hash else {
-            assert!(!encoding.exists(), "{encoding:?} exists with no export");
-            continue;
-        };
-        assert!(encoding.exists(), "{encoding:?} has an export");
         let text = format!(
             "ModelType={};Features={}",
             encoding.model_type(),
@@ -43,24 +35,67 @@ fn the_expected_architecture_is_what_the_exporter_writes() {
     }
 }
 
+/// The file the synthetic net is written to, with its architecture string
+/// replaced by `arch` and the length and hash that go with it, so that the only
+/// thing wrong with it is the string.
+fn with_architecture(arch: &str) -> Vec<u8> {
+    let bytes = encoded(Encoding::Scaled);
+    let len = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+    let mut out = Vec::new();
+    out.extend_from_slice(&bytes[..4]);
+    out.extend_from_slice(&arch_hash(arch).to_le_bytes());
+    out.extend_from_slice(&(arch.len() as u32).to_le_bytes());
+    out.extend_from_slice(arch.as_bytes());
+    out.extend_from_slice(&bytes[12 + len..]);
+    out
+}
+
+/// There are two encodings, `SYNNscaled` and `SYNNf32`, and a file that names any
+/// other is refused at its header: a reader that guessed would read the body at
+/// whatever stride the guess implied.
+#[test]
+fn only_the_two_encodings_are_read() {
+    assert_eq!(Encoding::ALL.len(), 2);
+    assert_eq!(Encoding::Scaled.model_type(), "SYNNscaled");
+    assert_eq!(Encoding::F32.model_type(), "SYNNf32");
+
+    let arch = expected_arch(Encoding::Scaled);
+    assert!(parse_network(&with_architecture(&arch)).is_ok());
+    for word in ["SYNN", "SYNNq16", "SYNNscaled2"] {
+        let other = arch.replacen("SYNNscaled", word, 1);
+        assert_ne!(other, arch);
+        let error = parse_network(&with_architecture(&other)).expect_err(word);
+        assert!(error.to_string().contains("file says"), "{word}: {error}");
+    }
+}
+
+/// The two words that make a string SYNN's are what the arithmetic is, so a file
+/// whose blocks or hidden layers are named otherwise is refused, though every
+/// section after the string is the one it would have read.
+#[test]
+fn a_file_naming_other_arithmetic_is_refused() {
+    let arch = expected_arch(Encoding::Scaled);
+    for (from, to) in [("ClipScaled", "NormScaled"), ("ClippedReLU", "Activation")] {
+        let other = arch.replace(from, to);
+        assert_ne!(other, arch);
+        let error = parse_network(&with_architecture(&other)).expect_err(to);
+        assert!(error.to_string().contains("file says"), "{to}: {error}");
+    }
+}
+
 /// The lengths follow from the shape's numbers, and a layer or table the shape
 /// lacks is absent rather than present and empty by accident.
 #[test]
 fn the_derived_lengths_agree_with_each_other() {
     // The head reads both perspectives, each the power blocks, the pair channels,
-    // the second moment, the square field and the kept magnitudes, in that order
-    // and with nothing between.
-    assert_eq!(POWER_LEN, GROUPS * ORDER * DIM);
-    assert_eq!(
-        BLOCK_LEN,
-        POWER_LEN + PAIR + MOMENT_LEN + FIELD_LEN + SCALE_LEN
-    );
+    // the second moment and the square field, in that order and with nothing
+    // between.
+    assert_eq!(POWER_LEN, ORDER * DIM);
+    assert_eq!(BLOCK_LEN, POWER_LEN + PAIR + MOMENT_LEN + FIELD_LEN);
     assert_eq!(PAIR_AT, POWER_LEN);
     assert_eq!(MOMENT_AT, PAIR_AT + PAIR);
     assert_eq!(FIELD_AT, MOMENT_AT + MOMENT_LEN);
-    assert_eq!(SCALE_AT, FIELD_AT + FIELD_LEN);
     assert_eq!(FEATURE_LEN, 2 * BLOCK_LEN);
-    assert_eq!(PAIR, MEAN + LSE);
     // The triangle of a symmetric `m × m` matrix, diagonal once, and 81 squares of
     // `f` channels.
     assert_eq!(
@@ -73,13 +108,8 @@ fn the_derived_lengths_agree_with_each_other() {
     );
     assert_eq!(FIELD_LEN, SQUARES * FIELD);
     assert_eq!(SQUARES, 81);
-    assert_eq!(HEAD, if SECOND_LAYER { HIDDEN2 } else { HIDDEN });
+    assert_eq!(HEAD, HIDDEN2);
     assert_eq!(TOKENS, crate::NUM_FEATURES);
-    // One magnitude per normalised block: every order of every group, and the
-    // pair's mean channels, the moment and the field when there are any.
-    let norms =
-        GROUPS * ORDER + usize::from(MEAN != 0) + usize::from(HAS_MOMENT) + usize::from(HAS_FIELD);
-    assert_eq!(SCALE_LEN, if KS { norms } else { 0 });
     assert_eq!(PAIR_ROWS, if HAS_PAIR { 2_745_996 } else { 0 });
     let net = synthetic();
     assert_eq!(net.embed.len(), TOKENS * DIM);
@@ -89,7 +119,6 @@ fn the_derived_lengths_agree_with_each_other() {
     assert_eq!(net.value_w.len(), HEAD);
     assert_eq!(net.pair_gamma.len(), PAIR);
     assert_eq!(net.pair.len(), PAIR_ROWS * PAIR);
-    assert_eq!(net.scale_gamma.len(), SCALE_LEN);
     assert_eq!(net.moment_gamma.len(), MOMENT_LEN);
     assert_eq!(net.moment_embed.len(), TOKENS * MOMENT);
     assert_eq!(net.field_gamma.len(), FIELD);
@@ -111,14 +140,13 @@ fn an_f32_file_reads_back_exactly() {
     assert_eq!(read.value_b, net.value_b);
     assert_eq!(read.pair_gamma, net.pair_gamma);
     assert_eq!(read.pair, net.pair);
-    assert_eq!(read.scale_gamma, net.scale_gamma);
     assert_eq!(read.moment_gamma, net.moment_gamma);
     assert_eq!(read.moment_embed, net.moment_embed);
     assert_eq!(read.field_gamma, net.field_gamma);
     assert_eq!(read.field, net.field);
 }
 
-/// Every element of a `SYMscaled` array is within half a step of its own group's
+/// Every element of a `SYNNscaled` array is within half a step of its own group's
 /// scale, and the arrays that stay `f32` are exact. The groups are the point:
 /// the embedding's is a channel (`i mod d`), a dense weight's is its row
 /// (`i div cols`), and a reader that swapped them would divide by a neighbour's
@@ -142,33 +170,13 @@ fn a_scaled_file_reads_back_within_half_a_step_of_its_own_group() {
     within("embed", &read.embed, &net.embed, &|i| embed_scales[i % DIM]);
     let w1_scales = row_scales(&net.w1, FEATURE_LEN);
     within("w1", &read.w1, &net.w1, &|i| w1_scales[i / FEATURE_LEN]);
-    if SECOND_LAYER {
-        let w2_scales = row_scales(&net.w2, HIDDEN);
-        within("w2", &read.w2, &net.w2, &|i| w2_scales[i / HIDDEN]);
-    }
+    let w2_scales = row_scales(&net.w2, HIDDEN);
+    within("w2", &read.w2, &net.w2, &|i| w2_scales[i / HIDDEN]);
     if HAS_PAIR {
-        // The pair table's groups are its channels, and its log-sum-exp channels
-        // are stored as `θ` and exponentiated on the way in. A step of `1/scale`
-        // in `θ` is a factor of `e^(1/scale)` in the table, so those are held to
-        // a relative half-step of their own.
-        let mut theta = net.pair.clone();
-        map_channels(&mut theta, PAIR, MEAN, f32::ln);
-        let pair_scales = column_scales(&theta, PAIR);
-        for (i, (g, w)) in read.pair.iter().zip(&net.pair).enumerate() {
-            let channel = column_of(PAIR)(i);
-            let half_step = 0.5 / pair_scales[channel];
-            // The mean channels are compared as they are and the log-sum-exp
-            // ones by their logarithm; `LSE` of them end the row.
-            let ok = if PAIR - channel > LSE {
-                (g - w).abs() <= half_step + w.abs() * 2e-7
-            } else {
-                (g.ln() - w.ln()).abs() <= half_step + 1e-6
-            };
-            assert!(
-                ok,
-                "pair[{i}]: read {g} for {w}, half a step is {half_step}"
-            );
-        }
+        // The pair table's groups are its channels.
+        let pair_scales = column_scales(&net.pair, PAIR);
+        let channel = column_of(PAIR);
+        within("pair", &read.pair, &net.pair, &|i| pair_scales[channel(i)]);
     }
     if HAS_MOMENT {
         let scales = column_scales(&net.moment_embed, MOMENT);
@@ -196,15 +204,14 @@ fn a_scaled_file_reads_back_within_half_a_step_of_its_own_group() {
     assert_eq!(read.pair_gamma, net.pair_gamma);
     assert_eq!(read.moment_gamma, net.moment_gamma);
     assert_eq!(read.field_gamma, net.field_gamma);
-    assert_eq!(read.scale_gamma, net.scale_gamma);
 }
 
-/// What `SYMscaled` is for. A trained net has weights far outside the legacy
-/// encoding's ±1.98 (`W1` reaches 28, `value_w` 17 in the nets measured), and the
-/// legacy writer clamps them. A scaled file holds the same weight to a step
-/// of `1 / scale`, however large the group it sits in.
+/// What `SYNNscaled` is for. A trained net has weights far outside a fixed
+/// scale's range (`W1` reaches 28, `value_w` 17 in the nets measured), and a scaled
+/// file holds the same weight to a step of `1 / scale`, however large the group it
+/// sits in.
 #[test]
-fn a_scaled_file_holds_a_weight_the_legacy_encoding_clamps() {
+fn a_scaled_file_holds_a_large_weight() {
     let mut net = synthetic().replicate();
     net.embed[3] = 7.5;
     net.w1[0] = 20.0;
@@ -222,19 +229,9 @@ fn a_scaled_file_holds_a_weight_the_legacy_encoding_clamps() {
         scaled.embed[3]
     );
     assert_eq!(scaled.value_w[0], 15.0);
-
-    // A shape with a pair table or kept magnitudes has no legacy file to clamp.
-    if Encoding::Legacy.exists() {
-        let legacy = parse_network(&encode(&net, Encoding::Legacy)).expect("the file loads");
-        assert_eq!(
-            legacy.w1[0],
-            127.0 / 64.0,
-            "the legacy writer clamps at 127 / 64"
-        );
-    }
 }
 
-/// The three encodings of one net are one network: the f32 file evaluates to the
+/// The two encodings of one net are one network: the f32 file evaluates to the
 /// net exactly, and the scaled one to within what its steps cost.
 #[test]
 fn the_encodings_of_one_net_evaluate_alike() {
@@ -260,7 +257,7 @@ fn the_encodings_of_one_net_evaluate_alike() {
 /// search an infinity.
 #[test]
 fn a_damaged_file_is_refused_in_every_encoding() {
-    for encoding in Encoding::ALL.into_iter().filter(|e| e.exists()) {
+    for encoding in Encoding::ALL {
         // One copy, damaged and put right again: a pair table makes the file
         // large enough that a copy per case would be most of the test's time.
         let mut bytes = encoded(encoding).to_vec();
@@ -280,15 +277,11 @@ fn a_damaged_file_is_refused_in_every_encoding() {
         // shape has. Each is found by its value, so that this does not repeat
         // the layout it is checking.
         let (optional, end) = optional_sections(encoding, section_one);
-        // The legacy encoding is sized differently and has no optional section,
-        // so there is nothing there for the model to find.
-        if encoding != Encoding::Legacy {
-            assert_eq!(
-                end,
-                bytes.len(),
-                "{encoding:?}: the sizes add up to the file"
-            );
-        }
+        assert_eq!(
+            end,
+            bytes.len(),
+            "{encoding:?}: the sizes add up to the file"
+        );
         let mut words = vec![(section_one, "feature transformer")];
         words.extend(optional);
         for (at, name) in words {
@@ -375,6 +368,5 @@ fn optional_sections(
         "square field",
         4 * FIELD + array(TOKENS * FIELD_LEN, FIELD),
     );
-    section(KS, "kept magnitudes", 4 * SCALE_LEN);
     (words, at)
 }

@@ -3444,7 +3444,7 @@ impl QSearch<'_> {
 }
 
 // Manaka's shapes have no synthetic-network builder: their networks exist only
-// as trained `MNW1` files, so there is nothing for these tests to evaluate with.
+// as trained `nn.bin` files, so there is nothing for these tests to evaluate with.
 // The hand-crafted shapes have no network to build at all, and the evaluation
 // they would give these tests is not zero.
 #[cfg(all(test, not(any(feature = "sym", feature = "hce"))))]

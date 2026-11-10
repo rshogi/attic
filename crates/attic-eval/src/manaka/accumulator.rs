@@ -17,8 +17,8 @@ use super::field::touch_field;
 #[cfg(feature = "sym_token")]
 use super::moment::touch_moment;
 #[cfg(feature = "sym_token")]
-use super::pair::{theirs, touch_pairs};
-use super::{DIM, FIELD_LEN, MOMENT_LEN, ORDER, PAIR, POWER_LEN, SPLIT, SymNetwork};
+use super::pair::touch_pairs;
+use super::{DIM, FIELD_LEN, MOMENT_LEN, ORDER, PAIR, POWER_LEN, SymNetwork};
 
 /// What the pair sums are accumulated in. `f64`, which is not what the tables
 /// are stored in or the forward pass computes in (both `f32`): see the note on
@@ -79,16 +79,14 @@ pub(super) type FieldSum = f64;
 /// and the lifted piece's rows against the victim are gone with the victim's.
 ///
 /// Each of those is a floating-point sum taken out of a larger one, which is
-/// where `f32` drifts, and the log-sum-exp channels are the worst case: they
-/// sum `exp θ`, up to about 1e4, and a logarithm of what is left over after a
-/// large term has come and gone reads the rounding of that large term. The
-/// search seeds the root with [`Accumulator::refresh`] every iteration, which
-/// is what keeps the drift to a few plies' worth; see `tests/sym_network.rs` for
-/// how much that is on a trained net.
+/// where `f32` drifts, so the pair sum is accumulated in `f64`. The search seeds
+/// the root with [`Accumulator::refresh`] every iteration, which is what keeps
+/// the drift to a few plies' worth; see `tests/sym_network.rs` for how much that
+/// is on a trained net.
 #[derive(Debug, Clone)]
 pub struct Accumulator {
     /// `[perspective][POWER_LEN]`, indexed by [`Color::index`]; within one
-    /// perspective `[group][order][channel]`, a split shape having two groups.
+    /// perspective `[order][channel]`.
     sums: [Vec<f32>; Color::COUNT],
     /// `[perspective][PAIR]`: the sum over the pair table of every pair of
     /// tokens present. Empty for a shape without one.
@@ -133,9 +131,7 @@ impl Accumulator {
             let i = color.index();
             self.active[i] = active_features(pos, color);
             self.sums[i].fill(0.0);
-            for &feature in &self.active[i] {
-                accumulate(&mut self.sums[i], net, feature, 1.0);
-            }
+            accumulate(&mut self.sums[i], &net.embed, &[], &self.active[i]);
             // Every pair once: each token against the ones before it.
             self.pair[i].fill(0.0);
             self.moment[i].fill(0.0);
@@ -149,13 +145,12 @@ impl Accumulator {
         }
     }
 
-    /// The power sums for one perspective, `[group][order][channel]`.
+    /// The power sums for one perspective, `[order][channel]`.
     pub fn perspective(&self, color: Color) -> &[f32] {
         &self.sums[color.index()]
     }
 
     /// The pair table's sum for one perspective, `[channel]`; empty without one.
-    /// The last `LSE` channels hold `Σ exp θ`, not yet a logarithm.
     ///
     /// Accumulated in `f64` and handed over rounded to `f32`, which is what the
     /// forward pass computes in; see [`Accumulator`].
@@ -240,12 +235,12 @@ impl Accumulator {
             let i = color.index();
             active_features_into(pos, color, &mut scratch.after[i]);
             changed_indices_into(&self.active[i], &scratch.after[i], &mut scratch.diff);
-            for &feature in &scratch.diff.removed {
-                accumulate(&mut self.sums[i], net, feature, -1.0);
-            }
-            for &feature in &scratch.diff.added {
-                accumulate(&mut self.sums[i], net, feature, 1.0);
-            }
+            accumulate(
+                &mut self.sums[i],
+                &net.embed,
+                &scratch.diff.removed,
+                &scratch.diff.added,
+            );
             // Swap rather than assign: `self.active[i]`'s allocation becomes
             // next ply's scratch instead of being dropped and re-made.
             std::mem::swap(&mut self.active[i], &mut scratch.after[i]);
@@ -310,19 +305,21 @@ impl Accumulator {
         for color in [Color::Black, Color::White] {
             let i = color.index();
             let half = delta.half(color).expect("a token delta is never a rebuild");
+            // The power sums depend on nothing but the rows being taken out and put
+            // in, and in what order, so they go in one pass ahead of the tables that
+            // read `active`.
+            accumulate(&mut self.sums[i], &net.embed, half.removed(), half.added());
             for &token in half.removed() {
                 let at = self.active[i]
                     .iter()
                     .position(|&present| present == token)
                     .expect("a removed token was not in the accumulator it is removed from");
                 self.active[i].swap_remove(at);
-                accumulate(&mut self.sums[i], net, token, -1.0);
                 touch_pairs(&mut self.pair[i], net, token, &self.active[i], -1.0);
                 touch_moment(&mut self.moment[i], net, token, -1.0);
                 touch_field(&mut self.field[i], net, token, -1.0);
             }
             for &token in half.added() {
-                accumulate(&mut self.sums[i], net, token, 1.0);
                 touch_pairs(&mut self.pair[i], net, token, &self.active[i], 1.0);
                 touch_moment(&mut self.moment[i], net, token, 1.0);
                 touch_field(&mut self.field[i], net, token, 1.0);
@@ -332,40 +329,111 @@ impl Accumulator {
     }
 }
 
-/// Add or subtract one feature's powers, in place.
+/// Take the powers of the `removed` features' rows out of `sums` and put the
+/// `added` ones in, in that order, in place.
 ///
-/// `sign` is `±1`, and the subtraction is exact in the sense that matters:
-/// `add` then `sub` of the same row restores the sum bit-for-bit only up to
-/// f32 rounding, which is why the KP and HalfKP shapes always diff against a
-/// list they hold rather than composing many small deltas blindly. The token
-/// shapes do compose them, from the parent's accumulator at every node, and
-/// the search seeds the root with a fresh [`Accumulator::refresh`] at the
-/// start of every search.
-fn accumulate(sums: &mut [f32], net: &SymNetwork, feature: FeatureIndex, sign: f32) {
-    let row = &net.embed[feature as usize * DIM..(feature as usize + 1) * DIM];
-    let base = group(feature) * ORDER * DIM;
-    for (channel, &value) in row.iter().enumerate() {
-        let mut power = value;
-        for k in 0..ORDER {
-            sums[base + k * DIM + channel] += sign * power;
-            power *= value;
+/// The subtraction is exact in the sense that matters: `add` then `sub` of the
+/// same row restores the sum bit-for-bit only up to f32 rounding, which is why
+/// the KP and HalfKP shapes always diff against a list they hold rather than
+/// composing many small deltas blindly. The token shapes do compose them, from
+/// the parent's accumulator at every node, and the search seeds the root with a
+/// fresh [`Accumulator::refresh`] at the start of every search.
+///
+/// Eight channels at a time, each group's sums read once, taken through every
+/// feature in turn and written once, where doing a feature at a time reads and
+/// writes all of `sums` for each. A channel sees what it always saw — for each
+/// feature in order, `sums_k += sign · v^k` and then the power raised by one more
+/// multiplication by `v`, `k` from one to `ORDER` — so the sums are the same bits.
+fn accumulate(sums: &mut [f32], embed: &[f32], removed: &[FeatureIndex], added: &[FeatureIndex]) {
+    const LANES: usize = 8;
+    const _: () = assert!(
+        DIM.is_multiple_of(LANES),
+        "channels come in whole groups of eight"
+    );
+    debug_assert_eq!(sums.len(), ORDER * DIM);
+    let row = |feature: FeatureIndex, at: usize| -> [f32; LANES] {
+        let base = feature as usize * DIM + at;
+        embed[base..base + LANES]
+            .try_into()
+            .expect("a group of eight")
+    };
+    for at in (0..DIM).step_by(LANES) {
+        let mut group = [[0.0f32; LANES]; ORDER];
+        for (k, sum) in group.iter_mut().enumerate() {
+            sum.copy_from_slice(&sums[k * DIM + at..k * DIM + at + LANES]);
+        }
+        for (features, sign) in [(removed, -1.0f32), (added, 1.0f32)] {
+            for &feature in features {
+                let value = row(feature, at);
+                let mut power = value;
+                for sum in &mut group {
+                    for lane in 0..LANES {
+                        sum[lane] += sign * power[lane];
+                    }
+                    for lane in 0..LANES {
+                        power[lane] *= value[lane];
+                    }
+                }
+            }
+        }
+        for (k, sum) in group.iter().enumerate() {
+            sums[k * DIM + at..k * DIM + at + LANES].copy_from_slice(sum);
         }
     }
 }
 
-/// Which group of power sums a feature goes into: always the first, unless the
-/// shape is split by owner, in which case the second takes the opponent's.
-#[cfg(feature = "sym_token")]
-#[inline]
-fn group(feature: FeatureIndex) -> usize {
-    if SPLIT { theirs(feature) } else { 0 }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// The KP and HalfKP spaces have no `split`: their numbering says nothing about
-/// whose a feature is.
-#[cfg(not(feature = "sym_token"))]
-#[inline]
-fn group(_feature: FeatureIndex) -> usize {
-    const { assert!(!SPLIT) };
-    0
+    /// One feature at a time over the whole row, with the order as the inner loop:
+    /// the form the grouped pass replaced, kept to hold it to the same bits.
+    fn one_at_a_time(sums: &mut [f32], embed: &[f32], feature: FeatureIndex, sign: f32) {
+        let row = &embed[feature as usize * DIM..(feature as usize + 1) * DIM];
+        for (channel, &value) in row.iter().enumerate() {
+            let mut power = value;
+            for k in 0..ORDER {
+                sums[k * DIM + channel] += sign * power;
+                power *= value;
+            }
+        }
+    }
+
+    #[test]
+    fn a_batch_of_features_is_the_features_one_at_a_time_to_the_last_bit() {
+        // A table of values of the size the embeddings have, spread either side of
+        // zero; a feature is a row of it.
+        let tokens = 64;
+        let mut state = 11u64;
+        let embed: Vec<f32> = (0..tokens * DIM)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                ((state >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * 1.2
+            })
+            .collect();
+        let mut pick = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            ((state >> 33) as usize % tokens) as FeatureIndex
+        };
+        for round in 0..200 {
+            let removed: Vec<FeatureIndex> = (0..round % 3).map(|_| pick()).collect();
+            let added: Vec<FeatureIndex> = (0..round % 5).map(|_| pick()).collect();
+            let mut want = vec![0.25f32; ORDER * DIM];
+            let mut got = want.clone();
+            for &feature in &removed {
+                one_at_a_time(&mut want, &embed, feature, -1.0);
+            }
+            for &feature in &added {
+                one_at_a_time(&mut want, &embed, feature, 1.0);
+            }
+            accumulate(&mut got, &embed, &removed, &added);
+            for (at, (g, w)) in got.iter().zip(&want).enumerate() {
+                assert_eq!(g.to_bits(), w.to_bits(), "round {round} entry {at}");
+            }
+        }
+    }
 }

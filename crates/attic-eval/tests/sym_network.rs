@@ -1,15 +1,15 @@
 //! Loading and evaluating one of Manaka's own networks from a file.
 //!
-//! Gated on `ATTIC_SYM_MNW` naming a `ModelType=SYM…` file that matches
-//! whichever `sym_*` shape the crate was built with. These are training
+//! Gated on `ATTIC_SYM_MNW` naming a `ModelType=SYNN…` file that matches
+//! whichever `synn_*` shape the crate was built with. These are training
 //! artefacts and none of them live in the repository; `src/manaka/tests/` is
 //! what covers every shape without one.
 //!
-//! The variable keeps its name from when the file was Manaka's `MNW1`: what it
-//! names now is the `nn.bin` that `manaka-train export-nnue` writes.
+//! The variable keeps the name it had when the networks were `SYM…` files: what it
+//! names is the `nn.bin` that `manaka-train export-nnue` writes.
 
 #![cfg(feature = "sym")]
-// `PAIR`, `MEAN`, `LSE` and `SCALE_LEN` are zero in a shape without that block,
+// `PAIR`, `MOMENT_LEN` and `FIELD_LEN` are zero in a shape without that block,
 // and this file is compiled for every shape. A comparison with one or a range
 // ending at one is then decided before the code runs, which is what these three
 // lints report; each use below is guarded by the constant it would be absurd
@@ -25,8 +25,8 @@ mod sym_common;
 use std::path::PathBuf;
 
 use attic_eval::manaka::{
-    Accumulator, DIM, FEATURE_LEN, FIELD, FIELD_LEN, GROUPS, HEAD, HIDDEN, HIDDEN2, LSE, MEAN,
-    MOMENT, MOMENT_LEN, ORDER, PAIR, PAIR_ROWS, SCALE_LEN, TOKENS, evaluate_value, load_network,
+    Accumulator, DIM, FEATURE_LEN, FIELD, FIELD_LEN, HEAD, HIDDEN, HIDDEN2, MOMENT, MOMENT_LEN,
+    ORDER, PAIR, PAIR_ROWS, TOKENS, evaluate_value, load_network,
 };
 use attic_state::{Color, Position};
 use sym_common::{network_path, relative_drift};
@@ -50,26 +50,18 @@ fn a_trained_network_loads_at_the_declared_shape() {
     assert_eq!(net.value_w.len(), HEAD);
     assert_eq!(net.pair_gamma.len(), PAIR);
     assert_eq!(net.pair.len(), PAIR_ROWS * PAIR);
-    assert_eq!(net.scale_gamma.len(), SCALE_LEN);
     assert_eq!(net.moment_gamma.len(), MOMENT_LEN);
     assert_eq!(net.moment_embed.len(), TOKENS * MOMENT);
     assert_eq!(net.field_gamma.len(), FIELD);
     assert_eq!(net.field.len(), TOKENS * FIELD_LEN);
-    // The log-sum-exp channels hold `exp θ`, which is positive; a reader that
-    // forgot to exponentiate the scaled file's `θ` would leave negative ones.
-    if LSE > 0 {
-        let lowest = net
-            .pair
-            .chunks_exact(PAIR)
-            .flat_map(|row| row[MEAN..].iter().copied())
-            .fold(f32::INFINITY, f32::min);
-        assert!(lowest > 0.0, "a log-sum-exp channel is {lowest}");
-    }
 }
 
-/// The forward pass runs on the opening position and lands inside `tanh`'s
-/// range. A network that read its weights at the wrong stride would still
-/// produce a number, but almost never a finite one in `[-1, 1]`.
+/// The forward pass runs on the opening position and lands inside what bounds it.
+/// A network that read its weights at the wrong stride would still produce a
+/// number, but almost never a finite one inside the bound.
+///
+/// Every activation is clipped to `[0, 1]`, so the value is at most the sum of the
+/// value row's magnitudes and the bias.
 #[test]
 fn the_forward_pass_produces_a_bounded_value() {
     let Some(path) = network_path() else {
@@ -79,7 +71,8 @@ fn the_forward_pass_produces_a_bounded_value() {
     let pos = Position::startpos();
     let value = evaluate_value(&net, &pos);
     assert!(value.is_finite(), "value was {value}");
-    assert!((-1.0..=1.0).contains(&value), "value was {value}");
+    let reach = net.value_b.abs() + net.value_w.iter().map(|w| w.abs()).sum::<f32>();
+    assert!(value.abs() <= reach, "value was {value}, reach {reach}");
 }
 
 /// The incremental path and a rebuild agree, over a played-out game.
@@ -127,7 +120,7 @@ fn the_incremental_path_matches_a_rebuild() {
         for color in [Color::Black, Color::White] {
             let a = derived.perspective(color);
             let b = rebuilt.perspective(color);
-            for block in 0..GROUPS * ORDER {
+            for block in 0..ORDER {
                 let span = block * DIM..(block + 1) * DIM;
                 let scale = b[span.clone()].iter().fold(0.0f32, |m, v| m.max(v.abs()));
                 let worst = a[span.clone()]
@@ -182,14 +175,8 @@ fn the_incremental_path_matches_a_rebuild() {
 /// rounding and nothing else. Point `ATTIC_SYM_NN_F32` at the `--f32` export
 /// of whatever `ATTIC_SYM_MNW` names.
 ///
-/// This measures and does not judge unless asked to, because the answer depends
-/// on the encoding. The first one (`ModelType=SYM`) fails any bound worth
-/// stating on the trained nets measured: their dense weights reach 28 where an
-/// `i8` at scale 64 stops at 1.98, and the value row sums terms hundreds large
-/// into a result near one, so a clamp anywhere in it moves the answer. A
-/// `SYMscaled` file keeps within 0.03 of the f32 one on the same nets over 4,000
-/// positions. `ATTIC_SYM_QUANT_TOLERANCE` sets a bound for a file that is
-/// expected to meet one.
+/// This measures and does not judge unless asked to: `ATTIC_SYM_QUANT_TOLERANCE`
+/// sets a bound for a file that is expected to meet one.
 #[test]
 fn the_quantisation_moves_the_value_only_slightly() {
     let (Some(q), Some(f)) = (
@@ -215,21 +202,4 @@ fn the_quantisation_moves_the_value_only_slightly() {
             "quantisation moved the value from {b} to {a}"
         );
     }
-}
-
-/// The opening is not priced at a saturation.
-///
-/// `tanh` hides a great deal: weights read at the wrong stride tend to blow
-/// the pre-activation sum up until the value pins to ±1, which
-/// [`the_forward_pass_produces_a_bounded_value`] would still accept. A network
-/// that is actually reading its own table lands well inside the range on a
-/// position it was trained to call roughly even.
-#[test]
-fn the_opening_is_not_a_saturated_value() {
-    let Some(path) = network_path() else {
-        return;
-    };
-    let net = load_network(&path).expect("the file loads");
-    let value = evaluate_value(&net, &Position::startpos());
-    assert!(value.abs() < 0.999, "value saturated at {value}");
 }

@@ -1,7 +1,7 @@
 //! Reading the `nn.bin` container: the header and the architecture string, and
-//! which of the three encodings of its numbers the file is in.
+//! which of the two encodings of its numbers the file is in.
 //!
-//! One layout, three encodings, and `ModelType` in the architecture string says
+//! One layout, two encodings, and `ModelType` in the architecture string says
 //! which. Each encoding has a reader of its own in `body.rs` that takes the body
 //! from the first section to the last, so a new encoding is one more function
 //! there and one more arm of the `match` in [`parse_network`]; nothing else knows
@@ -12,12 +12,11 @@ use std::path::Path;
 
 use crate::types::NnueError;
 
-use super::body::{read_f32, read_legacy, read_scaled};
+use super::body::{read_f32, read_scaled};
 use super::reader::Reader;
 use super::{
     DIM, FEATURE_LEN, FIELD, FIELD_AT, FIELD_LEN, HAS_FIELD, HAS_MOMENT, HAS_PAIR, HIDDEN, HIDDEN2,
-    KS, LSE, MEAN, MOMENT, MOMENT_AT, MOMENT_LEN, ORDER, PAIR, PAIR_AT, SCALE_LEN, SPLIT,
-    SymNetwork, TOKENS,
+    MOMENT, MOMENT_AT, MOMENT_LEN, ORDER, PAIR, PAIR_AT, SymNetwork, TOKENS,
 };
 
 /// The container's version word, shared with every `nn.bin` YaneuraOu writes.
@@ -27,15 +26,7 @@ use super::{
 /// open both and decide from the header which it is holding.
 pub(super) const VERSION: u32 = 0x7AF3_2F16;
 
-/// What one embedding channel was multiplied by on its way to `i16`, in the
-/// legacy encoding. `SYMscaled` carries a scale per group instead.
-pub(super) const EMBED_SCALE: f32 = 512.0;
-
-/// What a dense weight or bias was multiplied by in the legacy encoding: six
-/// bits of fraction, the same `1 << kWeightScaleBits` NNUE uses.
-pub(super) const WEIGHT_SCALE: f32 = 64.0;
-
-/// How the numbers of a file are stored. The three differ in the `ModelType`
+/// How the numbers of a file are stored. The two differ in the `ModelType`
 /// word of the architecture string and nowhere else.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Encoding {
@@ -44,31 +35,16 @@ pub(super) enum Encoding {
     Scaled,
     /// Every array `f32`, exactly as the trainer holds it.
     F32,
-    /// `i16` embedding at one scale and `i8`/`i32` dense arrays at another. It
-    /// clamps any trained weight past 1.98, so it is read for the files already
-    /// written and no longer produced.
-    Legacy,
 }
 
 impl Encoding {
-    pub(super) const ALL: [Encoding; 3] = [Encoding::Scaled, Encoding::F32, Encoding::Legacy];
-
-    /// Whether a file of this shape can be in this encoding.
-    ///
-    /// The legacy one has no section for the pair table, the second moment, the
-    /// square field or the kept magnitudes' gains, and Manaka's writer refuses a
-    /// net with any of them rather than leave them out, so there is no such file
-    /// to read: matching one would be reading a string no exporter wrote.
-    pub(super) fn exists(self) -> bool {
-        self != Encoding::Legacy || !(HAS_PAIR || HAS_MOMENT || HAS_FIELD || KS)
-    }
+    pub(super) const ALL: [Encoding; 2] = [Encoding::Scaled, Encoding::F32];
 
     /// The `ModelType` word.
     pub(super) fn model_type(self) -> &'static str {
         match self {
-            Encoding::Scaled => "SYMscaled",
-            Encoding::F32 => "SYMf32",
-            Encoding::Legacy => "SYM",
+            Encoding::Scaled => "SYNNscaled",
+            Encoding::F32 => "SYNNf32",
         }
     }
 }
@@ -82,9 +58,11 @@ impl Encoding {
 /// (`sym_arch_string`), parentheses included: it closes one fewer than it
 /// opens, and a reader that balanced them would refuse every file.
 ///
-/// The second hidden layer is spelled out when there is one. It is a layer in
-/// the file, not a detail of it: a name that left it out would describe a net
-/// whose value row is `HIDDEN` wide when it is `HIDDEN2` wide.
+/// The words are the names of what the arithmetic is, as `PowerSum` and `Newton`
+/// are: `ClipScaled` for each block, which is multiplied by its gain and clipped
+/// to `[0, 1]`, and `ClippedReLU` after each hidden layer. The second hidden layer
+/// is a layer in the file, not a detail of it: a name that left it out would
+/// describe a net whose value row is `HIDDEN` wide when it is `HIDDEN2` wide.
 pub(super) fn expected_arch(encoding: Encoding) -> String {
     // Manaka's own space is the one that does not name its row count: the
     // exporter writes `Tokens[<d>x2]`, and the 2,344 is implied by the word.
@@ -99,52 +77,36 @@ pub(super) fn expected_arch(encoding: Encoding) -> String {
     let block = ORDER * DIM;
 
     // The head's input, block by block, as the exporter spells them. The power
-    // block comes first and is wrapped when it is split; the others follow in
-    // the order `shape.rs` lays them out, each only if the shape has it.
-    let power = format!(
-        "RmsNormScaled[{block}](Newton[{ORDER}](PowerSum[{ORDER}](InputSlice[{block}(0:{block})])))"
+    // block comes first and the others follow in the order `shape.rs` lays them
+    // out, each only if the shape has it.
+    let mut input = format!(
+        "ClipScaled[{block}](Newton[{ORDER}](PowerSum[{ORDER}](InputSlice[{block}(0:{block})])))"
     );
-    let mut input = if SPLIT {
-        format!("OwnerSplit[2]({power})")
-    } else {
-        power
-    };
-    if MEAN != 0 {
-        let end = PAIR_AT + MEAN;
-        input += &format!(
-            ",RmsNormScaled[{MEAN}](PairSum[{MEAN}](InputSlice[{MEAN}({PAIR_AT}:{end})]))"
-        );
+    if HAS_PAIR {
+        let end = PAIR_AT + PAIR;
+        input +=
+            &format!(",ClipScaled[{PAIR}](PairSum[{PAIR}](InputSlice[{PAIR}({PAIR_AT}:{end})]))");
     }
-    if LSE != 0 {
-        let (start, end) = (PAIR_AT + MEAN, PAIR_AT + PAIR);
-        input += &format!(",LogSumExp[{LSE}](PairSum[{LSE}](InputSlice[{LSE}({start}:{end})]))");
-    }
-    if MOMENT != 0 {
+    if HAS_MOMENT {
         let end = MOMENT_AT + MOMENT_LEN;
         input += &format!(
-            ",RmsNormScaled[{MOMENT_LEN}](SecondMoment[{MOMENT}](InputSlice[{MOMENT_LEN}({MOMENT_AT}:{end})]))"
+            ",ClipScaled[{MOMENT_LEN}](SecondMoment[{MOMENT}](InputSlice[{MOMENT_LEN}({MOMENT_AT}:{end})]))"
         );
     }
-    if FIELD != 0 {
+    if HAS_FIELD {
         let end = FIELD_AT + FIELD_LEN;
         input += &format!(
-            ",RmsNormScaled[{FIELD_LEN}](SquareField[{FIELD}](InputSlice[{FIELD_LEN}({FIELD_AT}:{end})]))"
+            ",ClipScaled[{FIELD_LEN}](SquareField[{FIELD}](InputSlice[{FIELD_LEN}({FIELD_AT}:{end})]))"
         );
-    }
-    if KS {
-        input += &format!(",KeepScale[{SCALE_LEN}]");
     }
 
     // One `)` short, as the exporter's is: the outermost `Dense` is never
-    // closed. What is closed here is the first layer and its ReLU, and with a
-    // second layer, that one and its ReLU too.
-    let network = match HIDDEN2 {
-        0 => format!("Dense[1<-{HIDDEN}](ReLU[{HIDDEN}](Dense[{HIDDEN}<-{FEATURE_LEN}]({input}))"),
-        _ => format!(
-            "Dense[1<-{HIDDEN2}](ReLU[{HIDDEN2}](Dense[{HIDDEN2}<-{HIDDEN}]\
-             (ReLU[{HIDDEN}](Dense[{HIDDEN}<-{FEATURE_LEN}]({input}))))"
-        ),
-    };
+    // closed. What is closed here is the first layer and its activation, and the
+    // second layer and its activation too.
+    let network = format!(
+        "Dense[1<-{HIDDEN2}](ClippedReLU[{HIDDEN2}](Dense[{HIDDEN2}<-{HIDDEN}]\
+         (ClippedReLU[{HIDDEN}](Dense[{HIDDEN}<-{FEATURE_LEN}]({input}))))"
+    );
     format!("ModelType={model};Features={features}{DIM}x2],Network={network}")
 }
 
@@ -163,7 +125,7 @@ pub(super) fn arch_hash(arch: &str) -> u32 {
 /// Read a network from the `nn.bin` container, checking the architecture
 /// string before a single weight.
 ///
-/// The header is the whole of the identification: `ModelType=SYM…` says this is
+/// The header is the whole of the identification: `ModelType=SYNN…` says this is
 /// not one of YaneuraOu's, and the rest of the string spells the structure. A
 /// file for a different shape — another width, another feature space, another
 /// order — produces a different string and is refused here rather than read at
@@ -199,7 +161,6 @@ pub(super) fn parse_network(bytes: &[u8]) -> Result<SymNetwork, NnueError> {
     })?;
     let Some(encoding) = Encoding::ALL
         .into_iter()
-        .filter(|e| e.exists())
         .find(|e| arch == expected_arch(*e))
     else {
         return Err(NnueError::InvalidFormat {
@@ -224,7 +185,6 @@ pub(super) fn parse_network(bytes: &[u8]) -> Result<SymNetwork, NnueError> {
     let net = match encoding {
         Encoding::Scaled => read_scaled(&mut r, want_hash)?,
         Encoding::F32 => read_f32(&mut r, want_hash)?,
-        Encoding::Legacy => read_legacy(&mut r, want_hash)?,
     };
 
     if r.pos != bytes.len() {

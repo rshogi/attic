@@ -1,11 +1,11 @@
 //! What a table over pairs of tokens needs from a token's number: which row a
-//! pair is, which side owns a token, and the add-or-subtract of the rows of one
-//! token against all the others present.
+//! pair is, and the add-or-subtract of the rows of one token against all the
+//! others present.
 //!
 //! The numbering itself is `tokens.rs`'s; this reads it and does not extend it,
 //! so that the one file that knows how a token is numbered stays the only one.
 
-use crate::tokens::{BOARD_ROWS, FeatureIndex, HAND_SIDE, SQUARES};
+use crate::tokens::FeatureIndex;
 
 use super::accumulator::PairSum;
 use super::{PAIR, SymNetwork, TOKENS};
@@ -27,24 +27,6 @@ pub(super) fn pair_row(a: FeatureIndex, b: FeatureIndex) -> usize {
     let (lo, hi) = if a < b { (a, b) } else { (b, a) };
     let (lo, hi) = (lo as usize, hi as usize);
     lo * (2 * TOKENS - lo - 1) / 2 + (hi - lo - 1)
-}
-
-/// Whether the opponent of the frame owns this token: `0` for the frame's own
-/// side, `1` for the other. The ownership bit is in the number already, since a
-/// token is numbered relative to the frame it is read from.
-///
-/// This is `split`'s group: the power sums of the frame's own pieces and of the
-/// other side's are kept apart. Hand tokens are owned like any other.
-#[inline]
-pub(super) fn theirs(token: FeatureIndex) -> usize {
-    let token = token as usize;
-    if token < BOARD_ROWS {
-        // `(kind · 2 + theirs) · 81 + square`.
-        (token / SQUARES) % 2
-    } else {
-        // `BOARD_ROWS + theirs · 38 + offset`.
-        (token - BOARD_ROWS) / HAND_SIDE
-    }
 }
 
 /// Add (`sign = 1`) or subtract (`sign = −1`) the pair rows of `token` against

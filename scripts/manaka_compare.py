@@ -5,17 +5,17 @@
                       --sfens FILE [--limit N]
 
 `--dump-eval` is Manaka's f32 reference (`examples/dump_eval` in `manaka-train`);
-`--attic-dump` is this repository's `sym_dump` (for a `sym_*` shape) or
+`--attic-dump` is this repository's `sym_dump` (for a `synn_*` shape) or
 `nnue_dump` (for an `nnue_*` one) example, built for the shape the files are of:
 `cargo build --release -p attic-eval --features <shape> --example sym_dump`.
 `--mnw` is the trainer's file and `--nn` is what `manaka-train export-nnue`
 wrote from it, quantised or with `--f32`.
 
 Prints one line: the number of positions, then the largest and the mean
-absolute difference in `value` (after the `tanh`) and in `pre` (before it),
-attic against the reference. The pre-activation is reported because the `tanh`
-flattens a large error near its ends: a difference that vanishes in `value` can
-still be a wrong network.
+absolute difference in `value` and in `pre`, attic against the reference. Both
+tools print the two columns, and for a `synn_*` shape each is one number, so the
+two differences are the same; the script compares the columns as the tools give
+them rather than assume it.
 
 Standard library only, and no network file is read here: both programs read
 their own. Nothing in this script is run by CI, since the weights it needs

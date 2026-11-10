@@ -1,12 +1,12 @@
 //! A trained network carried down long random games by the search's own path.
 //!
-//! Gated on `ATTIC_SYM_MNW` naming a `ModelType=SYM…` file that matches
-//! whichever `sym_*` shape the crate was built with, as `sym_network.rs` is, and
+//! Gated on `ATTIC_SYM_MNW` naming a `ModelType=SYNN…` file that matches
+//! whichever `synn_*` shape the crate was built with, as `sym_network.rs` is, and
 //! ignored by default: it is the slowest test here, and it needs a file none of
 //! which live in the repository.
 
 #![cfg(feature = "sym")]
-// `PAIR`, `MEAN`, `MOMENT_LEN` and `FIELD_LEN` are zero in a shape without that
+// `PAIR`, `MOMENT_LEN` and `FIELD_LEN` are zero in a shape without that
 // block, and this file is compiled for every shape. A comparison with one or a
 // range ending at one is then decided before the code runs, which is what these
 // lints report; each use below is guarded by the constant it would be absurd
@@ -20,8 +20,8 @@
 mod sym_common;
 
 use attic_eval::manaka::{
-    Accumulator, DIM, FIELD_LEN, GROUPS, MEAN, MOMENT_LEN, ORDER, PAIR, evaluate_value,
-    evaluate_value_with, load_network,
+    Accumulator, DIM, FIELD_LEN, MOMENT_LEN, ORDER, PAIR, evaluate_value, evaluate_value_with,
+    load_network,
 };
 use attic_eval::{FinnyCache, MoveDelta, evaluate, evaluate_with};
 use attic_state::{Color, Position};
@@ -41,13 +41,9 @@ use sym_common::{network_path, relative_drift};
 /// iteration and so never carries a sum nearly that far; this is the worst it
 /// could be. `ATTIC_SYM_PLIES` sets the length.
 ///
-/// A shape with a pair table is held to two more things, and prints how close
-/// it came. Its sums are compared as the search sees them, and its log-sum-exp
-/// channels are compared after the logarithm, which is where a large `exp θ`
-/// that came and went would show as an error in a small sum left behind:
-/// `docs/network.md` asks for under `1e-4` there. A shape with a second moment or
-/// a square field has those sums held to the same bound and prints how close
-/// they came too.
+/// A shape with a pair table has its sums compared as the search sees them and
+/// prints how close it came. A shape with a second moment or a square field has
+/// those sums held to the same bound and prints how close they came too.
 ///
 /// The bound is relative to the largest sum of its block, for the reason the
 /// test above gives. It also compares what the search would be handed, the
@@ -64,7 +60,7 @@ fn the_search_path_stays_with_a_rebuild_over_long_random_games() {
     let net = load_network(&path).expect("the file loads");
     let mut cache = FinnyCache::new();
     let (mut worst_relative, mut worst_score) = (0.0f32, 0i32);
-    let (mut worst_pair, mut worst_ln, mut worst_value) = (0.0f32, 0.0f32, 0.0f32);
+    let (mut worst_pair, mut worst_value) = (0.0f32, 0.0f32);
     let (mut worst_moment, mut worst_field) = (0.0f32, 0.0f32);
     let mut moves = 0usize;
     let plies = std::env::var("ATTIC_SYM_PLIES")
@@ -101,7 +97,7 @@ fn the_search_path_stays_with_a_rebuild_over_long_random_games() {
             for color in [Color::Black, Color::White] {
                 let a = derived.perspective(color);
                 let b = rebuilt.perspective(color);
-                for block in 0..GROUPS * ORDER {
+                for block in 0..ORDER {
                     let span = block * DIM..(block + 1) * DIM;
                     let scale = b[span.clone()].iter().fold(0.0f32, |m, v| m.max(v.abs()));
                     let drift = a[span.clone()]
@@ -129,14 +125,6 @@ fn the_search_path_stays_with_a_rebuild_over_long_random_games() {
                          drifted {drift} from a rebuild, against a sum of {}",
                         pb[channel]
                     );
-                    if channel >= MEAN {
-                        let ln = (pa[channel].max(1e-6).ln() - pb[channel].max(1e-6).ln()).abs();
-                        worst_ln = worst_ln.max(ln);
-                        assert!(
-                            ln < 1e-4,
-                            "seed {seed}, ply {ply}, {color:?}, channel {channel}: ln drifted {ln}"
-                        );
-                    }
                 }
             }
             // The moment and the field are carried the same way, and held to the
@@ -169,8 +157,7 @@ fn the_search_path_stays_with_a_rebuild_over_long_random_games() {
     );
     if PAIR > 0 {
         eprintln!(
-            "pair sums: worst relative drift {worst_pair:.3e}; log-sum-exp ln drift \
-             {worst_ln:.3e}; value drift {worst_value:.3e}"
+            "pair sums: worst relative drift {worst_pair:.3e}; value drift {worst_value:.3e}"
         );
     }
     if MOMENT_LEN > 0 {

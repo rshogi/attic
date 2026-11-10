@@ -1,5 +1,5 @@
 //! The cursor the readers share: little-endian words, `f32` arrays, and the
-//! `SYMscaled` arrays with a scale per group. It knows how a number is stored
+//! `SYNNscaled` arrays with a scale per group. It knows how a number is stored
 //! and nothing about which array comes next; that is each encoding's reader.
 
 use crate::types::NnueError;
@@ -39,31 +39,7 @@ impl<'a> Reader<'a> {
         Ok(words.iter().map(|c| f32::from_le_bytes(*c)).collect())
     }
 
-    /// A legacy `i16` array, divided by the one constant it was multiplied by.
-    pub(super) fn i16s_scaled(&mut self, n: usize, scale: f32) -> Result<Vec<f32>, NnueError> {
-        let s = self.take(n * 2)?;
-        let (pairs, _) = s.as_chunks::<2>();
-        Ok(pairs
-            .iter()
-            .map(|c| f32::from(i16::from_le_bytes(*c)) / scale)
-            .collect())
-    }
-
-    pub(super) fn i8s_scaled(&mut self, n: usize, scale: f32) -> Result<Vec<f32>, NnueError> {
-        let s = self.take(n)?;
-        Ok(s.iter().map(|&b| f32::from(b as i8) / scale).collect())
-    }
-
-    pub(super) fn i32s_scaled(&mut self, n: usize, scale: f32) -> Result<Vec<f32>, NnueError> {
-        let s = self.take(n * 4)?;
-        let (words, _) = s.as_chunks::<4>();
-        Ok(words
-            .iter()
-            .map(|c| i32::from_le_bytes(*c) as f32 / scale)
-            .collect())
-    }
-
-    /// `n` scales: the head of a `SYMscaled` array. A scale is read, never
+    /// `n` scales: the head of a `SYNNscaled` array. A scale is read, never
     /// computed, and a file whose scale is not a positive number would turn
     /// every element of its group into an infinity or a NaN, so that is a
     /// refusal here rather than a value that looks like a network.
@@ -77,7 +53,7 @@ impl<'a> Reader<'a> {
         }
     }
 
-    /// A `SYMscaled` array of `rows × cols` whose group is the **column**: one
+    /// A `SYNNscaled` array of `rows × cols` whose group is the **column**: one
     /// scale per column, then the `i16` elements row-major, element `i` read as
     /// `q[i] / scale[i mod cols]`. The embedding is stored this way, a scale per
     /// channel. An empty array stores nothing, not even a scale.
@@ -104,7 +80,7 @@ impl<'a> Reader<'a> {
         Ok(out)
     }
 
-    /// A `SYMscaled` array of `rows × cols` whose group is the **row**: one scale
+    /// A `SYNNscaled` array of `rows × cols` whose group is the **row**: one scale
     /// per row, element `i` read as `q[i] / scale[i div cols]`. The dense
     /// weights are stored this way, a scale per output unit.
     pub(super) fn scaled_per_row(

@@ -48,8 +48,8 @@ env:
 
 jobs:
   # Which network shapes to build. A pull request builds one, to keep the check
-  # cheap; everything else builds all five YaneuraOu-family shapes. The two
-  # `sym_` shapes are Manaka's own and are not shipped.
+  # cheap; everything else builds all five YaneuraOu-family shapes. The
+  # `synn_` shapes are Manaka's own and are not shipped.
   plan:
     runs-on: ubuntu-22.04
     outputs:
