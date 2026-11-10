@@ -135,7 +135,13 @@ pub fn load_network(path: &Path) -> Result<SymNetwork, NnueError> {
         path: path.display().to_string(),
         source,
     })?;
-    parse_network(&bytes)
+    let mut net = parse_network(&bytes)?;
+    // An experiment's switch and not a setting: `ATTIC_SYNN_W1=i16` puts the first
+    // layer on `i16` weights (see `SymNetwork::use_i16_w1`), and anything else, or
+    // nothing, leaves it on `f32`. Read here and not in `parse_network` so that the
+    // tests, which read bytes they made, never see it.
+    net.use_i16_w1(std::env::var("ATTIC_SYNN_W1").is_ok_and(|v| v.eq_ignore_ascii_case("i16")));
+    Ok(net)
 }
 
 /// [`load_network`] from the bytes of the file, so that a test can read a

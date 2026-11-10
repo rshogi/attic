@@ -261,7 +261,10 @@ pub(super) fn value_from_sums(net: &SymNetwork, acc: &Accumulator, stm: Color) -
     features_from_sums(net, acc, stm, &mut features);
 
     let mut hidden = [0.0f32; HIDDEN];
-    dense_clip(&net.w1, &net.b1, &features, &mut hidden);
+    match &net.qw1 {
+        Some(q) => q.layer_clip(&features, &net.b1, &mut hidden),
+        None => dense_clip(&net.w1, &net.b1, &features, &mut hidden),
+    }
 
     let mut second = [0.0f32; HIDDEN2];
     dense_clip(&net.w2, &net.b2, &hidden, &mut second);

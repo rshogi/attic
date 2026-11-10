@@ -63,6 +63,7 @@ pub(super) fn read_scaled(r: &mut Reader<'_>, hash: u32) -> Result<SymNetwork, N
         moment_embed,
         field_gamma,
         field,
+        qw1: None,
     })
 }
 
@@ -151,5 +152,6 @@ pub(super) fn read_f32(r: &mut Reader<'_>, hash: u32) -> Result<SymNetwork, Nnue
         moment_embed,
         field_gamma,
         field,
+        qw1: None,
     })
 }

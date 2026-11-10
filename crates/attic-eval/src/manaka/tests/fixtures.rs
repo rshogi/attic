@@ -45,6 +45,7 @@ pub(super) fn synthetic() -> &'static SymNetwork {
             moment_embed: rng.fill(TOKENS * MOMENT, 0.6),
             field_gamma: gains(&mut rng, FIELD, Gain::FIELD),
             field: rng.fill(TOKENS * FIELD_LEN, 0.3),
+            qw1: None,
         }
     })
 }

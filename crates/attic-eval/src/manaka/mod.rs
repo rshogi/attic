@@ -87,6 +87,7 @@ mod loader;
 mod moment;
 #[cfg(feature = "sym_token")]
 mod pair;
+mod qdense;
 mod reader;
 mod shape;
 #[cfg(test)]
@@ -98,6 +99,7 @@ pub use accumulator::Accumulator;
 pub use cache::FinnyCache;
 use forward::value_from_sums;
 pub use loader::{load_network, load_network_with_warnings};
+pub use qdense::QuantW1;
 pub use shape::{
     BLOCK_LEN, DIM, FEATURE_LEN, FIELD, FIELD_AT, FIELD_LEN, HAS_FIELD, HAS_MOMENT, HAS_PAIR, HEAD,
     HIDDEN, HIDDEN2, MOMENT, MOMENT_AT, MOMENT_LEN, ORDER, PAIR, PAIR_AT, PAIR_ROWS, POWER_LEN,
@@ -144,6 +146,10 @@ pub struct SymNetwork {
     /// `[TOKENS][SQUARES][FIELD]`: the entry for token `t`, square slot `s` and
     /// channel `c` is at `t · FIELD_LEN + s · FIELD + c`. Empty without a field.
     pub field: Vec<f32>,
+    /// `w1` as `i16`, when the first layer is to run on an integer dot product.
+    /// `None` is the `f32` layer, which is the definition and the default; see
+    /// [`SymNetwork::use_i16_w1`].
+    pub qw1: Option<QuantW1>,
 }
 
 /// Static evaluation of `pos` from the side to move's perspective, in NNUE's
@@ -211,7 +217,19 @@ impl SymNetwork {
             moment_embed: self.moment_embed.clone(),
             field_gamma: self.field_gamma.clone(),
             field: self.field.clone(),
+            qw1: self.qw1.clone(),
         }
+    }
+
+    /// Run the first layer on `i16` weights and an integer dot product (`true`), or
+    /// back on `f32` (`false`).
+    ///
+    /// The `i16` layer is the faster one and not the same number: it carries the
+    /// rounding of the weights to a row's levels and of the input to 1/4096, about
+    /// 0.3 cp on average on trained weights, so it is a switch and not the
+    /// definition. The `f32` weights stay in the network either way.
+    pub fn use_i16_w1(&mut self, on: bool) {
+        self.qw1 = on.then(|| QuantW1::new(&self.w1, HIDDEN, FEATURE_LEN));
     }
 }
 
