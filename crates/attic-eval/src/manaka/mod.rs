@@ -96,6 +96,7 @@ mod moment;
 #[cfg(feature = "sym_token")]
 mod pair;
 mod qdense;
+mod qdense_i8;
 mod reader;
 mod shape;
 #[cfg(test)]
@@ -108,6 +109,7 @@ pub use cache::FinnyCache;
 use forward::value_from_sums;
 pub use loader::{load_network, load_network_with_warnings};
 pub use qdense::QuantW1;
+pub use qdense_i8::QuantW1I8;
 pub use shape::{
     BLOCK_LEN, DIM, FEATURE_LEN, FIELD, FIELD_AT, FIELD_LEN, HAS_FIELD, HAS_MOMENT, HAS_PAIR, HEAD,
     HIDDEN, HIDDEN2, MOMENT, MOMENT_AT, MOMENT_LEN, ORDER, PAIR, PAIR_AT, PAIR_ROWS, POWER_LEN,
@@ -154,11 +156,44 @@ pub struct SymNetwork {
     /// `[TOKENS][SQUARES][FIELD]`: the entry for token `t`, square slot `s` and
     /// channel `c` is at `t · FIELD_LEN + s · FIELD + c`. Empty without a field.
     pub field: Vec<f32>,
-    /// `w1` as `i16`, when the first layer is to run on an integer dot product.
-    /// A network read by [`load_network`] has it unless `ATTIC_SYNN_W1=f32` is set.
-    /// `None` is the `f32` layer, which is the definition the `i16` one is measured
-    /// against; see [`SymNetwork::use_i16_w1`].
-    pub qw1: Option<QuantW1>,
+    /// The first layer the network runs: `w1` itself, or one of the integer layers
+    /// made from it. A network read by [`load_network`] runs the `i16` one unless
+    /// `ATTIC_SYNN_W1` says otherwise; see [`SymNetwork::use_first_layer`].
+    pub first: FirstLayer,
+}
+
+/// The first layer a network runs. The integer layers are made from `w1` and run
+/// in its place; `w1` stays in the network either way.
+#[derive(Clone, Debug)]
+pub enum FirstLayer {
+    /// `w1` as it is: the definition the integer layers are measured against.
+    F32,
+    /// `i16` weights and an integer dot product: about 0.3 cp from `F32` on
+    /// average. What [`load_network`] runs by default.
+    I16(QuantW1),
+    /// `i8` weights against a `u8` input, NNUE's types: 10 to 18 cp from `F32` on
+    /// average, faster again. `ATTIC_SYNN_W1=i8`.
+    I8(QuantW1I8),
+}
+
+/// Which [`FirstLayer`] to make, as `ATTIC_SYNN_W1` names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum W1Precision {
+    F32,
+    I16,
+    I8,
+}
+
+impl W1Precision {
+    /// `f32` and `i8`, in any case, name those two; anything else, or nothing, is
+    /// `i16`, the default.
+    pub fn from_name(name: Option<&str>) -> W1Precision {
+        match name {
+            Some(n) if n.eq_ignore_ascii_case("f32") => W1Precision::F32,
+            Some(n) if n.eq_ignore_ascii_case("i8") => W1Precision::I8,
+            _ => W1Precision::I16,
+        }
+    }
 }
 
 /// Static evaluation of `pos` from the side to move's perspective, in NNUE's
@@ -226,20 +261,26 @@ impl SymNetwork {
             moment_embed: self.moment_embed.clone(),
             field_gamma: self.field_gamma.clone(),
             field: self.field.clone(),
-            qw1: self.qw1.clone(),
+            first: self.first.clone(),
         }
     }
 
-    /// Run the first layer on `i16` weights and an integer dot product (`true`), or
-    /// back on `f32` (`false`).
+    /// Run the first layer at `precision`: `w1` itself, or an integer layer made
+    /// from it.
     ///
-    /// The `i16` layer is the faster one and not the same number: it carries the
-    /// rounding of the weights to a row's levels and of the input to 1/4096, about
-    /// 0.3 cp on average on trained weights. It is what [`load_network`] turns on,
-    /// and the `f32` layer stays the definition it is held to. The `f32` weights
-    /// stay in the network either way.
-    pub fn use_i16_w1(&mut self, on: bool) {
-        self.qw1 = on.then(|| QuantW1::new(&self.w1, HIDDEN, FEATURE_LEN));
+    /// The integer layers are faster and not the same number. The `i16` one carries
+    /// the rounding of the weights to a row's levels and of the input to 1/4096,
+    /// about 0.3 cp on average on trained weights, and is what [`load_network`]
+    /// turns on. The `i8` one rounds the input to 1/127 and each row to 127 levels:
+    /// 10 to 18 cp on average, under one point of win rate, and faster again. The
+    /// `f32` layer stays the definition both are held to, and the `f32` weights stay
+    /// in the network whichever runs.
+    pub fn use_first_layer(&mut self, precision: W1Precision) {
+        self.first = match precision {
+            W1Precision::F32 => FirstLayer::F32,
+            W1Precision::I16 => FirstLayer::I16(QuantW1::new(&self.w1, HIDDEN, FEATURE_LEN)),
+            W1Precision::I8 => FirstLayer::I8(QuantW1I8::new(&self.w1, HIDDEN, FEATURE_LEN)),
+        };
     }
 }
 

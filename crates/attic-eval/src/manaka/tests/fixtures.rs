@@ -7,8 +7,8 @@ use std::sync::OnceLock;
 use attic_state::{Move, Position};
 
 use super::super::{
-    DIM, FEATURE_LEN, FIELD, FIELD_LEN, HEAD, HIDDEN, HIDDEN2, MOMENT, MOMENT_LEN, ORDER, PAIR,
-    PAIR_ROWS, SymNetwork, TOKENS,
+    DIM, FEATURE_LEN, FIELD, FIELD_LEN, FirstLayer, HEAD, HIDDEN, HIDDEN2, MOMENT, MOMENT_LEN,
+    ORDER, PAIR, PAIR_ROWS, SymNetwork, TOKENS,
 };
 
 /// A network no trainer made.
@@ -45,7 +45,7 @@ pub(super) fn synthetic() -> &'static SymNetwork {
             moment_embed: rng.fill(TOKENS * MOMENT, 0.6),
             field_gamma: gains(&mut rng, FIELD, Gain::FIELD),
             field: rng.fill(TOKENS * FIELD_LEN, 0.3),
-            qw1: None,
+            first: FirstLayer::F32,
         }
     })
 }
