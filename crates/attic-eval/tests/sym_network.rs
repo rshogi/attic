@@ -47,7 +47,7 @@ fn a_trained_network_loads_at_the_declared_shape() {
     assert_eq!(net.b2.len(), HIDDEN2);
     assert_eq!(net.value_w.len(), HEAD);
     assert_eq!(net.pair_gamma.len(), PAIR);
-    assert_eq!(net.pair.len(), PAIR_ROWS * PAIR);
+    assert_eq!(net.pair.rows(), PAIR_ROWS);
     assert_eq!(net.moment_gamma.len(), MOMENT_LEN);
     assert_eq!(net.moment_embed.len(), TOKENS * MOMENT);
     assert_eq!(net.field_gamma.len(), FIELD);

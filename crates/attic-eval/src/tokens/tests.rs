@@ -336,3 +336,50 @@ fn a_king_move_is_an_ordinary_delta() {
         assert_eq!((half.removed().len(), half.added().len()), (1, 1));
     }
 }
+
+/// The white frame's tokens are the black frame's read through `other_frame`,
+/// in the same order, and so is each half of every move's delta. A pair table
+/// read for both frames from the black frame's list relies on the order as well
+/// as on the rows. Over random games and the positions above, and the mapping is
+/// its own inverse on every row.
+#[test]
+fn the_white_frame_is_the_black_frame_read_through_other_frame_in_order() {
+    for row in 0..crate::types::NUM_FEATURES as FeatureIndex {
+        assert_eq!(other_frame(other_frame(row)), row, "row {row}");
+    }
+    let fixed = [STARTPOS, DROP_HEAVY, MIXED, EVERY_PROMOTION, FULL_HANDS]
+        .map(|sfen| parse_sfen(sfen).expect("a valid sfen"));
+    for pos in &fixed {
+        let black: Vec<FeatureIndex> = active_features(pos, Color::Black)
+            .into_iter()
+            .map(other_frame)
+            .collect();
+        assert_eq!(
+            black,
+            active_features(pos, Color::White),
+            "{}",
+            format_sfen(pos)
+        );
+    }
+    for (pos, mv) in games(6, 160) {
+        let black: Vec<FeatureIndex> = active_features(&pos, Color::Black)
+            .into_iter()
+            .map(other_frame)
+            .collect();
+        assert_eq!(
+            black,
+            active_features(&pos, Color::White),
+            "{}",
+            format_sfen(&pos)
+        );
+        let delta = MoveDelta::from_move(&pos, mv);
+        let (b, w) = (
+            delta.half(Color::Black).expect("a token delta"),
+            delta.half(Color::White).expect("a token delta"),
+        );
+        let read =
+            |list: &[FeatureIndex]| list.iter().copied().map(other_frame).collect::<Vec<_>>();
+        assert_eq!(read(b.removed()), w.removed(), "{}", format_sfen(&pos));
+        assert_eq!(read(b.added()), w.added(), "{}", format_sfen(&pos));
+    }
+}

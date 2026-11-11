@@ -158,6 +158,38 @@ pub(crate) fn hand_row(owner: Color, kind: PieceKind, copy: usize, frame: Color)
     (BOARD_ROWS + theirs * HAND_SIDE + HAND_OFFSET[kind.index()] + copy) as FeatureIndex
 }
 
+/// The row the same piece has in the other frame.
+///
+/// The frames differ in two things, and both are in the row: whose a piece is,
+/// relative to the frame, and which way up the board is read. A board row keeps
+/// its kind, swaps ours and theirs, and turns its square by 180°, which in
+/// Manaka's numbering is `80 − sq` (see [`FRAME_SQUARE`]). A hand row swaps ours
+/// and theirs and keeps its kind and copy. So `other_frame(board_row(p, sq,
+/// Black)) == board_row(p, sq, White)`, the same for hands, and the mapping is its
+/// own inverse.
+///
+/// Because [`active_features_into`] lists the pieces in the same order for either
+/// frame, and a [`MoveDelta`] names the same slots in the same order for both,
+/// the white frame's list is the black frame's read through this, token for
+/// token. A table over pairs of tokens is read for both frames from the black
+/// frame's list on the strength of that (see `manaka/pair.rs`).
+#[inline]
+pub(crate) const fn other_frame(row: FeatureIndex) -> FeatureIndex {
+    let row = row as usize;
+    let other = if row < BOARD_ROWS {
+        let (owned_kind, square) = (row / SQUARES, row % SQUARES);
+        // `owned_kind` is `kind · 2 + theirs`: flipping the low bit swaps ours and theirs.
+        (owned_kind ^ 1) * SQUARES + (SQUARES - 1 - square)
+    } else {
+        let (theirs, slot) = (
+            (row - BOARD_ROWS) / HAND_SIDE,
+            (row - BOARD_ROWS) % HAND_SIDE,
+        );
+        BOARD_ROWS + (1 - theirs) * HAND_SIDE + slot
+    };
+    other as FeatureIndex
+}
+
 /// Every token of `pos` as `frame` reads it: one per board piece in square
 /// order, then one per held piece. A legal position gives exactly
 /// [`MAX_ACTIVE_FEATURES`] of them.

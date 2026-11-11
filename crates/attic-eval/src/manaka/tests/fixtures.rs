@@ -8,8 +8,30 @@ use attic_state::{Move, Position};
 
 use super::super::{
     DIM, FEATURE_LEN, FIELD, FIELD_LEN, FirstLayer, HEAD, HIDDEN, HIDDEN2, MOMENT, MOMENT_LEN,
-    ORDER, PAIR, PAIR_ROWS, SymNetwork, TOKENS,
+    ORDER, PAIR, PAIR_ROWS, PairTable, SymNetwork, TOKENS,
 };
+
+/// The synthetic pair table from values drawn in `f32`: rounded to halves the way
+/// the exporter rounds them, which is how a loaded network keeps its table.
+fn pair_table(values: &[f32]) -> PairTable {
+    #[cfg(feature = "sym_token")]
+    {
+        use super::encode::to_half;
+        let bytes: Vec<u8> = values
+            .iter()
+            .flat_map(|&v| to_half(v).to_le_bytes())
+            .collect();
+        PairTable::from_le_bytes(&bytes)
+    }
+    #[cfg(not(feature = "sym_token"))]
+    {
+        assert!(
+            values.is_empty(),
+            "a pair table exists only in the token space"
+        );
+        PairTable::empty()
+    }
+}
 
 /// A network no trainer made.
 ///
@@ -38,7 +60,7 @@ pub(super) fn synthetic() -> &'static SymNetwork {
             value_w: rng.fill(HEAD, 0.3),
             value_b: 0.1,
             pair_gamma: gains(&mut rng, PAIR, Gain::PAIR),
-            pair: rng.fill(PAIR_ROWS * PAIR, 0.3).into(),
+            pair: pair_table(&rng.fill(PAIR_ROWS * PAIR, 0.3)),
             // Drawn last, so that the networks of the shapes that have none of
             // these are the ones they were before there were any.
             moment_gamma: gains(&mut rng, MOMENT_LEN, Gain::MOMENT),

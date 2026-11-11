@@ -126,7 +126,7 @@ fn the_derived_lengths_agree_with_each_other() {
     assert_eq!(net.b2.len(), HIDDEN2);
     assert_eq!(net.value_w.len(), HEAD);
     assert_eq!(net.pair_gamma.len(), PAIR);
-    assert_eq!(net.pair.len(), PAIR_ROWS * PAIR);
+    assert_eq!(net.pair.rows(), PAIR_ROWS);
     assert_eq!(net.moment_gamma.len(), MOMENT_LEN);
     assert_eq!(net.moment_embed.len(), TOKENS * MOMENT);
     assert_eq!(net.field_gamma.len(), FIELD);
@@ -159,7 +159,7 @@ fn a_file_reads_back_within_half_a_step() {
     within_a_half_step("embed", &read.embed, &net.embed);
     within_a_half_step("w1", &read.w1, &net.w1);
     within_a_half_step("w2", &read.w2, &net.w2);
-    within_a_half_step("pair", &read.pair, &net.pair);
+    within_a_half_step("pair", &read.pair.file_table(), &net.pair.file_table());
     within_a_half_step("moment_embed", &read.moment_embed, &net.moment_embed);
     within_a_half_step("field", &read.field, &net.field);
 
@@ -186,7 +186,7 @@ fn a_net_of_halves_is_read_back_exactly() {
     assert_eq!(second.embed, first.embed);
     assert_eq!(second.w1, first.w1);
     assert_eq!(second.w2, first.w2);
-    assert_eq!(*second.pair, *first.pair);
+    assert_eq!(second.pair.halves(), first.pair.halves());
     assert_eq!(second.moment_embed, first.moment_embed);
     assert_eq!(second.field, first.field);
 }
