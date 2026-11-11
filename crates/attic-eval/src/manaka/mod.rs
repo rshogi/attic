@@ -6,9 +6,12 @@
 //! gain and clipped to `[0, 1]`, two clipped dense layers, and a linear value.
 //!
 //! The file is the same container every network here arrives in; what differs
-//! is the architecture string, which leads with `ModelType=SYNN…` and spells a
-//! structure YaneuraOu has no reader for. That is the whole identification —
-//! one format, and the header says which shape is inside.
+//! is the architecture string, which leads with `Features=` as YaneuraOu's does
+//! and spells a structure YaneuraOu has no reader for. That is the whole
+//! identification — one format, and the header says which shape is inside. What
+//! tells a SYNN net from a SYM one is two words of that string, `ClipScaled` and
+//! `ClippedReLU` where SYM's are `RmsNormScaled` and `ReLU`, and this build reads
+//! the first and refuses the second.
 //!
 //! Nothing below it is NNUE's feature transformer. The shapes served here
 //! (`synn_*`, listed with the dimensions of each in `shape.rs`) borrow
@@ -18,13 +21,19 @@
 //! Manaka's own token space, in `tokens.rs`, and update their accumulator from
 //! the move's delta instead of by diffing two feature lists.
 //!
-//! ## Two encodings of one layout
+//! ## How the numbers are stored
 //!
-//! `ModelType` says how the numbers are stored, and `body.rs` has a reader for
-//! each: `SYNNscaled` (`i16` arrays with a scale per group, what the exporter
-//! writes by default) and `SYNNf32` (the trainer's own numbers). Both are turned
-//! into the same `f32` tables at load, so the forward pass below does not know
-//! which it was given, and runs no integer arithmetic in either.
+//! One way. The arrays a position's evaluation reads a row of or multiplies by a
+//! vector — the embedding, `W1`, `W2` and the pair, moment and field tables — are
+//! IEEE 754 binary16 (halves): two bytes each, little-endian, with no scale and no
+//! padding in front. Every other number — the gains, the biases and the value row —
+//! is `f32`. `body.rs` reads all of it and `reader.rs` widens a half to an `f32`,
+//! which is exact, so the forward pass below works on `f32` tables and does not
+//! know how they were stored, and runs no integer arithmetic on the way in. What
+//! the exporter's rounding of a weight to a half costs is at most `2^−11` of it.
+//!
+//! The format is specified in tideborn's `docs/network.md` ("The file"), and the
+//! numbers here are read from it.
 //!
 //! ## Adding a shape
 //!
@@ -72,8 +81,7 @@
 //! `attic-search`), the same for every shape.
 //!
 //! Ported from `manaka-core`: `params.rs` (the file), `accum/newton.rs` (step
-//! 2) and `eval.rs` (steps 1 and 3 to 6, and the head, in its `nnue` arm). The
-//! format is specified in tideborn's `docs/network.md`.
+//! 2) and `eval.rs` (steps 1 and 3 to 6, and the head, in its `nnue` arm).
 
 mod accumulator;
 mod body;

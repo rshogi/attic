@@ -1,6 +1,6 @@
 //! A trained network carried down long random games by the search's own path.
 //!
-//! Gated on `ATTIC_SYM_MNW` naming a `ModelType=SYNN…` file that matches
+//! Gated on `ATTIC_SYM_MNW` naming a SYNN `nn.bin` that matches
 //! whichever `synn_*` shape the crate was built with, as `sym_network.rs` is, and
 //! ignored by default: it is the slowest test here, and it needs a file none of
 //! which live in the repository.

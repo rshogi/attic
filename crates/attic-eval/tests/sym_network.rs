@@ -1,6 +1,6 @@
 //! Loading and evaluating one of Manaka's own networks from a file.
 //!
-//! Gated on `ATTIC_SYM_MNW` naming a `ModelType=SYNN…` file that matches
+//! Gated on `ATTIC_SYM_MNW` naming a SYNN `nn.bin` that matches
 //! whichever `synn_*` shape the crate was built with. These are training
 //! artefacts and none of them live in the repository; `src/manaka/tests/` is
 //! what covers every shape without one.
@@ -21,8 +21,6 @@
 )]
 
 mod sym_common;
-
-use std::path::PathBuf;
 
 use attic_eval::manaka::{
     Accumulator, DIM, FEATURE_LEN, FIELD, FIELD_LEN, HEAD, HIDDEN, HIDDEN2, MOMENT, MOMENT_LEN,
@@ -166,40 +164,5 @@ fn the_incremental_path_matches_a_rebuild() {
         }
         let _ = undo;
         acc = derived;
-    }
-}
-
-/// What the quantisation cost, on one position.
-///
-/// Both files come from the same weights, so any difference here is the
-/// rounding and nothing else. Point `ATTIC_SYM_NN_F32` at the `--f32` export
-/// of whatever `ATTIC_SYM_MNW` names.
-///
-/// This measures and does not judge unless asked to: `ATTIC_SYM_QUANT_TOLERANCE`
-/// sets a bound for a file that is expected to meet one.
-#[test]
-fn the_quantisation_moves_the_value_only_slightly() {
-    let (Some(q), Some(f)) = (
-        network_path(),
-        std::env::var_os("ATTIC_SYM_NN_F32").map(PathBuf::from),
-    ) else {
-        eprintln!("set ATTIC_SYM_MNW and ATTIC_SYM_NN_F32 to compare encodings");
-        return;
-    };
-    let quantised = load_network(&q).expect("the quantised file loads");
-    let float = load_network(&f).expect("the f32 file loads");
-    let pos = Position::startpos();
-    let a = evaluate_value(&quantised, &pos);
-    let b = evaluate_value(&float, &pos);
-    eprintln!("quantised={a:.6} f32={b:.6} delta={:.6}", a - b);
-    assert!(a.is_finite() && b.is_finite());
-    if let Some(tolerance) = std::env::var("ATTIC_SYM_QUANT_TOLERANCE")
-        .ok()
-        .and_then(|s| s.parse::<f32>().ok())
-    {
-        assert!(
-            (a - b).abs() < tolerance,
-            "quantisation moved the value from {b} to {a}"
-        );
     }
 }

@@ -76,11 +76,14 @@ sym_halfkp = ["sym"]
 sym_token = ["sym"]
 hce = []
 # Manaka's own shapes: `SYNN`, SYM's sums behind NNUE's arithmetic. They read the
-# `nn.bin` container with `ModelType=SYNNscaled` in the architecture string (or
-# `SYNNf32`): the token embedding and its power sums (and optionally a pair table, a
-# second moment and a square field), then each block scaled by its own gain and
-# clipped to [0, 1], two clipped dense layers, and a linear value. They share this
-# crate's feature extraction and nothing else, see `src/manaka/`.
+# `nn.bin` container, with an architecture string that leads with `Features=` and
+# says `ClipScaled` and `ClippedReLU` where a SYM net says `RmsNormScaled` and `ReLU`:
+# the token embedding and its power sums (and optionally a pair table, a second
+# moment and a square field), then each block scaled by its own gain and clipped to
+# [0, 1], two clipped dense layers, and a linear value. The embedding, the two dense
+# matrices and the three tables are stored as IEEE binary16, the gains, the biases and
+# the value row as f32. They share this crate's feature extraction and nothing else,
+# see `src/manaka/`.
 #
 # The name is spelled the way YaneuraOu spells its architectures: feature space,
 # transformer width by two perspectives, then both hidden widths. A shape that has a

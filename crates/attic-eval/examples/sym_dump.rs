@@ -3,11 +3,11 @@
 //!
 //! ```text
 //! cargo run --release -p attic-eval --features synn_kp_128x2_32_32 --example sym_dump -- \
-//!     --net kp_pair0_d128_o3_h32_h232.q.nn.bin --sfens positions.sfen [--limit N]
+//!     --net kp_pair0_d128_o3_h32_h232.nn.bin --sfens positions.sfen [--limit N]
 //! ```
 //!
-//! The file may be in either encoding (`SYNNscaled` or `SYNNf32`); the header
-//! says which.
+//! The file is what `manaka-train export-nnue` writes for a `--type synn` net, whose
+//! arrays are halves (and so are rounded from the trainer's `f32`).
 //!
 //! One tab-separated row per position: index, sfen, `value` (the side to move's
 //! view) and `pre` (the value row's pre-activation). There is nothing after the

@@ -1,18 +1,17 @@
 //! Reading the `nn.bin` container: the header and the architecture string, and
-//! which of the two encodings of its numbers the file is in.
+//! then the body.
 //!
-//! One layout, two encodings, and `ModelType` in the architecture string says
-//! which. Each encoding has a reader of its own in `body.rs` that takes the body
-//! from the first section to the last, so a new encoding is one more function
-//! there and one more arm of the `match` in [`parse_network`]; nothing else knows
-//! how a number is stored. Whatever the encoding, the result is the same `f32`
-//! tables, which is what keeps the forward pass free of any of them.
+//! One layout and one way to store a number, so the string says nothing about
+//! how the numbers are stored: it leads with `Features=` as YaneuraOu's does and
+//! spells the structure. `body.rs` reads the body from the first section to the
+//! last, and nothing else knows how a number is stored. The result is `f32`
+//! tables, which is what keeps the forward pass free of how they were written.
 
 use std::path::Path;
 
 use crate::types::NnueError;
 
-use super::body::{read_f32, read_scaled};
+use super::body::read_body;
 use super::reader::Reader;
 use super::{
     DIM, FEATURE_LEN, FIELD, FIELD_AT, FIELD_LEN, HAS_FIELD, HAS_MOMENT, HAS_PAIR, HIDDEN, HIDDEN2,
@@ -22,32 +21,8 @@ use super::{
 /// The container's version word, shared with every `nn.bin` YaneuraOu writes.
 ///
 /// These files are not YaneuraOu's — it would refuse one at the architecture
-/// string — but they are the same *container*, which is what lets one reader
-/// open both and decide from the header which it is holding.
+/// string — but they are the same *container*.
 pub(super) const VERSION: u32 = 0x7AF3_2F16;
-
-/// How the numbers of a file are stored. The two differ in the `ModelType`
-/// word of the architecture string and nowhere else.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) enum Encoding {
-    /// `i16` arrays, each with a scale per group that the file carries; biases,
-    /// gains and the value row `f32`. What `export-nnue` writes by default.
-    Scaled,
-    /// Every array `f32`, exactly as the trainer holds it.
-    F32,
-}
-
-impl Encoding {
-    pub(super) const ALL: [Encoding; 2] = [Encoding::Scaled, Encoding::F32];
-
-    /// The `ModelType` word.
-    pub(super) fn model_type(self) -> &'static str {
-        match self {
-            Encoding::Scaled => "SYNNscaled",
-            Encoding::F32 => "SYNNf32",
-        }
-    }
-}
 
 /// The architecture string a file for this build must carry.
 ///
@@ -60,10 +35,12 @@ impl Encoding {
 ///
 /// The words are the names of what the arithmetic is, as `PowerSum` and `Newton`
 /// are: `ClipScaled` for each block, which is multiplied by its gain and clipped
-/// to `[0, 1]`, and `ClippedReLU` after each hidden layer. The second hidden layer
-/// is a layer in the file, not a detail of it: a name that left it out would
-/// describe a net whose value row is `HIDDEN` wide when it is `HIDDEN2` wide.
-pub(super) fn expected_arch(encoding: Encoding) -> String {
+/// to `[0, 1]`, and `ClippedReLU` after each hidden layer. They are also all that
+/// tells this net from a SYM one, whose words are `RmsNormScaled` and `ReLU`, so a
+/// SYM file is refused here by its string. The second hidden layer is a layer in
+/// the file, not a detail of it: a name that left it out would describe a net whose
+/// value row is `HIDDEN` wide when it is `HIDDEN2` wide.
+pub(super) fn expected_arch() -> String {
     // Manaka's own space is the one that does not name its row count: the
     // exporter writes `Tokens[<d>x2]`, and the 2,344 is implied by the word.
     let features = if cfg!(feature = "sym_token") {
@@ -73,7 +50,6 @@ pub(super) fn expected_arch(encoding: Encoding) -> String {
     } else {
         format!("HalfKP(Friend)[{TOKENS}->")
     };
-    let model = encoding.model_type();
     let block = ORDER * DIM;
 
     // The head's input, block by block, as the exporter spells them. The power
@@ -107,7 +83,7 @@ pub(super) fn expected_arch(encoding: Encoding) -> String {
         "Dense[1<-{HIDDEN2}](ClippedReLU[{HIDDEN2}](Dense[{HIDDEN2}<-{HIDDEN}]\
          (ClippedReLU[{HIDDEN}](Dense[{HIDDEN}<-{FEATURE_LEN}]({input}))))"
     );
-    format!("ModelType={model};Features={features}{DIM}x2],Network={network}")
+    format!("Features={features}{DIM}x2],Network={network}")
 }
 
 /// FNV-1a over the architecture string, the same digest Manaka's exporter
@@ -125,11 +101,11 @@ pub(super) fn arch_hash(arch: &str) -> u32 {
 /// Read a network from the `nn.bin` container, checking the architecture
 /// string before a single weight.
 ///
-/// The header is the whole of the identification: `ModelType=SYNN…` says this is
-/// not one of YaneuraOu's, and the rest of the string spells the structure. A
-/// file for a different shape — another width, another feature space, another
-/// order — produces a different string and is refused here rather than read at
-/// the wrong stride.
+/// The header is the whole of the identification: the string spells the structure,
+/// and is compared with the one this build makes, byte for byte. A file for a
+/// different shape — another width, another feature space, another order, or a SYM
+/// net rather than a SYNN one — produces a different string and is refused here
+/// rather than read at the wrong stride.
 pub fn load_network(path: &Path) -> Result<SymNetwork, NnueError> {
     let bytes = std::fs::read(path).map_err(|source| NnueError::Io {
         path: path.display().to_string(),
@@ -156,26 +132,18 @@ pub(super) fn parse_network(bytes: &[u8]) -> Result<SymNetwork, NnueError> {
         });
     }
 
-    // Every spelling of this shape is accepted, and which one the file carries
-    // decides how the body is read. Keeping one reader for all is the point: a
-    // rating run that wants to price the quantisation has to be able to put the
-    // same binary behind each file.
     let hash = r.u32_le()?;
     let len = r.u32_le()? as usize;
     let arch = std::str::from_utf8(r.take(len)?).map_err(|_| NnueError::InvalidFormat {
         reason: "architecture string is not UTF-8".to_string(),
     })?;
-    let Some(encoding) = Encoding::ALL
-        .into_iter()
-        .find(|e| arch == expected_arch(*e))
-    else {
+    // Built, not parsed: the string is this shape's or it is refused.
+    let want = expected_arch();
+    if arch != want {
         return Err(NnueError::InvalidFormat {
-            reason: format!(
-                "file says {arch:?}, this build reads {:?}",
-                expected_arch(Encoding::Scaled)
-            ),
+            reason: format!("file says {arch:?}, this build reads {want:?}"),
         });
-    };
+    }
     let want_hash = arch_hash(arch);
     // Redundant once the string matched, and kept for the same reason the
     // section hashes are: four bytes that catch a file whose header was
@@ -188,10 +156,7 @@ pub(super) fn parse_network(bytes: &[u8]) -> Result<SymNetwork, NnueError> {
         });
     }
 
-    let net = match encoding {
-        Encoding::Scaled => read_scaled(&mut r, want_hash)?,
-        Encoding::F32 => read_f32(&mut r, want_hash)?,
-    };
+    let net = read_body(&mut r, want_hash)?;
 
     if r.pos != bytes.len() {
         return Err(NnueError::SizeMismatch {
