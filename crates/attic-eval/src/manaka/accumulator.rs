@@ -75,7 +75,9 @@ pub(super) type FieldSum = f64;
 /// and the lifted piece's rows against the victim are gone with the victim's.
 ///
 /// Each of those is a floating-point sum taken out of a larger one, which is
-/// where `f32` drifts, so the pair sum is accumulated in `f64`. The search seeds
+/// where `f32` drifts, so the pair sum is accumulated in `f64`. A token's rows,
+/// at most thirty-nine, are added up in `f32` first and go into it as one total
+/// (`touch_pairs`), so the `f64` sum takes one rounding per token touched. The search seeds
 /// the root with [`Accumulator::refresh`] every iteration, which is what keeps
 /// the drift to a few plies' worth; see `tests/sym_network.rs` for how much that
 /// is on a trained net.

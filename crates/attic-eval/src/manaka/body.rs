@@ -8,6 +8,7 @@
 //! the forward pass below does not know how a number was stored, and runs no
 //! integer arithmetic on the way in.
 
+use crate::Aligned64;
 use crate::types::NnueError;
 
 use super::reader::Reader;
@@ -40,11 +41,11 @@ pub(super) fn read_body(r: &mut Reader<'_>, hash: u32) -> Result<SymNetwork, Nnu
     let value_w = r.f32s(HEAD)?;
     let value_b = r.f32s(1)?[0];
 
-    let (mut pair_gamma, mut pair) = (Vec::new(), Vec::new());
+    let (mut pair_gamma, mut pair) = (Vec::new(), Aligned64::zeroed(0));
     if HAS_PAIR {
         r.expect_hash(hash.wrapping_add(3), "pair table")?;
         pair_gamma = r.f32s(PAIR)?;
-        pair = r.halves(PAIR_ROWS * PAIR, "pair")?;
+        pair = r.halves(PAIR_ROWS * PAIR, "pair")?.into();
     }
     let (moment_gamma, moment_embed) = read_moment(r, hash)?;
     let (field_gamma, field) = read_field(r, hash)?;
