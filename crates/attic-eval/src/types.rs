@@ -29,7 +29,7 @@ use attic_storage::{ArenaLayout, ArenaSlice, LargePageArena, Section};
 // reports that. What separates the shapes *within* a family is counted by a
 // `const` assertion there, beside the table of their dimensions: it does not grow
 // with the square of the shapes the way a pairwise chain does, and Manaka alone
-// has five. And `hce_fit_qsearched` is a qualifier on a shape, not a
+// has six. And `hce_fit_qsearched` is a qualifier on a shape, not a
 // shape, so it is in no list at all.
 #[cfg(not(any(
     feature = "sfnn_halfkahm2_1536_15_32_k3k3",
@@ -37,6 +37,7 @@ use attic_storage::{ArenaLayout, ArenaSlice, LargePageArena, Section};
     feature = "sfnn_halfkahm2_1024_15_64_progress8ek",
     feature = "sfnn_halfkahm2_2304_15_64_progress8ek",
     feature = "nnue_kp_256x2_32_32",
+    feature = "nnue_kp_128x2_32_32",
     feature = "nnue_halfkp_256x2_32_32",
     feature = "nnue_halfkp_128x2_32_32",
     feature = "nnue_halfkp_768x2_16_64",
@@ -47,8 +48,8 @@ use attic_storage::{ArenaLayout, ArenaSlice, LargePageArena, Section};
 compile_error!(
     "select a network: --features sfnn_halfkahm2_1536_15_32_k3k3, \
      sfnn_halfkahm2_1024_15_64_progress8kpabs, sfnn_halfkahm2_1024_15_64_progress8ek, \
-     sfnn_halfkahm2_2304_15_64_progress8ek, nnue_kp_256x2_32_32, nnue_halfkp_256x2_32_32, \
-     nnue_halfkp_128x2_32_32, nnue_halfkp_768x2_16_64, one of the synn_* shapes listed in \
+     sfnn_halfkahm2_2304_15_64_progress8ek, nnue_kp_256x2_32_32, nnue_kp_128x2_32_32, \
+     nnue_halfkp_256x2_32_32, nnue_halfkp_128x2_32_32, nnue_halfkp_768x2_16_64, one of the synn_* shapes listed in \
      attic-eval's Cargo.toml, hce_material_17 or hce_mobility_107_57"
 );
 
@@ -59,6 +60,7 @@ compile_error!(
         feature = "sfnn_halfkahm2_1024_15_64_progress8ek",
         feature = "sfnn_halfkahm2_2304_15_64_progress8ek",
         feature = "nnue_kp_256x2_32_32",
+        feature = "nnue_kp_128x2_32_32",
         feature = "nnue_halfkp_256x2_32_32",
         feature = "nnue_halfkp_128x2_32_32",
         feature = "nnue_halfkp_768x2_16_64",
@@ -74,6 +76,7 @@ compile_error!("sfnn_halfkahm2_1536_15_32_k3k3 is a different network from the r
         feature = "sfnn_halfkahm2_1024_15_64_progress8ek",
         feature = "sfnn_halfkahm2_2304_15_64_progress8ek",
         feature = "nnue_kp_256x2_32_32",
+        feature = "nnue_kp_128x2_32_32",
         feature = "nnue_halfkp_256x2_32_32",
         feature = "nnue_halfkp_128x2_32_32",
         feature = "nnue_halfkp_768x2_16_64",
@@ -90,6 +93,7 @@ compile_error!(
     any(
         feature = "sfnn_halfkahm2_2304_15_64_progress8ek",
         feature = "nnue_kp_256x2_32_32",
+        feature = "nnue_kp_128x2_32_32",
         feature = "nnue_halfkp_256x2_32_32",
         feature = "nnue_halfkp_128x2_32_32",
         feature = "nnue_halfkp_768x2_16_64",
@@ -105,6 +109,7 @@ compile_error!(
     feature = "sfnn_halfkahm2_2304_15_64_progress8ek",
     any(
         feature = "nnue_kp_256x2_32_32",
+        feature = "nnue_kp_128x2_32_32",
         feature = "nnue_halfkp_256x2_32_32",
         feature = "nnue_halfkp_128x2_32_32",
         feature = "nnue_halfkp_768x2_16_64",
@@ -119,6 +124,7 @@ compile_error!(
 #[cfg(all(
     feature = "nnue_kp_256x2_32_32",
     any(
+        feature = "nnue_kp_128x2_32_32",
         feature = "nnue_halfkp_256x2_32_32",
         feature = "nnue_halfkp_128x2_32_32",
         feature = "nnue_halfkp_768x2_16_64",
@@ -127,6 +133,18 @@ compile_error!(
     )
 ))]
 compile_error!("nnue_kp_256x2_32_32 is a different network from the rest; select one");
+
+#[cfg(all(
+    feature = "nnue_kp_128x2_32_32",
+    any(
+        feature = "nnue_halfkp_256x2_32_32",
+        feature = "nnue_halfkp_128x2_32_32",
+        feature = "nnue_halfkp_768x2_16_64",
+        feature = "sym",
+        feature = "hce"
+    )
+))]
+compile_error!("nnue_kp_128x2_32_32 is a different network from the rest; select one");
 
 #[cfg(all(
     feature = "nnue_halfkp_256x2_32_32",
@@ -179,7 +197,7 @@ pub const HIDDEN_SIZE: usize = 1_024;
 pub const HIDDEN_SIZE: usize = 2_304;
 #[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
 pub const HIDDEN_SIZE: usize = 256;
-#[cfg(feature = "nnue_halfkp_128x2_32_32")]
+#[cfg(any(feature = "nnue_kp_128x2_32_32", feature = "nnue_halfkp_128x2_32_32"))]
 pub const HIDDEN_SIZE: usize = 128;
 #[cfg(feature = "nnue_halfkp_768x2_16_64")]
 pub const HIDDEN_SIZE: usize = 768;
@@ -193,7 +211,7 @@ pub const HIDDEN_SIZE: usize = 768;
 /// that every position keeps forty tokens, and YaneuraOu never numbered one.
 #[cfg(feature = "sfnn")]
 pub const NUM_FEATURES: usize = 73_305;
-#[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "sym_kp"))]
+#[cfg(any(feature = "nnue_kp", feature = "sym_kp"))]
 pub const NUM_FEATURES: usize = 1_710;
 #[cfg(feature = "nnue_halfkp")]
 pub const NUM_FEATURES: usize = 125_388;
@@ -227,7 +245,7 @@ pub const HIDDEN1_DIMS: usize = 15;
 // next layer and there is no split for this to be one side of. Thirty-two wide
 // in every one but the 768, whose name says sixteen.
 #[cfg(any(
-    feature = "nnue_kp_256x2_32_32",
+    feature = "nnue_kp",
     feature = "nnue_halfkp_256x2_32_32",
     feature = "nnue_halfkp_128x2_32_32"
 ))]
@@ -237,7 +255,7 @@ pub const HIDDEN1_DIMS: usize = 16;
 
 #[cfg(any(
     feature = "sfnn_halfkahm2_1536_15_32_k3k3",
-    feature = "nnue_kp_256x2_32_32",
+    feature = "nnue_kp",
     feature = "nnue_halfkp_256x2_32_32",
     feature = "nnue_halfkp_128x2_32_32"
 ))]
@@ -1005,7 +1023,7 @@ mod tests {
         assert_eq!(HIDDEN_SIZE, 2304);
         #[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "nnue_halfkp_256x2_32_32"))]
         assert_eq!(HIDDEN_SIZE, 256);
-        #[cfg(feature = "nnue_halfkp_128x2_32_32")]
+        #[cfg(any(feature = "nnue_kp_128x2_32_32", feature = "nnue_halfkp_128x2_32_32"))]
         assert_eq!(HIDDEN_SIZE, 128);
         #[cfg(feature = "nnue_halfkp_768x2_16_64")]
         assert_eq!(HIDDEN_SIZE, 768);
@@ -1018,7 +1036,7 @@ mod tests {
     fn num_features_matches_shape() {
         #[cfg(feature = "sfnn")]
         assert_eq!(NUM_FEATURES, 5 * 9 * 1629);
-        #[cfg(feature = "nnue_kp_256x2_32_32")]
+        #[cfg(feature = "nnue_kp")]
         assert_eq!(NUM_FEATURES, 1_710);
         #[cfg(feature = "nnue_halfkp")]
         assert_eq!(NUM_FEATURES, 125_388);

@@ -29,6 +29,16 @@ pub(super) const EXPORTED: Exported = Exported {
     hash: 0xe7c9e6dd,
 };
 
+/// From the file `export-nnue` wrote at tideborn's develop e6141b7d for a net
+/// trained at this shape (2026-11-11), not at 91421804 like the rest: the shape
+/// is newer than that commit. The SYNN string is assembled from the shape there,
+/// so the exporter needed no change to write it.
+#[cfg(feature = "synn_kp_256x2_32_32")]
+pub(super) const EXPORTED: Exported = Exported {
+    rest: "K+P[1710->256x2],Network=Dense[1<-32](ClippedReLU[32](Dense[32<-32](ClippedReLU[32](Dense[32<-1536](ClipScaled[768](Newton[3](PowerSum[3](InputSlice[768(0:768)])))))))",
+    hash: 0x7b28b1e1,
+};
+
 #[cfg(feature = "synn_halfkp_128x2_32_32")]
 pub(super) const EXPORTED: Exported = Exported {
     rest: "HalfKP(Friend)[125389->128x2],Network=Dense[1<-32](ClippedReLU[32](Dense[32<-32](ClippedReLU[32](Dense[32<-768](ClipScaled[384](Newton[3](PowerSum[3](InputSlice[384(0:384)])))))))",

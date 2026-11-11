@@ -37,7 +37,8 @@ sfnn_halfkahm2_2304_15_64_progress8ek = ["sfnn_progress_ek"]
 # perspectives concatenated rather than multiplied — see `NetDims::KP256`. The
 # name spells the architecture the way YaneuraOu does: feature set, transformer
 # width by two perspectives, then the two hidden widths.
-nnue_kp_256x2_32_32 = ["nnue_standard"]
+nnue_kp_256x2_32_32 = ["nnue_standard", "nnue_kp"]
+nnue_kp_128x2_32_32 = ["nnue_standard", "nnue_kp"]
 nnue_halfkp_256x2_32_32 = ["nnue_standard", "nnue_halfkp"]
 nnue_halfkp_128x2_32_32 = ["nnue_standard", "nnue_halfkp"]
 nnue_halfkp_768x2_16_64 = ["nnue_standard", "nnue_halfkp"]
@@ -51,7 +52,8 @@ nnue_halfkp_768x2_16_64 = ["nnue_standard", "nnue_halfkp"]
 #                        entering-king bucket). Without it the ninth is read and
 #                        never used, because V3 was trained with eight buckets.
 #   nnue_standard        every YaneuraOu standard shape
-#   nnue_halfkp          ... whose features are `HalfKP` (the other is K+P)
+#   nnue_kp              ... whose features are K+P
+#   nnue_halfkp          ... whose features are `HalfKP`
 #   sym                  every Manaka shape, which is every `synn_*` one. Like `hce`
 #                        it stands for them in the guard's pairwise lists, so a new
 #                        one widens none of them. The name is the family's old one
@@ -69,6 +71,7 @@ sfnn = []
 sfnn_progress = ["sfnn"]
 sfnn_progress_ek = ["sfnn_progress"]
 nnue_standard = []
+nnue_kp = []
 nnue_halfkp = []
 sym = []
 sym_kp = ["sym"]
@@ -100,11 +103,12 @@ hce = []
 #
 # A SYNN net has two hidden layers (NNUE's back half has two) and none of the
 # blocks that need a norm to bound them, which Manaka's shape grammar refuses under
-# `--type synn`. These are the five that are trained:
+# `--type synn`. These are the six that are trained:
 #
 #   feature                                Manaka's shape code
 #   synn_token_128x2_32_32                 pair0_d128_o3_h32_h232
 #   synn_kp_128x2_32_32                    kp_pair0_d128_o3_h32_h232
+#   synn_kp_256x2_32_32                    kp_pair0_d256_o3_h32_h232
 #   synn_halfkp_128x2_32_32                halfkp_pair0_d128_o3_h32_h232
 #   synn_token_128x2_32_32_pair16          pair16_d128_o3_h32_h232
 #   synn_token_128x2_32_32_pair16_m8_f2    pair16_d128_o3_h32_h232_m8_f2
@@ -113,6 +117,7 @@ hce = []
 # `--type synn`; the dimensions of each are one row of `src/manaka/shape.rs`.
 synn_token_128x2_32_32 = ["sym_token"]
 synn_kp_128x2_32_32 = ["sym_kp"]
+synn_kp_256x2_32_32 = ["sym_kp"]
 synn_halfkp_128x2_32_32 = ["sym_halfkp"]
 synn_token_128x2_32_32_pair16 = ["sym_token"]
 synn_token_128x2_32_32_pair16_m8_f2 = ["sym_token"]

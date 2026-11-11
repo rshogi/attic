@@ -72,6 +72,8 @@ const DIMS: Dims = if cfg!(any(
     feature = "synn_token_128x2_32_32"
 )) {
     Dims::new(128, 3, 32, 32)
+} else if cfg!(feature = "synn_kp_256x2_32_32") {
+    Dims::new(256, 3, 32, 32)
 } else if cfg!(feature = "synn_token_128x2_32_32_pair16") {
     Dims::new(128, 3, 32, 32).pair(16)
 } else if cfg!(feature = "synn_token_128x2_32_32_pair16_m8_f2") {
@@ -181,6 +183,7 @@ const _: () = {
     }
     let selected = selected!(
         "synn_kp_128x2_32_32",
+        "synn_kp_256x2_32_32",
         "synn_halfkp_128x2_32_32",
         "synn_token_128x2_32_32",
         "synn_token_128x2_32_32_pair16",

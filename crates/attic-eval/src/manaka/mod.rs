@@ -16,10 +16,10 @@
 //! Nothing below it is NNUE's feature transformer. The shapes served here
 //! (`synn_*`, listed with the dimensions of each in `shape.rs`) borrow
 //! YaneuraOu's *feature numbering* (see `features.rs`, shared with the standard
-//! shapes) and nothing else: the accumulator carries power sums rather than a
-//! single sum. The `synn_token_*` shapes borrow not even that: they number
-//! Manaka's own token space, in `tokens.rs`, and update their accumulator from
-//! the move's delta instead of by diffing two feature lists.
+//! shapes), and the move delta that comes with it, and nothing else: the
+//! accumulator carries power sums rather than a single sum. The `synn_token_*`
+//! shapes borrow not even that: they number Manaka's own token space, in
+//! `tokens.rs`, which has a move delta of its own.
 //!
 //! ## How the numbers are stored
 //!

@@ -71,11 +71,13 @@ SFNN の 2 つは、YaneuraOu 側が shielune 版です。遅い原因は調べ�
 | SFNN | `halfkahm2_1024_15_64_progress8ek`    |
 | SFNN | `halfkahm2_2304_15_64_progress8ek`    |
 | NNUE | `kp_256x2_32_32`                      |
+| NNUE | `kp_128x2_32_32`                      |
 | NNUE | `halfkp_256x2_32_32`                  |
 | NNUE | `halfkp_128x2_32_32`                  |
 | NNUE | `halfkp_768x2_16_64`                  |
 | SYNN | `token_128x2_32_32`                   |
 | SYNN | `kp_128x2_32_32`                      |
+| SYNN | `kp_256x2_32_32`                      |
 | SYNN | `halfkp_128x2_32_32`                  |
 | SYNN | `token_128x2_32_32_pair16`            |
 | SYNN | `token_128x2_32_32_pair16_m8_f2`      |

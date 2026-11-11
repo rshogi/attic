@@ -29,7 +29,7 @@ use crate::types::NUM_FEATURES;
 // check is a `debug_assert!` and disappears from the builds that matter.
 #[cfg(feature = "sfnn")]
 const _: () = assert!(FEATURE_DIMENSION == NUM_FEATURES);
-#[cfg(feature = "nnue_kp_256x2_32_32")]
+#[cfg(feature = "nnue_kp")]
 const _: () = assert!(NUM_FEATURES == FE_END + 2 * SQ_NB);
 #[cfg(feature = "nnue_halfkp")]
 const _: () = assert!(NUM_FEATURES == SQ_NB * FE_END);
@@ -102,7 +102,7 @@ pub const FEATURE_DIMENSION: usize = SQ_K_COUNT * E_KING;
 
 /// Maximum number of simultaneously active features (`PIECE_NUMBER_NB`). Every
 /// legal shogi position has exactly 40 pieces across board and hands.
-#[cfg(any(feature = "sfnn", feature = "nnue_kp_256x2_32_32", feature = "sym"))]
+#[cfg(any(feature = "sfnn", feature = "nnue_kp", feature = "sym"))]
 pub const MAX_ACTIVE_FEATURES: usize = 40;
 
 /// HalfKP stops at `PIECE_NUMBER_KING`.
@@ -232,7 +232,7 @@ fn encode_feature(sq_k_code: usize, p_adj: usize) -> FeatureIndex {
     debug_assert!(idx < NUM_FEATURES);
     idx as FeatureIndex
 }
-#[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "sym_kp"))]
+#[cfg(any(feature = "nnue_kp", feature = "sym_kp"))]
 #[inline]
 fn encode_feature(_sq_k_code: usize, p_adj: usize) -> FeatureIndex {
     debug_assert!(p_adj < NUM_FEATURES);
@@ -254,7 +254,7 @@ fn king_code(pos: &Position, perspective: Color) -> (usize, bool) {
         false,
     )
 }
-#[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "sym_kp"))]
+#[cfg(any(feature = "nnue_kp", feature = "sym_kp"))]
 fn king_code(_pos: &Position, _perspective: Color) -> (usize, bool) {
     (0, false)
 }
@@ -270,7 +270,7 @@ fn king_code(_pos: &Position, _perspective: Color) -> (usize, bool) {
 fn king_feature(_is_friend: bool, sq_code: usize, sq_k_code: usize) -> Option<FeatureIndex> {
     Some(encode_feature(sq_k_code, FE_END + sq_code))
 }
-#[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "sym_kp"))]
+#[cfg(any(feature = "nnue_kp", feature = "sym_kp"))]
 #[inline]
 fn king_feature(is_friend: bool, sq_code: usize, sq_k_code: usize) -> Option<FeatureIndex> {
     let side = if is_friend { 0 } else { SQ_NB };
@@ -293,7 +293,7 @@ fn king_feature(_is_friend: bool, _sq_code: usize, _sq_k_code: usize) -> Option<
 /// # Panics
 /// Panics if `color` has no king: every position fed to the evaluator must have
 /// both, as the reference's `pos.king_square` contract requires.
-#[cfg(any(test, not(any(feature = "nnue_kp_256x2_32_32", feature = "sym_kp"))))]
+#[cfg(any(test, not(any(feature = "nnue_kp", feature = "sym_kp"))))]
 pub(crate) fn king_square(pos: &Position, color: Color) -> Square {
     pos.king_square(color)
         .unwrap_or_else(|| panic!("position has no {color:?} king"))
@@ -427,7 +427,7 @@ pub fn requires_full_refresh(mv: Move, perspective: Color) -> bool {
     // A KP index does not embed the own king at all (`king_code` is a constant
     // there and the kings are ordinary features of the shared king plane), so
     // there a king move is an add/sub like any other.
-    const INDEX_EMBEDS_KING: bool = !cfg!(any(feature = "nnue_kp_256x2_32_32", feature = "sym_kp"));
+    const INDEX_EMBEDS_KING: bool = !cfg!(any(feature = "nnue_kp", feature = "sym_kp"));
     if !INDEX_EMBEDS_KING || mv.is_drop() {
         return false;
     }
@@ -588,6 +588,7 @@ pub(crate) fn changed_indices(
 
 /// Reusable buffers for [`changed_indices_into`], owned by the finny-table cache
 /// so that a cached rebuild allocates nothing.
+#[cfg(any(test, not(feature = "sym")))]
 #[derive(Debug, Default)]
 pub(crate) struct DiffScratch {
     sorted_before: Vec<FeatureIndex>,
@@ -600,6 +601,7 @@ pub(crate) struct DiffScratch {
 
 /// [`changed_indices`] writing into caller-owned buffers. This is the single
 /// implementation; `changed_indices` is a thin allocating wrapper.
+#[cfg(any(test, not(feature = "sym")))]
 pub(crate) fn changed_indices_into(
     before: &[FeatureIndex],
     after: &[FeatureIndex],
@@ -1053,7 +1055,7 @@ mod tests {
     /// BonaPiece's 1,548, friend below enemy. That second plane is what makes
     /// the table 1,710 wide rather than 1,629, and it is the one place the KP
     /// shapes and `HalfKA_hm2` disagree about where a king goes.
-    #[cfg(any(feature = "nnue_kp_256x2_32_32", feature = "sym_kp"))]
+    #[cfg(any(feature = "nnue_kp", feature = "sym_kp"))]
     #[test]
     fn startpos_kings_take_one_slot_in_each_king_plane() {
         let pos = parse_sfen(STARTPOS).unwrap();
@@ -1239,7 +1241,7 @@ mod tests {
         let king_move = parse_usi_move("5i5h", &pos).unwrap();
         // Where the index embeds the own king the mover's half rebuilds; where
         // it does not (KP) a king move is an ordinary add/sub.
-        let embeds_king = !cfg!(any(feature = "nnue_kp_256x2_32_32", feature = "sym_kp"));
+        let embeds_king = !cfg!(any(feature = "nnue_kp", feature = "sym_kp"));
         assert_eq!(requires_full_refresh(king_move, Color::Black), embeds_king);
         assert!(!requires_full_refresh(king_move, Color::White));
 
