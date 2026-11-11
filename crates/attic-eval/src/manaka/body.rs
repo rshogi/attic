@@ -4,18 +4,19 @@
 //! position's evaluation reads a row of or multiplies by a vector — `embed`, `W1`,
 //! `W2`, `pair`, `moment_embed` and `field` — are halves, two bytes each with
 //! nothing in front of them. Every other number — the gains, the biases and the
-//! value row — is `f32`. All of it is turned into the same `f32` tables at load, so
-//! the forward pass below does not know how a number was stored, and runs no
-//! integer arithmetic on the way in.
+//! value row — is `f32`. All of it but the pair table is turned into `f32` tables
+//! at load, so the forward pass below does not know how a number was stored, and
+//! runs no integer arithmetic on the way in. The pair table stays halves, with both
+//! frames to a row (`pair_table.rs`), and is widened as a derive adds it up.
 
-use crate::Aligned64;
 use crate::types::NnueError;
 
+use super::pair_table::PairTable;
 use super::reader::Reader;
 use super::shape::SQUARES;
 use super::{
     DIM, FEATURE_LEN, FIELD, FirstLayer, HAS_FIELD, HAS_MOMENT, HAS_PAIR, HEAD, HIDDEN, HIDDEN2,
-    MOMENT, MOMENT_LEN, ORDER, PAIR, PAIR_ROWS, SymNetwork, TOKENS,
+    MOMENT, MOMENT_LEN, ORDER, PAIR, SymNetwork, TOKENS,
 };
 
 /// The body of the file, from the first section to the last.
@@ -41,11 +42,11 @@ pub(super) fn read_body(r: &mut Reader<'_>, hash: u32) -> Result<SymNetwork, Nnu
     let value_w = r.f32s(HEAD)?;
     let value_b = r.f32s(1)?[0];
 
-    let (mut pair_gamma, mut pair) = (Vec::new(), Aligned64::zeroed(0));
+    let (mut pair_gamma, mut pair) = (Vec::new(), PairTable::empty());
     if HAS_PAIR {
         r.expect_hash(hash.wrapping_add(3), "pair table")?;
         pair_gamma = r.f32s(PAIR)?;
-        pair = r.halves(PAIR_ROWS * PAIR, "pair")?.into();
+        pair = read_pair_table(r)?;
     }
     let (moment_gamma, moment_embed) = read_moment(r, hash)?;
     let (field_gamma, field) = read_field(r, hash)?;
@@ -66,6 +67,21 @@ pub(super) fn read_body(r: &mut Reader<'_>, hash: u32) -> Result<SymNetwork, Nnu
         field,
         first: FirstLayer::F32,
     })
+}
+
+/// The pair table's halves, kept as halves with both frames to a row.
+#[cfg(feature = "sym_token")]
+fn read_pair_table(r: &mut Reader<'_>) -> Result<PairTable, NnueError> {
+    Ok(PairTable::from_le_bytes(
+        r.half_bytes(super::PAIR_ROWS * PAIR, "pair")?,
+    ))
+}
+
+/// Outside the token space there is no pair table to read: `HAS_PAIR` is false
+/// there, so this is never called.
+#[cfg(not(feature = "sym_token"))]
+fn read_pair_table(_: &mut Reader<'_>) -> Result<PairTable, NnueError> {
+    unreachable!("a pair table exists only in the token space")
 }
 
 /// Section 4, the second moment: the gain on each entry of the upper triangle

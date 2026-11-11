@@ -106,7 +106,7 @@ pub(super) fn encode(net: &SymNetwork) -> Vec<u8> {
     if HAS_PAIR {
         out.extend_from_slice(&hash.wrapping_add(3).to_le_bytes());
         put_f32s(&mut out, &net.pair_gamma);
-        put_halves(&mut out, &net.pair);
+        put_halves(&mut out, &net.pair.file_table());
     }
     if HAS_MOMENT {
         out.extend_from_slice(&hash.wrapping_add(4).to_le_bytes());

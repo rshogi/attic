@@ -71,7 +71,7 @@ pub(super) fn reference_value(net: &SymNetwork, pos: &Position) -> f64 {
                 for &b in &tokens[i + 1..] {
                     let row = counted_pair_row(a, b);
                     for (channel, s) in sum.iter_mut().enumerate() {
-                        *s += f64::from(net.pair[row * PAIR + channel]);
+                        *s += f64::from(net.pair.value(row, channel));
                     }
                 }
             }

@@ -29,7 +29,9 @@
 //! padding in front. Every other number — the gains, the biases and the value row —
 //! is `f32`. `body.rs` reads all of it and `reader.rs` widens a half to an `f32`,
 //! which is exact, so the forward pass below works on `f32` tables and does not
-//! know how they were stored, and runs no integer arithmetic on the way in. What
+//! know how they were stored, and runs no integer arithmetic on the way in. The
+//! pair table is the exception: it stays halves, both frames to a row
+//! (`pair_table.rs`), and is widened as a derive adds its rows up. What
 //! the exporter's rounding of a weight to a half costs is at most `2^−11` of it.
 //!
 //! The format is specified in tideborn's `docs/network.md` ("The file"), and the
@@ -95,6 +97,7 @@ mod loader;
 mod moment;
 #[cfg(feature = "sym_token")]
 mod pair;
+mod pair_table;
 mod qdense;
 mod qdense_i8;
 mod reader;
@@ -108,6 +111,7 @@ pub use accumulator::Accumulator;
 pub use cache::FinnyCache;
 use forward::value_from_sums;
 pub use loader::{load_network, load_network_with_warnings};
+pub use pair_table::PairTable;
 pub use qdense::QuantW1;
 pub use qdense_i8::QuantW1I8;
 pub use shape::{
@@ -143,11 +147,9 @@ pub struct SymNetwork {
     pub value_b: f32,
     /// `[PAIR]` — the gain on each pair channel.
     pub pair_gamma: Vec<f32>,
-    /// `[PAIR_ROWS][PAIR]`. Empty without a pair table.
-    ///
-    /// Aligned to 64 bytes, so that a row of sixteen channels is one cache line
-    /// and the derive's loads of it never straddle two; see `pair.rs`.
-    pub pair: crate::Aligned64<f32>,
+    /// The file's `[PAIR_ROWS][PAIR]` table, kept as halves with both frames to a
+    /// row; see [`PairTable`]. Empty without a pair table.
+    pub pair: PairTable,
     /// `[MOMENT_LEN]` — the gain on each entry of the second moment's upper
     /// triangle. Empty without a second moment.
     pub moment_gamma: Vec<f32>,
@@ -259,7 +261,7 @@ impl SymNetwork {
             value_w: self.value_w.clone(),
             value_b: self.value_b,
             pair_gamma: self.pair_gamma.clone(),
-            pair: crate::Aligned64::from_slice(&self.pair),
+            pair: self.pair.replicate(),
             moment_gamma: self.moment_gamma.clone(),
             moment_embed: self.moment_embed.clone(),
             field_gamma: self.field_gamma.clone(),

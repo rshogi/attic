@@ -26,7 +26,7 @@ pub(super) struct Reader<'a> {
 /// Written out of that table and not by shifting the fields into an `f32`'s, so
 /// that the two are two routes to the same number: the subnormal case is a
 /// multiple of `2^−24`, which an `f32` holds exactly.
-fn half_to_f32(bits: u16) -> Option<f32> {
+pub(super) fn half_to_f32(bits: u16) -> Option<f32> {
     let sign = if bits & 0x8000 != 0 { -1.0f32 } else { 1.0 };
     let exponent = i32::from((bits >> 10) & 0x1f);
     let fraction = f32::from(bits & 0x3ff);
@@ -77,19 +77,30 @@ impl<'a> Reader<'a> {
     /// no padding. An infinity or a NaN is a refusal, naming the array and the
     /// element, because a file that holds one is not a file the exporter wrote.
     pub(super) fn halves(&mut self, n: usize, what: &str) -> Result<Vec<f32>, NnueError> {
+        let s = self.half_bytes(n, what)?;
+        let (pairs, _) = s.as_chunks::<2>();
+        Ok(pairs
+            .iter()
+            .map(|c| half_to_f32(u16::from_le_bytes(*c)).expect("checked finite"))
+            .collect())
+    }
+
+    /// `n` halves as the file has them, little-endian, after the same check
+    /// [`Reader::halves`] makes: for a table that is kept as halves.
+    pub(super) fn half_bytes(&mut self, n: usize, what: &str) -> Result<&'a [u8], NnueError> {
         let bytes = n.checked_mul(2).ok_or_else(|| NnueError::InvalidFormat {
             reason: format!("{what} is too long to address"),
         })?;
         let s = self.take(bytes)?;
-        let (pairs, _) = s.as_chunks::<2>();
-        let mut out = Vec::with_capacity(n);
-        for (i, c) in pairs.iter().enumerate() {
+        for (i, c) in s.as_chunks::<2>().0.iter().enumerate() {
             let bits = u16::from_le_bytes(*c);
-            out.push(half_to_f32(bits).ok_or_else(|| NnueError::InvalidFormat {
-                reason: format!("{what}[{i}] is {bits:#06x}, an infinity or a NaN"),
-            })?);
+            if half_to_f32(bits).is_none() {
+                return Err(NnueError::InvalidFormat {
+                    reason: format!("{what}[{i}] is {bits:#06x}, an infinity or a NaN"),
+                });
+            }
         }
-        Ok(out)
+        Ok(s)
     }
 
     pub(super) fn expect_hash(&mut self, want: u32, section: &str) -> Result<(), NnueError> {

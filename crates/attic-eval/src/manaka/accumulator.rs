@@ -5,7 +5,9 @@ use attic_state::{Color, Position};
 #[cfg(not(feature = "sym_token"))]
 use crate::features::{FeatureIndex, MoveDelta, active_features, active_features_into};
 #[cfg(feature = "sym_token")]
-use crate::tokens::{FeatureIndex, MAX_ACTIVE_FEATURES, MoveDelta, active_features};
+use crate::tokens::{
+    FeatureIndex, MAX_ACTIVE_FEATURES, MoveDelta, PerspectiveDelta, active_features,
+};
 
 use super::cache::FinnyCache;
 #[cfg(feature = "sym_token")]
@@ -16,8 +18,8 @@ use super::moment::touch_moment;
 use super::pair::touch_pairs;
 use super::{DIM, FIELD_LEN, MOMENT_LEN, ORDER, PAIR, POWER_LEN, SymNetwork};
 
-/// What the pair sums are accumulated in. `f64`, which is not what the tables
-/// are stored in or the forward pass computes in (both `f32`): see the note on
+/// What the pair sums are accumulated in. `f64`, which is not what the table is
+/// stored in (halves) or the forward pass computes in (`f32`): see the note on
 /// [`Accumulator`].
 pub(super) type PairSum = f64;
 
@@ -74,13 +76,16 @@ pub(super) type FieldSum = f64;
 /// order above matters: a capture takes the victim out, then the lifted piece,
 /// and the lifted piece's rows against the victim are gone with the victim's.
 ///
+/// Both frames' pair sums are moved by one call, from the black frame's tokens:
+/// a row of the table holds both frames' channels for a pair (`pair_table.rs`).
+///
 /// Each of those is a floating-point sum taken out of a larger one, which is
 /// where `f32` drifts, so the pair sum is accumulated in `f64`. A token's rows,
 /// at most thirty-nine, are added up in `f32` first and go into it as one total
-/// (`touch_pairs`), so the `f64` sum takes one rounding per token touched. The search seeds
-/// the root with [`Accumulator::refresh`] every iteration, which is what keeps
-/// the drift to a few plies' worth; see `tests/sym_network.rs` for how much that
-/// is on a trained net.
+/// (`touch_pairs`), so the `f64` sum takes one rounding per token touched. The
+/// search seeds the root with [`Accumulator::refresh`] every iteration, which is
+/// what keeps the drift to a few plies' worth; see `tests/sym_network.rs` for how
+/// much that is on a trained net.
 #[derive(Debug, Clone)]
 pub struct Accumulator {
     /// `[perspective][POWER_LEN]`, indexed by [`Color::index`]; within one
@@ -136,15 +141,22 @@ impl Accumulator {
             self.pair[i].fill(0.0);
             self.moment[i].fill(0.0);
             self.field[i].fill(0.0);
-            // Every pair once: each token against the ones before it.
             #[cfg(feature = "sym_token")]
             {
-                for (at, &feature) in features.iter().enumerate() {
-                    touch_pairs(&mut self.pair[i], net, feature, &features[..at], 1.0);
+                for &feature in &features {
                     touch_moment(&mut self.moment[i], net, feature, 1.0);
                     touch_field(&mut self.field[i], net, feature, 1.0);
                 }
                 self.active[i] = features;
+            }
+        }
+        // Every pair once, each token against the ones before it, both frames at
+        // once from the black frame's list.
+        #[cfg(feature = "sym_token")]
+        {
+            let black = &self.active[Color::Black.index()];
+            for at in 0..black.len() {
+                touch_pairs(&mut self.pair, net, black[at], &black[..at], 1.0);
             }
         }
     }
@@ -319,9 +331,9 @@ impl Accumulator {
         delta: &MoveDelta,
         _cache: &mut FinnyCache,
     ) {
-        for color in [Color::Black, Color::White] {
-            let i = color.index();
-            let half = delta.half(color).expect("a token delta is never a rebuild");
+        let halves = [Color::Black, Color::White]
+            .map(|color| delta.half(color).expect("a token delta is never a rebuild"));
+        for (i, half) in halves.iter().enumerate() {
             // The power sums depend on nothing but the rows being taken out and put
             // in, and in what order, so they go in one pass ahead of the tables that
             // read `active`.
@@ -336,35 +348,46 @@ impl Accumulator {
             dst.moment[i].copy_from_slice(&src.moment[i]);
             dst.field[i].copy_from_slice(&src.field[i]);
             dst.active[i].clone_from(&src.active[i]);
-            dst.touch_tokens(net, i, half.removed(), half.added());
         }
+        let [black, white] = halves;
+        dst.touch_tokens(net, black, white);
     }
 
-    /// The pair, moment and field sums and the set of tokens of half `i`, taken
-    /// from what they hold to the position after `removed` leave and `added`
-    /// arrive. The power sums are not touched.
+    /// The pair, moment and field sums and the sets of tokens of both halves,
+    /// taken from what they hold to the position after the move. The power sums
+    /// are not touched.
+    ///
+    /// The two halves name the same pieces in the same order, each as its own
+    /// frame numbers them (`tokens::other_frame`), so the pair sums of both are
+    /// moved by one call per token, from the black frame's tokens.
     fn touch_tokens(
         &mut self,
         net: &SymNetwork,
-        i: usize,
-        removed: &[FeatureIndex],
-        added: &[FeatureIndex],
+        black: &PerspectiveDelta,
+        white: &PerspectiveDelta,
     ) {
-        for &token in removed {
-            let at = self.active[i]
-                .iter()
-                .position(|&present| present == token)
-                .expect("a removed token was not in the accumulator it is removed from");
-            self.active[i].swap_remove(at);
-            touch_pairs(&mut self.pair[i], net, token, &self.active[i], -1.0);
-            touch_moment(&mut self.moment[i], net, token, -1.0);
-            touch_field(&mut self.field[i], net, token, -1.0);
+        let (b, w) = (Color::Black.index(), Color::White.index());
+        for (&token, &other) in black.removed().iter().zip(white.removed()) {
+            for (i, token) in [(b, token), (w, other)] {
+                let at = self.active[i]
+                    .iter()
+                    .position(|&present| present == token)
+                    .expect("a removed token was not in the accumulator it is removed from");
+                self.active[i].swap_remove(at);
+            }
+            touch_pairs(&mut self.pair, net, token, &self.active[b], -1.0);
+            for (i, token) in [(b, token), (w, other)] {
+                touch_moment(&mut self.moment[i], net, token, -1.0);
+                touch_field(&mut self.field[i], net, token, -1.0);
+            }
         }
-        for &token in added {
-            touch_pairs(&mut self.pair[i], net, token, &self.active[i], 1.0);
-            touch_moment(&mut self.moment[i], net, token, 1.0);
-            touch_field(&mut self.field[i], net, token, 1.0);
-            self.active[i].push(token);
+        for (&token, &other) in black.added().iter().zip(white.added()) {
+            touch_pairs(&mut self.pair, net, token, &self.active[b], 1.0);
+            for (i, token) in [(b, token), (w, other)] {
+                touch_moment(&mut self.moment[i], net, token, 1.0);
+                touch_field(&mut self.field[i], net, token, 1.0);
+                self.active[i].push(token);
+            }
         }
     }
 }
