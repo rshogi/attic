@@ -72,7 +72,10 @@ const DIMS: Dims = if cfg!(any(
     feature = "synn_token_128x2_32_32"
 )) {
     Dims::new(128, 3, 32, 32)
-} else if cfg!(feature = "synn_kp_256x2_32_32") {
+} else if cfg!(any(
+    feature = "synn_kp_256x2_32_32",
+    feature = "synn_token_256x2_32_32"
+)) {
     Dims::new(256, 3, 32, 32)
 } else if cfg!(feature = "synn_token_128x2_32_32_pair16") {
     Dims::new(128, 3, 32, 32).pair(16)
@@ -186,6 +189,7 @@ const _: () = {
         "synn_kp_256x2_32_32",
         "synn_halfkp_128x2_32_32",
         "synn_token_128x2_32_32",
+        "synn_token_256x2_32_32",
         "synn_token_128x2_32_32_pair16",
         "synn_token_128x2_32_32_pair16_m8_f2",
     );

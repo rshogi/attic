@@ -103,10 +103,11 @@ hce = []
 #
 # A SYNN net has two hidden layers (NNUE's back half has two) and none of the
 # blocks that need a norm to bound them, which Manaka's shape grammar refuses under
-# `--type synn`. These are the six that are trained:
+# `--type synn`. These are the seven that are trained:
 #
 #   feature                                Manaka's shape code
 #   synn_token_128x2_32_32                 pair0_d128_o3_h32_h232
+#   synn_token_256x2_32_32                 pair0_d256_o3_h32_h232
 #   synn_kp_128x2_32_32                    kp_pair0_d128_o3_h32_h232
 #   synn_kp_256x2_32_32                    kp_pair0_d256_o3_h32_h232
 #   synn_halfkp_128x2_32_32                halfkp_pair0_d128_o3_h32_h232
@@ -116,6 +117,7 @@ hce = []
 # Manaka writes these with `manaka-train export-nnue` from a net trained under
 # `--type synn`; the dimensions of each are one row of `src/manaka/shape.rs`.
 synn_token_128x2_32_32 = ["sym_token"]
+synn_token_256x2_32_32 = ["sym_token"]
 synn_kp_128x2_32_32 = ["sym_kp"]
 synn_kp_256x2_32_32 = ["sym_kp"]
 synn_halfkp_128x2_32_32 = ["sym_halfkp"]

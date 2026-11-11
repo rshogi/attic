@@ -45,12 +45,12 @@ env:
 # entries three times, and kept that way rather than behind a YAML anchor so that
 # no workflow parser has to support one for CI to start at all.
 #
-# The Manaka shapes are the six `synn` ones, and only two of them are rows here:
+# The Manaka shapes are the seven `synn` ones, and only two of them are rows here:
 # each row builds the whole workspace and, in `test`, allocates a synthetic pair
 # table of 175 MB several times over where the shape has one. `synn-token` is the
 # power sums and the clip with no block beyond them, and `synn-token-pair16-m8-f2`
 # is it with a pair table, a second moment and a square field, which is every
-# place the forward pass branches on a block. The other four differ from those in
+# place the forward pass branches on a block. The other five differ from those in
 # the feature space, the width or in having a pair table and no more, so they are
 # only compiled and linted, in `synn-shapes` below. `nnue_kp_128x2_32_32` is
 # linted there as well: it is KP256 at another width, and a constant is all it
@@ -128,12 +128,12 @@ jobs:
           cargo clippy --workspace --all-targets --target x86_64-unknown-linux-gnu \
             ${{ matrix.args }} -- -D warnings
 
-  # The four SYNN shapes that are not rows of the matrices above (the pair table
-  # alone, the KP and HalfKP feature spaces, and KP at 256), and NNUE KP at 128,
-  # which is not a row either. Each shares every line of code with a row that is
-  # and differs in a constant, so what can go wrong with one is that it does not
-  # compile or trips a lint that a constant being zero or one provokes: one
-  # workspace-wide clippy pass per shape finds both. The dependencies build once and
+  # The five SYNN shapes that are not rows of the matrices above (the pair table
+  # alone, the KP and HalfKP feature spaces, and KP and token at 256), and NNUE KP
+  # at 128, which is not a row either. Each shares every line of code with a row
+  # that is and differs in a constant, so what can go wrong with one is that it
+  # does not compile or trips a lint that a constant being zero or one provokes:
+  # one workspace-wide clippy pass per shape finds both. The dependencies build once and
   # every shape after the first recompiles only the workspace.
   synn-shapes:
     runs-on: ubuntu-latest
@@ -148,6 +148,7 @@ jobs:
             synn_token_128x2_32_32_pair16 \
             synn_kp_128x2_32_32 \
             synn_kp_256x2_32_32 \
+            synn_token_256x2_32_32 \
             synn_halfkp_128x2_32_32 \
             nnue_kp_128x2_32_32; do
             echo "::group::$shape"
