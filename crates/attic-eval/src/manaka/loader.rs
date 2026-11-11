@@ -112,11 +112,13 @@ pub fn load_network(path: &Path) -> Result<SymNetwork, NnueError> {
         source,
     })?;
     let mut net = parse_network(&bytes)?;
-    // An experiment's switch and not a setting: `ATTIC_SYNN_W1=i16` puts the first
-    // layer on `i16` weights (see `SymNetwork::use_i16_w1`), and anything else, or
-    // nothing, leaves it on `f32`. Read here and not in `parse_network` so that the
-    // tests, which read bytes they made, never see it.
-    net.use_i16_w1(std::env::var("ATTIC_SYNN_W1").is_ok_and(|v| v.eq_ignore_ascii_case("i16")));
+    // The first layer runs on `i16` weights (see `SymNetwork::use_i16_w1`), which
+    // is about 1.2 times the nodes per second for under a centipawn.
+    // `ATTIC_SYNN_W1=f32` puts it back on the `f32` layer that defines it, to
+    // measure one against the other; anything else, or nothing, is `i16`. Read
+    // here and not in `parse_network` so that the tests, which read bytes they
+    // made, keep the `f32` layer.
+    net.use_i16_w1(!std::env::var("ATTIC_SYNN_W1").is_ok_and(|v| v.eq_ignore_ascii_case("f32")));
     Ok(net)
 }
 

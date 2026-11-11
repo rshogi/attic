@@ -155,8 +155,9 @@ pub struct SymNetwork {
     /// channel `c` is at `t · FIELD_LEN + s · FIELD + c`. Empty without a field.
     pub field: Vec<f32>,
     /// `w1` as `i16`, when the first layer is to run on an integer dot product.
-    /// `None` is the `f32` layer, which is the definition and the default; see
-    /// [`SymNetwork::use_i16_w1`].
+    /// A network read by [`load_network`] has it unless `ATTIC_SYNN_W1=f32` is set.
+    /// `None` is the `f32` layer, which is the definition the `i16` one is measured
+    /// against; see [`SymNetwork::use_i16_w1`].
     pub qw1: Option<QuantW1>,
 }
 
@@ -234,8 +235,9 @@ impl SymNetwork {
     ///
     /// The `i16` layer is the faster one and not the same number: it carries the
     /// rounding of the weights to a row's levels and of the input to 1/4096, about
-    /// 0.3 cp on average on trained weights, so it is a switch and not the
-    /// definition. The `f32` weights stay in the network either way.
+    /// 0.3 cp on average on trained weights. It is what [`load_network`] turns on,
+    /// and the `f32` layer stays the definition it is held to. The `f32` weights
+    /// stay in the network either way.
     pub fn use_i16_w1(&mut self, on: bool) {
         self.qw1 = on.then(|| QuantW1::new(&self.w1, HIDDEN, FEATURE_LEN));
     }
