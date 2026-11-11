@@ -81,6 +81,7 @@ SFNN の 2 つは、YaneuraOu 側が shielune 版です。遅い原因は調べ�
 | SYNN | `kp_256x2_32_32`                      |
 | SYNN | `halfkp_128x2_32_32`                  |
 | SYNN | `token_128x2_32_32_pair16`            |
+| SYNN | `token_128x2_32_32_pair16_o1`         |
 | SYNN | `token_128x2_32_32_pair16_m8_f2`      |
 | HCE  | `material_17`                         |
 | HCE  | `mobility_107_57`                     |

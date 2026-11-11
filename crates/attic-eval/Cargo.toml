@@ -103,7 +103,7 @@ hce = []
 #
 # A SYNN net has two hidden layers (NNUE's back half has two) and none of the
 # blocks that need a norm to bound them, which Manaka's shape grammar refuses under
-# `--type synn`. These are the seven that are trained:
+# `--type synn`. These are the eight that are trained:
 #
 #   feature                                Manaka's shape code
 #   synn_token_128x2_32_32                 pair0_d128_o3_h32_h232
@@ -112,6 +112,7 @@ hce = []
 #   synn_kp_256x2_32_32                    kp_pair0_d256_o3_h32_h232
 #   synn_halfkp_128x2_32_32                halfkp_pair0_d128_o3_h32_h232
 #   synn_token_128x2_32_32_pair16          pair16_d128_o3_h32_h232
+#   synn_token_128x2_32_32_pair16_o1       pair16_d128_o1_h32_h232
 #   synn_token_128x2_32_32_pair16_m8_f2    pair16_d128_o3_h32_h232_m8_f2
 #
 # Manaka writes these with `manaka-train export-nnue` from a net trained under
@@ -122,6 +123,7 @@ synn_kp_128x2_32_32 = ["sym_kp"]
 synn_kp_256x2_32_32 = ["sym_kp"]
 synn_halfkp_128x2_32_32 = ["sym_halfkp"]
 synn_token_128x2_32_32_pair16 = ["sym_token"]
+synn_token_128x2_32_32_pair16_o1 = ["sym_token"]
 synn_token_128x2_32_32_pair16_m8_f2 = ["sym_token"]
 # The two hand-crafted evaluations (HCE), spelled the same way: how many
 # coefficients, then how they are grouped. Material is 10 board slots and 7
