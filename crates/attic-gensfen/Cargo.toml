@@ -37,6 +37,7 @@ synn_kp_256x2_32_32 = ["attic-eval/synn_kp_256x2_32_32", "attic-search/synn_kp_2
 synn_token_256x2_32_32 = ["attic-eval/synn_token_256x2_32_32", "attic-search/synn_token_256x2_32_32", "sym"]
 synn_halfkp_128x2_32_32 = ["attic-eval/synn_halfkp_128x2_32_32", "attic-search/synn_halfkp_128x2_32_32", "sym"]
 synn_token_128x2_32_32_pair16 = ["attic-eval/synn_token_128x2_32_32_pair16", "attic-search/synn_token_128x2_32_32_pair16", "sym"]
+synn_token_128x2_32_32_pair16_o1 = ["attic-eval/synn_token_128x2_32_32_pair16_o1", "attic-search/synn_token_128x2_32_32_pair16_o1", "sym"]
 synn_token_128x2_32_32_pair16_m8_f2 = ["attic-eval/synn_token_128x2_32_32_pair16_m8_f2", "attic-search/synn_token_128x2_32_32_pair16_m8_f2", "sym"]
 hce_material_17 = ["attic-eval/hce_material_17", "attic-search/hce_material_17", "hce"]
 hce_mobility_107_57 = ["attic-eval/hce_mobility_107_57", "attic-search/hce_mobility_107_57", "hce"]

@@ -79,6 +79,11 @@ const DIMS: Dims = if cfg!(any(
     Dims::new(256, 3, 32, 32)
 } else if cfg!(feature = "synn_token_128x2_32_32_pair16") {
     Dims::new(128, 3, 32, 32).pair(16)
+} else if cfg!(feature = "synn_token_128x2_32_32_pair16_o1") {
+    // The pair table with the power sums at order one, which is the sum of the
+    // embeddings alone: the pair table carries the interactions the higher orders
+    // would.
+    Dims::new(128, 1, 32, 32).pair(16)
 } else if cfg!(feature = "synn_token_128x2_32_32_pair16_m8_f2") {
     Dims::new(128, 3, 32, 32).pair(16).moment(8).field(2)
 } else {
@@ -191,6 +196,7 @@ const _: () = {
         "synn_token_128x2_32_32",
         "synn_token_256x2_32_32",
         "synn_token_128x2_32_32_pair16",
+        "synn_token_128x2_32_32_pair16_o1",
         "synn_token_128x2_32_32_pair16_m8_f2",
     );
     assert!(

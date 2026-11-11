@@ -59,6 +59,16 @@ pub(super) const EXPORTED: Exported = Exported {
     hash: 0x25faf650,
 };
 
+/// From the file `export-nnue` wrote at tideborn's develop 91421804 for a net
+/// trained at this shape (QS 1000M, 2026-11-11); the string depends on the shape
+/// alone. At order one `Newton[1]` is the identity, and the exporter writes it all
+/// the same.
+#[cfg(feature = "synn_token_128x2_32_32_pair16_o1")]
+pub(super) const EXPORTED: Exported = Exported {
+    rest: "Tokens[128x2],Network=Dense[1<-32](ClippedReLU[32](Dense[32<-32](ClippedReLU[32](Dense[32<-288](ClipScaled[128](Newton[1](PowerSum[1](InputSlice[128(0:128)]))),ClipScaled[16](PairSum[16](InputSlice[16(128:144)]))))))",
+    hash: 0x4fecfd41,
+};
+
 #[cfg(feature = "synn_token_128x2_32_32_pair16_m8_f2")]
 pub(super) const EXPORTED: Exported = Exported {
     rest: "Tokens[128x2],Network=Dense[1<-32](ClippedReLU[32](Dense[32<-32](ClippedReLU[32](Dense[32<-1196](ClipScaled[384](Newton[3](PowerSum[3](InputSlice[384(0:384)]))),ClipScaled[16](PairSum[16](InputSlice[16(384:400)])),ClipScaled[36](SecondMoment[8](InputSlice[36(400:436)])),ClipScaled[162](SquareField[2](InputSlice[162(436:598)]))))))",
