@@ -38,26 +38,26 @@ env:
 # The network shape is a build-time feature and exactly one must be selected
 # (`attic-eval` refuses to compile with none or two), so `--all-features` can
 # neither build nor test anything. Each job below runs once per shape instead.
-# `args` is what follows `cargo <verb>` to pick it; the thirtieth entry is the
+# `args` is what follows `cargo <verb>` to pick it; the thirteenth entry is the
 # build that must match YaneuraOu node for node (`ref_check_time` moves the
 # time checks to where the reference's are), which turns off the defaults.
-# The list is written out in each job on purpose: it is the same thirty
+# The list is written out in each job on purpose: it is the same thirteen
 # entries three times, and kept that way rather than behind a YAML anchor so that
 # no workflow parser has to support one for CI to start at all.
 #
-# The Manaka shapes with a pair table are twenty-one, and only seven of them are
-# rows here: each row builds the whole workspace and, in `test`, allocates a
-# synthetic pair table of 175 MB (700 MB at `pair64`) several times over. The seven
-# are one per axis the code branches on (the plain pair table, a log-sum-exp
-# with kept magnitudes, `split`, a second hidden layer, order four, a second
-# moment, a square field). The rest differ from them in a width or a count the
-# code only reads as a constant, and `pair-shapes` below compiles and lints each
-# of them.
+# The Manaka shapes are the five `synn` ones, and only two of them are rows here:
+# each row builds the whole workspace and, in `test`, allocates a synthetic pair
+# table of 175 MB several times over where the shape has one. `synn-token` is the
+# power sums and the clip with no block beyond them, and `synn-token-pair16-m8-f2`
+# is it with a pair table, a second moment and a square field, which is every
+# place the forward pass branches on a block. The other three differ from those in
+# the feature space or in having a pair table and no more, so they are only
+# compiled and linted, in `synn-shapes` below.
 #
 # Nothing here has a network file: the tests that read one skip with a notice
 # when it is absent, so a green run says the code builds and its self-contained
 # tests pass, not that the shape evaluates correctly. Two groups are the
-# exception. The `sym` shapes build a network in memory and run it against a
+# exception. The `synn` shapes build a network in memory and run it against a
 # forward pass written from the definition, and against its own file format
 # (`manaka/tests.rs`), though never against a trained one. The two hce shapes
 # read no file at all: `hce_golden` runs in full and holds their feature vectors
@@ -95,44 +95,10 @@ jobs:
             args: --features nnue_halfkp_128x2_32_32
           - name: nnue-halfkp-768
             args: --features nnue_halfkp_768x2_16_64
-          - name: sym-kp-64
-            args: --features sym_kp_64x2_512
-          - name: sym-halfkp-64
-            args: --features sym_halfkp_64x2_512
-          - name: sym-kp
-            args: --features sym_kp_128x2_512
-          - name: sym-halfkp
-            args: --features sym_halfkp_128x2_512
-          - name: sym-kp-256
-            args: --features sym_kp_256x2_512
-          - name: sym-halfkp-256
-            args: --features sym_halfkp_256x2_512
-          - name: sym-kp-256-o1
-            args: --features sym_kp_256x2_o1_32_32
-          - name: sym-halfkp-256-o1
-            args: --features sym_halfkp_256x2_o1_32_32
-          - name: sym-token-64
-            args: --features sym_token_64x2_512
-          - name: sym-token
-            args: --features sym_token_128x2_512
-          - name: sym-token-256
-            args: --features sym_token_256x2_512
-          - name: sym-token-256-o1
-            args: --features sym_token_256x2_o1_32_32
-          - name: sym-token-pair16
-            args: --features sym_token_128x2_512_pair16
-          - name: sym-token-pair16-lse4-ks
-            args: --features sym_token_128x2_512_pair16_lse4_ks
-          - name: sym-token-pair16-split
-            args: --features sym_token_128x2_512_pair16_split
-          - name: sym-token-pair16-h2
-            args: --features sym_token_128x2_512_256_pair16
-          - name: sym-token-pair16-o4
-            args: --features sym_token_128x2_o4_512_pair16
-          - name: sym-token-pair16-m16
-            args: --features sym_token_128x2_512_pair16_m16
-          - name: sym-token-pair16-f4
-            args: --features sym_token_128x2_512_pair16_f4
+          - name: synn-token
+            args: --features synn_token_128x2_32_32
+          - name: synn-token-pair16-m8-f2
+            args: --features synn_token_128x2_32_32_pair16_m8_f2
           - name: hce-material
             args: --features hce_material_17
           - name: hce-mobility
@@ -160,36 +126,25 @@ jobs:
           cargo clippy --workspace --all-targets --target x86_64-unknown-linux-gnu \
             ${{ matrix.args }} -- -D warnings
 
-  # The fourteen pair-table shapes that are not rows of the matrices above. They
-  # share every line of code with a row that is, and differ in a constant, so
-  # what can go wrong with one is that it does not compile or trips a lint that
-  # a constant being zero or one provokes (`lse16` has no mean channels at all):
-  # one workspace-wide clippy pass per shape finds both. The dependencies build
-  # once and every shape after the first recompiles only the workspace.
-  pair-shapes:
+  # The three SYNN shapes that are not rows of the matrices above: the pair table
+  # alone, and the KP and HalfKP feature spaces. They share every line of code with
+  # a row that is and differ in a constant, so what can go wrong with one is that it
+  # does not compile or trips a lint that a constant being zero or one provokes: one
+  # workspace-wide clippy pass per shape finds both. The dependencies build once and
+  # every shape after the first recompiles only the workspace.
+  synn-shapes:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-rust
       - uses: Swatinem/rust-cache@v2
         with:
-          key: pair-shapes
+          key: synn-shapes
       - run: |
           for shape in \
-            sym_token_128x2_512_pair32 \
-            sym_token_128x2_512_pair64 \
-            sym_token_64x2_512_pair16 \
-            sym_token_256x2_512_pair16 \
-            sym_token_128x2_o2_512_pair16 \
-            sym_token_128x2_1024_pair16 \
-            sym_token_128x2_512_512_pair16 \
-            sym_token_128x2_512_pair16_lse4 \
-            sym_token_128x2_512_pair16_lse8 \
-            sym_token_128x2_512_pair16_lse16 \
-            sym_token_128x2_512_pair16_ks \
-            sym_token_128x2_512_pair16_m32 \
-            sym_token_128x2_512_pair16_f2 \
-            sym_token_128x2_512_pair16_f8; do
+            synn_token_128x2_32_32_pair16 \
+            synn_kp_128x2_32_32 \
+            synn_halfkp_128x2_32_32; do
             echo "::group::$shape"
             cargo clippy --workspace --all-targets --features "$shape" -- -D warnings
             echo "::endgroup::"
@@ -218,44 +173,10 @@ jobs:
             args: --features nnue_halfkp_128x2_32_32
           - name: nnue-halfkp-768
             args: --features nnue_halfkp_768x2_16_64
-          - name: sym-kp-64
-            args: --features sym_kp_64x2_512
-          - name: sym-halfkp-64
-            args: --features sym_halfkp_64x2_512
-          - name: sym-kp
-            args: --features sym_kp_128x2_512
-          - name: sym-halfkp
-            args: --features sym_halfkp_128x2_512
-          - name: sym-kp-256
-            args: --features sym_kp_256x2_512
-          - name: sym-halfkp-256
-            args: --features sym_halfkp_256x2_512
-          - name: sym-kp-256-o1
-            args: --features sym_kp_256x2_o1_32_32
-          - name: sym-halfkp-256-o1
-            args: --features sym_halfkp_256x2_o1_32_32
-          - name: sym-token-64
-            args: --features sym_token_64x2_512
-          - name: sym-token
-            args: --features sym_token_128x2_512
-          - name: sym-token-256
-            args: --features sym_token_256x2_512
-          - name: sym-token-256-o1
-            args: --features sym_token_256x2_o1_32_32
-          - name: sym-token-pair16
-            args: --features sym_token_128x2_512_pair16
-          - name: sym-token-pair16-lse4-ks
-            args: --features sym_token_128x2_512_pair16_lse4_ks
-          - name: sym-token-pair16-split
-            args: --features sym_token_128x2_512_pair16_split
-          - name: sym-token-pair16-h2
-            args: --features sym_token_128x2_512_256_pair16
-          - name: sym-token-pair16-o4
-            args: --features sym_token_128x2_o4_512_pair16
-          - name: sym-token-pair16-m16
-            args: --features sym_token_128x2_512_pair16_m16
-          - name: sym-token-pair16-f4
-            args: --features sym_token_128x2_512_pair16_f4
+          - name: synn-token
+            args: --features synn_token_128x2_32_32
+          - name: synn-token-pair16-m8-f2
+            args: --features synn_token_128x2_32_32_pair16_m8_f2
           - name: hce-material
             args: --features hce_material_17
           - name: hce-mobility
@@ -294,44 +215,10 @@ jobs:
             args: --features nnue_halfkp_128x2_32_32
           - name: nnue-halfkp-768
             args: --features nnue_halfkp_768x2_16_64
-          - name: sym-kp-64
-            args: --features sym_kp_64x2_512
-          - name: sym-halfkp-64
-            args: --features sym_halfkp_64x2_512
-          - name: sym-kp
-            args: --features sym_kp_128x2_512
-          - name: sym-halfkp
-            args: --features sym_halfkp_128x2_512
-          - name: sym-kp-256
-            args: --features sym_kp_256x2_512
-          - name: sym-halfkp-256
-            args: --features sym_halfkp_256x2_512
-          - name: sym-kp-256-o1
-            args: --features sym_kp_256x2_o1_32_32
-          - name: sym-halfkp-256-o1
-            args: --features sym_halfkp_256x2_o1_32_32
-          - name: sym-token-64
-            args: --features sym_token_64x2_512
-          - name: sym-token
-            args: --features sym_token_128x2_512
-          - name: sym-token-256
-            args: --features sym_token_256x2_512
-          - name: sym-token-256-o1
-            args: --features sym_token_256x2_o1_32_32
-          - name: sym-token-pair16
-            args: --features sym_token_128x2_512_pair16
-          - name: sym-token-pair16-lse4-ks
-            args: --features sym_token_128x2_512_pair16_lse4_ks
-          - name: sym-token-pair16-split
-            args: --features sym_token_128x2_512_pair16_split
-          - name: sym-token-pair16-h2
-            args: --features sym_token_128x2_512_256_pair16
-          - name: sym-token-pair16-o4
-            args: --features sym_token_128x2_o4_512_pair16
-          - name: sym-token-pair16-m16
-            args: --features sym_token_128x2_512_pair16_m16
-          - name: sym-token-pair16-f4
-            args: --features sym_token_128x2_512_pair16_f4
+          - name: synn-token
+            args: --features synn_token_128x2_32_32
+          - name: synn-token-pair16-m8-f2
+            args: --features synn_token_128x2_32_32_pair16_m8_f2
           - name: hce-material
             args: --features hce_material_17
           - name: hce-mobility

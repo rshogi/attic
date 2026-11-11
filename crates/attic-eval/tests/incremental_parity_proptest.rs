@@ -27,8 +27,8 @@
 //! The network is staged locally and never committed, so when it is absent the
 //! test prints a notice and passes.
 
-// Manaka's shapes have no kernel backend to report and read an `MNW1` file, not
-// `eval/nn.bin`; `sym_network.rs` is their test. The hand-crafted shapes have no
+// Manaka's shapes have no kernel backend to report and read their own `nn.bin`
+// container, not YaneuraOu's `eval/nn.bin`; `sym_network.rs` is their test. The hand-crafted shapes have no
 // accumulator to keep in step and no file at all; `hce_golden.rs` is theirs.
 #![cfg(not(any(feature = "sym", feature = "hce")))]
 

@@ -1,46 +1,94 @@
-//! The file format: the architecture string, the lengths, and the three encodings.
+//! The file format: the architecture string, the lengths, and how the numbers are
+//! stored.
 
-use super::super::loader::{Encoding, arch_hash, expected_arch, parse_network};
+use super::super::loader::{arch_hash, expected_arch, parse_network};
 use super::super::shape::SQUARES;
 use super::super::{
-    BLOCK_LEN, DIM, FEATURE_LEN, FIELD, FIELD_AT, FIELD_LEN, GROUPS, HAS_FIELD, HAS_MOMENT,
-    HAS_PAIR, HEAD, HIDDEN, HIDDEN2, KS, LSE, MEAN, MOMENT, MOMENT_AT, MOMENT_LEN, ORDER, PAIR,
-    PAIR_AT, PAIR_ROWS, POWER_LEN, SCALE_AT, SCALE_LEN, SECOND_LAYER, TOKENS, evaluate_value,
+    BLOCK_LEN, DIM, FEATURE_LEN, FIELD, FIELD_AT, FIELD_LEN, HAS_FIELD, HAS_MOMENT, HAS_PAIR, HEAD,
+    HIDDEN, HIDDEN2, MOMENT, MOMENT_AT, MOMENT_LEN, ORDER, PAIR, PAIR_AT, PAIR_ROWS, POWER_LEN,
+    TOKENS, evaluate_value,
 };
-use super::encode::{column_of, column_scales, encode, encoded, map_channels, row_scales};
+use super::encode::{encode, encoded};
 use super::exported::EXPORTED;
 use super::fixtures::{game, synthetic};
 
 /// The string a build expects is the string Manaka's exporter writes for the
-/// same shape in each encoding, byte for byte, and hashes to what the exporter
-/// stored.
+/// same shape, byte for byte, and hashes to what the exporter stored.
 ///
-/// The exporter closes one parenthesis fewer than it opens, and says so in its
-/// own spec. A reader that "corrected" that would refuse every file, so this is
-/// what keeps the two spellings from drifting apart.
+/// The string leads with `Features=`: there is no word in front of it saying how
+/// the numbers are stored, because they are stored one way. The exporter closes
+/// one parenthesis fewer than it opens, and says so in its own spec. A reader that
+/// "corrected" that would refuse every file, so this is what keeps the two
+/// spellings from drifting apart.
 #[test]
 fn the_expected_architecture_is_what_the_exporter_writes() {
     let exported = EXPORTED;
-    for (encoding, hash) in [
-        (Encoding::Scaled, Some(exported.scaled)),
-        (Encoding::F32, Some(exported.f32)),
-        (Encoding::Legacy, exported.legacy),
+    let text = format!("Features={}", exported.rest);
+    assert_eq!(expected_arch(), text);
+    assert_eq!(arch_hash(&text), exported.hash);
+}
+
+/// The file the synthetic net is written to, with its architecture string
+/// replaced by `arch` and the length and hash that go with it, so that the only
+/// thing wrong with it is the string.
+fn with_architecture(arch: &str) -> Vec<u8> {
+    let bytes = encoded();
+    let len = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+    let mut out = Vec::new();
+    out.extend_from_slice(&bytes[..4]);
+    out.extend_from_slice(&arch_hash(arch).to_le_bytes());
+    out.extend_from_slice(&(arch.len() as u32).to_le_bytes());
+    out.extend_from_slice(arch.as_bytes());
+    out.extend_from_slice(&bytes[12 + len..]);
+    out
+}
+
+/// A string that says anything this build does not is refused at the header,
+/// whatever follows it: a reader that guessed would read the body at the stride the
+/// guess implied. The string before this format carried a `ModelType` word in front
+/// of `Features=`, and those files are refused too, since their body is another
+/// layout.
+#[test]
+fn a_string_that_is_not_this_shapes_is_refused() {
+    let arch = expected_arch();
+    assert!(parse_network(&with_architecture(&arch)).is_ok());
+    assert!(arch.starts_with("Features="), "{arch}");
+    for other in [
+        format!("ModelType=SYNNscaled;{arch}"),
+        format!("ModelType=SYNNf32;{arch}"),
+        format!("ModelType=SYNN;{arch}"),
+        arch.replacen("Features=", "features=", 1),
     ] {
-        // The exporter writes no such file, so there is no string to match; the
-        // reader has to agree that there is none.
-        let Some(hash) = hash else {
-            assert!(!encoding.exists(), "{encoding:?} exists with no export");
-            continue;
-        };
-        assert!(encoding.exists(), "{encoding:?} has an export");
-        let text = format!(
-            "ModelType={};Features={}",
-            encoding.model_type(),
-            exported.rest
-        );
-        assert_eq!(expected_arch(encoding), text, "{encoding:?}");
-        assert_eq!(arch_hash(&text), hash, "{encoding:?}");
+        let error = parse_network(&with_architecture(&other)).expect_err(&other);
+        assert!(error.to_string().contains("file says"), "{other}: {error}");
     }
+}
+
+/// The two words that make a string SYNN's are what the arithmetic is, so a file
+/// whose blocks or hidden layers are named otherwise is refused, though every
+/// section after the string is the one it would have read. The SYM spelling,
+/// `RmsNormScaled` and `ReLU`, is the case that matters: it is the other family's
+/// file, and its arithmetic is not this one's.
+#[test]
+fn a_file_naming_other_arithmetic_is_refused() {
+    let arch = expected_arch();
+    for (from, to) in [
+        ("ClipScaled", "NormScaled"),
+        ("ClippedReLU", "Activation"),
+        ("ClipScaled", "RmsNormScaled"),
+        ("ClippedReLU", "ReLU"),
+    ] {
+        let other = arch.replace(from, to);
+        assert_ne!(other, arch);
+        let error = parse_network(&with_architecture(&other)).expect_err(to);
+        assert!(error.to_string().contains("file says"), "{to}: {error}");
+    }
+    // Both at once is a whole SYM string.
+    let sym = arch
+        .replace("ClipScaled", "RmsNormScaled")
+        .replace("ClippedReLU", "ReLU");
+    let error = parse_network(&with_architecture(&sym)).expect_err("a SYM string");
+    assert!(error.to_string().contains("file says"), "{error}");
 }
 
 /// The lengths follow from the shape's numbers, and a layer or table the shape
@@ -48,19 +96,14 @@ fn the_expected_architecture_is_what_the_exporter_writes() {
 #[test]
 fn the_derived_lengths_agree_with_each_other() {
     // The head reads both perspectives, each the power blocks, the pair channels,
-    // the second moment, the square field and the kept magnitudes, in that order
-    // and with nothing between.
-    assert_eq!(POWER_LEN, GROUPS * ORDER * DIM);
-    assert_eq!(
-        BLOCK_LEN,
-        POWER_LEN + PAIR + MOMENT_LEN + FIELD_LEN + SCALE_LEN
-    );
+    // the second moment and the square field, in that order and with nothing
+    // between.
+    assert_eq!(POWER_LEN, ORDER * DIM);
+    assert_eq!(BLOCK_LEN, POWER_LEN + PAIR + MOMENT_LEN + FIELD_LEN);
     assert_eq!(PAIR_AT, POWER_LEN);
     assert_eq!(MOMENT_AT, PAIR_AT + PAIR);
     assert_eq!(FIELD_AT, MOMENT_AT + MOMENT_LEN);
-    assert_eq!(SCALE_AT, FIELD_AT + FIELD_LEN);
     assert_eq!(FEATURE_LEN, 2 * BLOCK_LEN);
-    assert_eq!(PAIR, MEAN + LSE);
     // The triangle of a symmetric `m × m` matrix, diagonal once, and 81 squares of
     // `f` channels.
     assert_eq!(
@@ -73,13 +116,8 @@ fn the_derived_lengths_agree_with_each_other() {
     );
     assert_eq!(FIELD_LEN, SQUARES * FIELD);
     assert_eq!(SQUARES, 81);
-    assert_eq!(HEAD, if SECOND_LAYER { HIDDEN2 } else { HIDDEN });
+    assert_eq!(HEAD, HIDDEN2);
     assert_eq!(TOKENS, crate::NUM_FEATURES);
-    // One magnitude per normalised block: every order of every group, and the
-    // pair's mean channels, the moment and the field when there are any.
-    let norms =
-        GROUPS * ORDER + usize::from(MEAN != 0) + usize::from(HAS_MOMENT) + usize::from(HAS_FIELD);
-    assert_eq!(SCALE_LEN, if KS { norms } else { 0 });
     assert_eq!(PAIR_ROWS, if HAS_PAIR { 2_745_996 } else { 0 });
     let net = synthetic();
     assert_eq!(net.embed.len(), TOKENS * DIM);
@@ -89,105 +127,42 @@ fn the_derived_lengths_agree_with_each_other() {
     assert_eq!(net.value_w.len(), HEAD);
     assert_eq!(net.pair_gamma.len(), PAIR);
     assert_eq!(net.pair.len(), PAIR_ROWS * PAIR);
-    assert_eq!(net.scale_gamma.len(), SCALE_LEN);
     assert_eq!(net.moment_gamma.len(), MOMENT_LEN);
     assert_eq!(net.moment_embed.len(), TOKENS * MOMENT);
     assert_eq!(net.field_gamma.len(), FIELD);
     assert_eq!(net.field.len(), TOKENS * FIELD_LEN);
 }
 
-/// An f32 file is read back as the network that was written, exactly.
-#[test]
-fn an_f32_file_reads_back_exactly() {
-    let net = synthetic();
-    let read = parse_network(encoded(Encoding::F32)).expect("the file loads");
-    assert_eq!(read.embed, net.embed);
-    assert_eq!(read.gamma, net.gamma);
-    assert_eq!(read.w1, net.w1);
-    assert_eq!(read.b1, net.b1);
-    assert_eq!(read.w2, net.w2);
-    assert_eq!(read.b2, net.b2);
-    assert_eq!(read.value_w, net.value_w);
-    assert_eq!(read.value_b, net.value_b);
-    assert_eq!(read.pair_gamma, net.pair_gamma);
-    assert_eq!(read.pair, net.pair);
-    assert_eq!(read.scale_gamma, net.scale_gamma);
-    assert_eq!(read.moment_gamma, net.moment_gamma);
-    assert_eq!(read.moment_embed, net.moment_embed);
-    assert_eq!(read.field_gamma, net.field_gamma);
-    assert_eq!(read.field, net.field);
-}
-
-/// Every element of a `SYMscaled` array is within half a step of its own group's
-/// scale, and the arrays that stay `f32` are exact. The groups are the point:
-/// the embedding's is a channel (`i mod d`), a dense weight's is its row
-/// (`i div cols`), and a reader that swapped them would divide by a neighbour's
-/// scale and be off by the ratio of the two.
-#[test]
-fn a_scaled_file_reads_back_within_half_a_step_of_its_own_group() {
-    let net = synthetic();
-    let read = parse_network(encoded(Encoding::Scaled)).expect("the file loads");
-
-    let within = |what: &str, got: &[f32], want: &[f32], scale_of: &dyn Fn(usize) -> f32| {
-        assert_eq!(got.len(), want.len(), "{what}: length");
-        for (i, (g, w)) in got.iter().zip(want).enumerate() {
-            let allowed = 0.5 / scale_of(i) + w.abs() * 2e-7;
-            assert!(
-                (g - w).abs() <= allowed,
-                "{what}[{i}]: read {g} for {w}, half a step is {allowed}"
-            );
-        }
-    };
-    let embed_scales = column_scales(&net.embed, DIM);
-    within("embed", &read.embed, &net.embed, &|i| embed_scales[i % DIM]);
-    let w1_scales = row_scales(&net.w1, FEATURE_LEN);
-    within("w1", &read.w1, &net.w1, &|i| w1_scales[i / FEATURE_LEN]);
-    if SECOND_LAYER {
-        let w2_scales = row_scales(&net.w2, HIDDEN);
-        within("w2", &read.w2, &net.w2, &|i| w2_scales[i / HIDDEN]);
-    }
-    if HAS_PAIR {
-        // The pair table's groups are its channels, and its log-sum-exp channels
-        // are stored as `θ` and exponentiated on the way in. A step of `1/scale`
-        // in `θ` is a factor of `e^(1/scale)` in the table, so those are held to
-        // a relative half-step of their own.
-        let mut theta = net.pair.clone();
-        map_channels(&mut theta, PAIR, MEAN, f32::ln);
-        let pair_scales = column_scales(&theta, PAIR);
-        for (i, (g, w)) in read.pair.iter().zip(&net.pair).enumerate() {
-            let channel = column_of(PAIR)(i);
-            let half_step = 0.5 / pair_scales[channel];
-            // The mean channels are compared as they are and the log-sum-exp
-            // ones by their logarithm; `LSE` of them end the row.
-            let ok = if PAIR - channel > LSE {
-                (g - w).abs() <= half_step + w.abs() * 2e-7
-            } else {
-                (g.ln() - w.ln()).abs() <= half_step + 1e-6
-            };
-            assert!(
-                ok,
-                "pair[{i}]: read {g} for {w}, half a step is {half_step}"
-            );
-        }
-    }
-    if HAS_MOMENT {
-        let scales = column_scales(&net.moment_embed, MOMENT);
-        let channel = column_of(MOMENT);
-        within(
-            "moment_embed",
-            &read.moment_embed,
-            &net.moment_embed,
-            &|i| scales[channel(i)],
+/// What a half costs a number: the nearest half is at most half a step away, which
+/// is `|x| · 2^−11` for a normal half and `2^−25` below `2^−14`, where every half is
+/// a multiple of `2^−24`.
+fn within_a_half_step(what: &str, got: &[f32], want: &[f32]) {
+    assert_eq!(got.len(), want.len(), "{what}: length");
+    for (i, (g, w)) in got.iter().zip(want).enumerate() {
+        let allowed = (w.abs() * 2f32.powi(-11)).max(2f32.powi(-25));
+        assert!(
+            (g - w).abs() <= allowed,
+            "{what}[{i}]: read {g} for {w}, half a step is {allowed}"
         );
     }
-    if HAS_FIELD {
-        // The group is the channel, the last of the three indices, and not the
-        // slot: a scale for each of the `81 · f` positions of a row would be a
-        // different file.
-        let scales = column_scales(&net.field, FIELD);
-        let channel = column_of(FIELD);
-        within("field", &read.field, &net.field, &|i| scales[channel(i)]);
-    }
+}
+
+/// Every array a half holds reads back within half a step of the number written,
+/// and every array that is `f32` reads back exactly. The synthetic net is drawn in
+/// `f32`, so this is what separates a reader that widens correctly from one that
+/// is merely close.
+#[test]
+fn a_file_reads_back_within_half_a_step() {
+    let net = synthetic();
+    let read = parse_network(encoded()).expect("the file loads");
+
+    within_a_half_step("embed", &read.embed, &net.embed);
+    within_a_half_step("w1", &read.w1, &net.w1);
+    within_a_half_step("w2", &read.w2, &net.w2);
+    within_a_half_step("pair", &read.pair, &net.pair);
+    within_a_half_step("moment_embed", &read.moment_embed, &net.moment_embed);
+    within_a_half_step("field", &read.field, &net.field);
+
     assert_eq!(read.gamma, net.gamma);
     assert_eq!(read.b1, net.b1);
     assert_eq!(read.b2, net.b2);
@@ -196,157 +171,135 @@ fn a_scaled_file_reads_back_within_half_a_step_of_its_own_group() {
     assert_eq!(read.pair_gamma, net.pair_gamma);
     assert_eq!(read.moment_gamma, net.moment_gamma);
     assert_eq!(read.field_gamma, net.field_gamma);
-    assert_eq!(read.scale_gamma, net.scale_gamma);
 }
 
-/// What `SYMscaled` is for. A trained net has weights far outside the legacy
-/// encoding's ±1.98 (`W1` reaches 28, `value_w` 17 in the nets measured), and the
-/// legacy writer clamps them. A scaled file holds the same weight to a step
-/// of `1 / scale`, however large the group it sits in.
+/// A net whose halved arrays are already halves is read back exactly, and written
+/// again to the same bytes. The first half of that is the reader being exact (a
+/// half is an `f32`), the second is the writer being the identity on what it has
+/// already rounded: the two are one round trip with nothing left to round.
 #[test]
-fn a_scaled_file_holds_a_weight_the_legacy_encoding_clamps() {
+fn a_net_of_halves_is_read_back_exactly() {
+    let first = parse_network(encoded()).expect("the file loads");
+    let bytes = encode(&first);
+    assert_eq!(bytes, encoded(), "writing what was read changed the file");
+    let second = parse_network(&bytes).expect("the file loads");
+    assert_eq!(second.embed, first.embed);
+    assert_eq!(second.w1, first.w1);
+    assert_eq!(second.w2, first.w2);
+    assert_eq!(second.pair, first.pair);
+    assert_eq!(second.moment_embed, first.moment_embed);
+    assert_eq!(second.field, first.field);
+}
+
+/// A trained net has weights far outside what a fixed scale holds (`W1` reaches 28,
+/// `value_w` 17 in the nets measured), and a half holds up to 65,504 with a relative
+/// step of `2^−11` wherever the weight sits. The test weights are a large one, a
+/// small one that is subnormal as a half, and the largest a half holds.
+#[test]
+fn a_half_holds_a_large_weight_and_a_small_one() {
     let mut net = synthetic().replicate();
     net.embed[3] = 7.5;
-    net.w1[0] = 20.0;
+    net.w1[0] = 1234.5678;
+    net.w1[1] = 3e-6;
+    net.w1[2] = 65504.0;
+    net.w1[3] = -65504.0;
     net.value_w[0] = 15.0;
 
-    let scaled = parse_network(&encode(&net, Encoding::Scaled)).expect("the file loads");
-    assert!(
-        (scaled.w1[0] - 20.0).abs() < 1e-3,
-        "w1[0] = {}",
-        scaled.w1[0]
-    );
-    assert!(
-        (scaled.embed[3] - 7.5).abs() < 1e-3,
-        "embed[3] = {}",
-        scaled.embed[3]
-    );
-    assert_eq!(scaled.value_w[0], 15.0);
-
-    // A shape with a pair table or kept magnitudes has no legacy file to clamp.
-    if Encoding::Legacy.exists() {
-        let legacy = parse_network(&encode(&net, Encoding::Legacy)).expect("the file loads");
-        assert_eq!(
-            legacy.w1[0],
-            127.0 / 64.0,
-            "the legacy writer clamps at 127 / 64"
-        );
-    }
+    let read = parse_network(&encode(&net)).expect("the file loads");
+    assert_eq!(read.embed[3], 7.5);
+    assert_eq!(read.w1[2], 65504.0);
+    assert_eq!(read.w1[3], -65504.0);
+    within_a_half_step("w1", &read.w1[..4], &net.w1[..4]);
+    // `3e-6` is under `2^−14` and so a subnormal: a multiple of `2^−24`.
+    assert!(read.w1[1] > 0.0 && (read.w1[1] / 2f32.powi(-24)).fract() == 0.0);
+    assert_eq!(read.value_w[0], 15.0);
 }
 
-/// The three encodings of one net are one network: the f32 file evaluates to the
-/// net exactly, and the scaled one to within what its steps cost.
+/// The file evaluates to what the net it was made from does, to within what the
+/// halves cost. The bound is not a guess: a half is off by at most `2^−11` of the
+/// weight, the first layer sums `FEATURE_LEN` of them against inputs in `[0, 1]`,
+/// and the value is read after two clipped layers, so the sum of rounding errors
+/// has to be well inside a thousandth of the unit.
 #[test]
-fn the_encodings_of_one_net_evaluate_alike() {
+fn the_file_evaluates_like_the_net_it_was_made_from() {
     let net = synthetic();
-    let f32_net = parse_network(encoded(Encoding::F32)).expect("the file loads");
-    let scaled = parse_network(encoded(Encoding::Scaled)).expect("the file loads");
+    let read = parse_network(encoded()).expect("the file loads");
     let mut worst = 0.0f32;
     for (pos, _) in game(30) {
         let want = evaluate_value(net, &pos);
-        assert_eq!(evaluate_value(&f32_net, &pos), want);
-        worst = worst.max((evaluate_value(&scaled, &pos) - want).abs());
+        worst = worst.max((evaluate_value(&read, &pos) - want).abs());
     }
     assert!(
         worst < 1e-3,
-        "scaled is {worst} from the net it was made from"
+        "the file is {worst} from the net it was made from"
     );
 }
 
 /// A file that is the wrong shape is refused at its header, one with a damaged
 /// section word at that section, one that is the wrong length at its end, and a
-/// scale that is not a positive number before it divides anything: a reader
-/// that took any of them would be reading at the wrong stride or handing the
-/// search an infinity.
+/// half that is an infinity or a NaN where it is read: a reader that took any of
+/// them would be reading at the wrong stride or handing the search an infinity.
 #[test]
-fn a_damaged_file_is_refused_in_every_encoding() {
-    for encoding in Encoding::ALL.into_iter().filter(|e| e.exists()) {
-        // One copy, damaged and put right again: a pair table makes the file
-        // large enough that a copy per case would be most of the test's time.
-        let mut bytes = encoded(encoding).to_vec();
-        let arch_len = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
-        let section_one = 12 + arch_len;
+fn a_damaged_file_is_refused() {
+    // One copy, damaged and put right again: a pair table makes the file large
+    // enough that a copy per case would be most of the test's time.
+    let mut bytes = encoded().to_vec();
+    let arch_len = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+    let section_one = 12 + arch_len;
 
-        // One character of the architecture string, past the 12-byte header.
-        bytes[12 + 14] ^= 0x01;
-        let error = parse_network(&bytes).expect_err("another architecture string");
-        bytes[12 + 14] ^= 0x01;
-        assert!(
-            error.to_string().contains("file says"),
-            "{encoding:?}: {error}"
-        );
+    // One character of the architecture string, past the 12-byte header.
+    bytes[12 + 14] ^= 0x01;
+    let error = parse_network(&bytes).expect_err("another architecture string");
+    bytes[12 + 14] ^= 0x01;
+    assert!(error.to_string().contains("file says"), "{error}");
 
-        // The word that opens each section: the first, and each optional one a
-        // shape has. Each is found by its value, so that this does not repeat
-        // the layout it is checking.
-        let (optional, end) = optional_sections(encoding, section_one);
-        // The legacy encoding is sized differently and has no optional section,
-        // so there is nothing there for the model to find.
-        if encoding != Encoding::Legacy {
-            assert_eq!(
-                end,
-                bytes.len(),
-                "{encoding:?}: the sizes add up to the file"
-            );
-        }
-        let mut words = vec![(section_one, "feature transformer")];
-        words.extend(optional);
-        for (at, name) in words {
-            bytes[at] ^= 0x01;
-            let error = parse_network(&bytes).expect_err("a damaged section word");
-            bytes[at] ^= 0x01;
-            assert!(
-                error.to_string().contains("hash"),
-                "{encoding:?}, {name}: {error}"
-            );
-        }
-
-        assert!(
-            parse_network(&bytes[..bytes.len() - 1]).is_err(),
-            "{encoding:?}: short"
-        );
-        bytes.push(0);
-        assert!(
-            parse_network(&bytes).is_err(),
-            "{encoding:?}: trailing byte"
-        );
-        bytes.pop();
-
-        if encoding == Encoding::Scaled {
-            for bad in [0.0f32, -1.0, f32::NAN, f32::INFINITY] {
-                // The first scale of the embedding follows the section word.
-                let at = section_one + 4;
-                let good: [u8; 4] = bytes[at..at + 4].try_into().unwrap();
-                bytes[at..at + 4].copy_from_slice(&bad.to_le_bytes());
-                let error = parse_network(&bytes).expect_err("a scale that cannot divide");
-                bytes[at..at + 4].copy_from_slice(&good);
-                assert!(error.to_string().contains("scale"), "{bad}: {error}");
-            }
-        }
-        assert!(parse_network(&bytes).is_ok(), "{encoding:?}: put right");
+    // The word that opens each section: the first, and each optional one a shape
+    // has. Each is found by its value, so that this does not repeat the layout it
+    // is checking.
+    let (optional, end) = optional_sections(section_one);
+    assert_eq!(end, bytes.len(), "the sizes add up to the file");
+    let mut words = vec![(section_one, "feature transformer")];
+    words.extend(optional);
+    for (at, name) in words {
+        bytes[at] ^= 0x01;
+        let error = parse_network(&bytes).expect_err("a damaged section word");
+        bytes[at] ^= 0x01;
+        assert!(error.to_string().contains("hash"), "{name}: {error}");
     }
+
+    assert!(parse_network(&bytes[..bytes.len() - 1]).is_err(), "short");
+    bytes.push(0);
+    assert!(parse_network(&bytes).is_err(), "trailing byte");
+    bytes.pop();
+
+    // The first half of the embedding follows the section word. An exponent of 31 is
+    // infinity (fraction 0) or a NaN (any other), and neither is a number a file
+    // holds.
+    for bad in [0x7c00u16, 0xfc00, 0x7e00, 0x7c01, 0xffff] {
+        let at = section_one + 4;
+        let good: [u8; 2] = bytes[at..at + 2].try_into().unwrap();
+        bytes[at..at + 2].copy_from_slice(&bad.to_le_bytes());
+        let error = parse_network(&bytes).expect_err("an infinity or a NaN");
+        bytes[at..at + 2].copy_from_slice(&good);
+        let said = error.to_string();
+        assert!(
+            said.contains("embed[0]") && said.contains("infinity or a NaN"),
+            "{bad:#06x}: {said}"
+        );
+    }
+    assert!(parse_network(&bytes).is_ok(), "put right");
 }
 
 /// Where the word of each optional section is, and where the file ends, from the
 /// sizes of the sections before it, written out from the format's description
-/// (`docs/network.md`, "Sections") and not from the reader. A scaled array is its
-/// scales and then two bytes an element; an `f32` one is four bytes an element;
-/// gains, biases and the value row are `f32` in both, and an empty array stores
-/// nothing, not even a scale.
-fn optional_sections(
-    encoding: Encoding,
-    section_one: usize,
-) -> (Vec<(usize, &'static str)>, usize) {
-    let array = |elements: usize, groups: usize| match (elements, encoding) {
-        (0, _) => 0,
-        (_, Encoding::Scaled) => 4 * groups + 2 * elements,
-        _ => 4 * elements,
-    };
-    let embed = array(TOKENS * DIM, DIM);
+/// (`docs/network.md`, "Sections") and not from the reader. A half is two bytes and
+/// nothing in front of the array; gains, biases and the value row are `f32`.
+fn optional_sections(section_one: usize) -> (Vec<(usize, &'static str)>, usize) {
+    let embed = 2 * TOKENS * DIM;
     let dense = 4 * ORDER * DIM
-        + array(HIDDEN * FEATURE_LEN, HIDDEN)
+        + 2 * HIDDEN * FEATURE_LEN
         + 4 * HIDDEN
-        + array(HIDDEN2 * HIDDEN, HIDDEN2)
+        + 2 * HIDDEN2 * HIDDEN
         + 4 * HIDDEN2
         + 4 * HEAD
         + 4;
@@ -360,21 +313,16 @@ fn optional_sections(
             at += 4 + size;
         }
     };
-    section(
-        HAS_PAIR,
-        "pair table",
-        4 * PAIR + array(PAIR_ROWS * PAIR, PAIR),
-    );
+    section(HAS_PAIR, "pair table", 4 * PAIR + 2 * PAIR_ROWS * PAIR);
     section(
         HAS_MOMENT,
         "second moment",
-        4 * MOMENT_LEN + array(TOKENS * MOMENT, MOMENT),
+        4 * MOMENT_LEN + 2 * TOKENS * MOMENT,
     );
     section(
         HAS_FIELD,
         "square field",
-        4 * FIELD + array(TOKENS * FIELD_LEN, FIELD),
+        4 * FIELD + 2 * TOKENS * FIELD_LEN,
     );
-    section(KS, "kept magnitudes", 4 * SCALE_LEN);
     (words, at)
 }

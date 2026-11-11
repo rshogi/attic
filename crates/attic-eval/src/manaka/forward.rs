@@ -1,58 +1,156 @@
-//! From an accumulator to a value: the polynomials, the norms, the pair, moment,
-//! field and kept-magnitude blocks, the hidden layers and the value row.
+//! From an accumulator to a value: the polynomials, the clipped blocks (the power
+//! sums, and the pair, moment and field blocks a shape has), the two hidden layers
+//! and the value row.
 //!
 //! Nothing here is incremental. The accumulator carries sums over tokens, and
 //! everything below is what cannot be kept as one — a polynomial of the sums, a
-//! root-mean-square, a logarithm, a matrix product — so it runs once per
-//! evaluation.
+//! clip, a matrix product — so it runs once per evaluation.
+//!
+//! The arithmetic after the sums is NNUE's. Each block is multiplied by its gain
+//! and clipped to `[0, 1]`, each hidden layer clips to `[0, 1]`, and the value is
+//! the row's output as it is: there is no norm, no `tanh` and no unbounded
+//! activation anywhere in it.
 
 use attic_state::Color;
 
+use super::dense;
 use super::{
-    Accumulator, BLOCK_LEN, DIM, FEATURE_LEN, FIELD_AT, FIELD_LEN, GROUPS, HAS_FIELD, HAS_MOMENT,
-    HAS_PAIR, HIDDEN, HIDDEN2, KS, MEAN, MOMENT_AT, MOMENT_LEN, ORDER, PAIR, PAIR_AT, POWER_LEN,
-    SCALE_AT, SCALE_LEN, SECOND_LAYER, SymNetwork,
+    Accumulator, BLOCK_LEN, DIM, FEATURE_LEN, FIELD_AT, FIELD_LEN, HAS_FIELD, HAS_MOMENT, HAS_PAIR,
+    HIDDEN, HIDDEN2, MOMENT_AT, MOMENT_LEN, ORDER, PAIR, PAIR_AT, POWER_LEN, SymNetwork,
 };
 
-/// Guard on the root-mean-square, matching `manaka_core::eval::RMS_EPS`. Both
-/// forwards floor at the same number or they are not the same function.
-pub(super) const RMS_EPS: f32 = 1e-6;
+pub(super) use dense::dense_clip;
 
-/// Floor under a log-sum-exp channel before its logarithm, matching
-/// `manaka_core::params::LSE_FLOOR`. A table that was never exponentiated could
-/// otherwise hand `ln` a negative sum, and the result is a NaN that poisons
-/// everything downstream.
-pub(super) const LSE_FLOOR: f32 = 1e-6;
+/// The group of channels `power_blocks` works on at once: an AVX2 register of `f32`.
+const LANES: usize = 8;
 
-/// Newton's identities, channel by channel: `k·e_k = Σ_{j=1..k} (−1)^{j−1} ·
-/// e_{k−j} · p_j`, with `e_0 = 1`.
+const _: () = assert!(
+    DIM.is_multiple_of(LANES),
+    "channels come in whole groups of eight"
+);
+
+/// Newton's identities, then each order's gain and clip.
 ///
-/// Not incrementally updatable, which is the reason the accumulator keeps `p`
-/// and this runs once per evaluation rather than once per token change.
-fn elementary_from_power(p: &[f32]) -> [f32; ORDER * DIM] {
-    debug_assert_eq!(p.len(), ORDER * DIM);
-    let mut out = [0.0f32; ORDER * DIM];
-    for channel in 0..DIM {
-        let mut e = [1.0f32; ORDER + 1];
-        for k in 1..=ORDER {
-            let mut acc = 0.0f32;
-            let mut sign = 1.0f32;
-            for j in 1..=k {
-                acc += sign * e[k - j] * p[(j - 1) * DIM + channel];
-                sign = -sign;
-            }
-            e[k] = acc / k as f32;
-            out[(k - 1) * DIM + channel] = e[k];
-        }
+/// `k·e_k = Σ_{j=1..k} (−1)^{j−1} · e_{k−j} · p_j`, with `e_0 = 1`, and the block
+/// that goes on to the first hidden layer is `clamp(e_k · gamma_k, 0, 1)`.
+///
+/// Not incrementally updatable, which is the reason the accumulator keeps `p` and
+/// this runs once per evaluation rather than once per token change.
+///
+/// One pass over groups of eight channels: a group takes its `p_1 … p_ORDER` in,
+/// works every order out in registers and writes the clipped blocks, where doing
+/// each order and the clip as a pass of their own is `ORDER` times the loads and
+/// stores. Every channel does the operations the channel-at-a-time form did, in
+/// the same order — `acc` from zero, `+= sign · e_{k−j} · p_j` for `j = 1..k`, then
+/// `/ k`, then `· gamma` and the clip — so the result is the same bits, and the
+/// tests hold both paths to that form.
+#[inline]
+fn power_blocks(p: &[f32], gamma: &[f32], out: &mut [f32]) {
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    {
+        // SAFETY: the `cfg` above is the build enabling AVX2 for the CPU it runs on.
+        unsafe { power_blocks_avx2(p, gamma, out) }
     }
-    out
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+    {
+        power_blocks_scalar(p, gamma, out);
+    }
 }
 
-/// The mean of the squares of `values`, plus the guard, rooted: what a norm
-/// divides by, and what `ks` keeps the logarithm of.
-fn root_mean_square(values: &[f32]) -> f32 {
-    let mean_square: f32 = values.iter().map(|v| v * v).sum::<f32>() / values.len() as f32;
-    (mean_square + RMS_EPS).sqrt()
+/// [`power_blocks`] in plain `f32`: the reference the AVX2 path is held to.
+///
+/// Index loops throughout, on purpose: this is the plainest thing that says what
+/// the identities say, which is what makes agreeing with it mean something.
+#[allow(dead_code, clippy::needless_range_loop)]
+fn power_blocks_scalar(p: &[f32], gamma: &[f32], out: &mut [f32]) {
+    assert_eq!(p.len(), ORDER * DIM);
+    assert_eq!(gamma.len(), ORDER * DIM);
+    assert_eq!(out.len(), ORDER * DIM);
+    for at in (0..DIM).step_by(LANES) {
+        // `e[0]` is one in every channel.
+        let mut e = [[1.0f32; LANES]; ORDER + 1];
+        for k in 1..=ORDER {
+            let mut acc = [0.0f32; LANES];
+            let mut sign = 1.0f32;
+            for j in 1..=k {
+                for lane in 0..LANES {
+                    acc[lane] += sign * e[k - j][lane] * p[(j - 1) * DIM + at + lane];
+                }
+                sign = -sign;
+            }
+            for lane in 0..LANES {
+                e[k][lane] = acc[lane] / k as f32;
+            }
+        }
+        for k in 1..=ORDER {
+            for lane in 0..LANES {
+                let base = (k - 1) * DIM + at + lane;
+                out[base] = (e[k][lane] * gamma[base]).clamp(0.0, 1.0);
+            }
+        }
+    }
+}
+
+/// [`power_blocks_scalar`] with the eight channels of a group in one register.
+///
+/// `sign · e · p` is `±(e · p)` exactly, so the odd terms are added and the even
+/// ones subtracted, which is the same sum with one multiplication fewer. The clip
+/// is `f32::clamp`'s: below zero is zero, above one is one, and anything else —
+/// negative zero, `NaN` — is left as it is, which is what a compare and a blend
+/// do and what `_mm256_max_ps` and `_mm256_min_ps` do not.
+///
+/// # Safety
+/// The running CPU must support AVX2. The `cfg` that compiles this in names it,
+/// and the build is for the host CPU, so it does.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[allow(dead_code, clippy::needless_range_loop)]
+#[target_feature(enable = "avx2")]
+unsafe fn power_blocks_avx2(p: &[f32], gamma: &[f32], out: &mut [f32]) {
+    use std::arch::x86_64::*;
+
+    assert_eq!(p.len(), ORDER * DIM);
+    assert_eq!(gamma.len(), ORDER * DIM);
+    assert_eq!(out.len(), ORDER * DIM);
+    let zero = _mm256_setzero_ps();
+    let one = _mm256_set1_ps(1.0);
+    for at in (0..DIM).step_by(LANES) {
+        let mut e = [one; ORDER + 1];
+        for k in 1..=ORDER {
+            let mut acc = zero;
+            for j in 1..=k {
+                // SAFETY: `(j − 1) · DIM + at + 8 <= ORDER · DIM`, which is what `p`
+                // holds (asserted above); the load is unaligned.
+                let power = unsafe { _mm256_loadu_ps(p.as_ptr().add((j - 1) * DIM + at)) };
+                // `e_0` is one, so its term is `p_k` as it is.
+                let term = if j == k {
+                    power
+                } else {
+                    _mm256_mul_ps(e[k - j], power)
+                };
+                acc = if j % 2 == 1 {
+                    _mm256_add_ps(acc, term)
+                } else {
+                    _mm256_sub_ps(acc, term)
+                };
+            }
+            e[k] = _mm256_div_ps(acc, _mm256_set1_ps(k as f32));
+        }
+        for k in 1..=ORDER {
+            let base = (k - 1) * DIM + at;
+            // SAFETY: `base + 8 <= ORDER · DIM`, which is what `gamma` and `out`
+            // hold (asserted above); the access is unaligned.
+            unsafe {
+                let x = _mm256_mul_ps(e[k], _mm256_loadu_ps(gamma.as_ptr().add(base)));
+                let at_least_zero = _mm256_blendv_ps(x, zero, _mm256_cmp_ps::<_CMP_LT_OQ>(x, zero));
+                let at_most_one = _mm256_blendv_ps(
+                    at_least_zero,
+                    one,
+                    _mm256_cmp_ps::<_CMP_GT_OQ>(at_least_zero, one),
+                );
+                _mm256_storeu_ps(out.as_mut_ptr().add(base), at_most_one);
+            }
+        }
+    }
 }
 
 /// What the accumulator holds for one perspective, as the forward pass reads it.
@@ -64,31 +162,33 @@ struct Sums<'a> {
     field: &'a [f32],
 }
 
-/// `values` scaled by `scale` and by `gamma` into `out`, in the order the
-/// reference multiplies them: `sum × (1/r) × gamma`, left to right.
-fn scale_by_gamma(values: &[f32], scale: f32, gamma: &[f32], out: &mut [f32]) {
+/// `values` multiplied by `gamma` and clipped to `[0, 1]` into `out`: what every
+/// block is put through before the first hidden layer.
+///
+/// The product is `sum × gamma` and nothing else: nothing is divided by a
+/// root-mean-square first. It is Manaka's `(e × gamma).clamp(0, 1)` from the
+/// `nnue` arm of `eval.rs`, in the same order.
+fn clip_by_gamma(values: &[f32], gamma: &[f32], out: &mut [f32]) {
     for ((slot, &sum), &gamma) in out.iter_mut().zip(values).zip(gamma) {
-        *slot = sum * scale * gamma;
+        *slot = (sum * gamma).clamp(0.0, 1.0);
     }
 }
 
-/// [`scale_by_gamma`] for a block laid out `[square][channel]`, whose gain is one
-/// per channel and so repeats for every square.
-///
-/// The width is `gamma`'s length and not the constant it is, because a shape
-/// without a field is compiled with this call in it and a constant chunk size of
-/// zero is something clippy refuses to see.
-fn scale_by_channel_gamma(values: &[f32], scale: f32, gamma: &[f32], out: &mut [f32]) {
+/// [`clip_by_gamma`] for a block laid out `[square][channel]`, whose gain is one
+/// per channel and so repeats for every square. The width is `gamma`'s length and
+/// not the constant it is, because a shape without a field is compiled with this
+/// call in it and a constant chunk size of zero is something clippy refuses to
+/// see.
+fn clip_by_channel_gamma(values: &[f32], gamma: &[f32], out: &mut [f32]) {
     let width = gamma.len();
     for (slots, sums) in out.chunks_exact_mut(width).zip(values.chunks_exact(width)) {
-        scale_by_gamma(sums, scale, gamma, slots);
+        clip_by_gamma(sums, gamma, slots);
     }
 }
 
 /// One perspective's share of the head's input, in the layout `shape.rs` gives:
-/// each group's order blocks RMS-normalised and scaled by their own gamma, then
-/// the pair channels, the second moment and the square field, then the kept
-/// magnitudes.
+/// each order's block, then the pair channels, the second moment and the square
+/// field, each scaled by its own gamma and clipped to `[0, 1]`.
 fn block_from_sums(net: &SymNetwork, sums: &Sums<'_>, out: &mut [f32]) {
     let Sums {
         power,
@@ -102,114 +202,36 @@ fn block_from_sums(net: &SymNetwork, sums: &Sums<'_>, out: &mut [f32]) {
     debug_assert_eq!(field.len(), FIELD_LEN);
     debug_assert_eq!(out.len(), BLOCK_LEN);
 
-    // The magnitudes the norms divide away, in the order the blocks are
-    // emitted: every order of the first group, then of the second, then the
-    // pair's, the moment's and the field's. Read only by `ks`.
-    let mut kept = [0.0f32; SCALE_LEN];
-    let mut blocks = 0;
-
-    for group in 0..GROUPS {
-        let start = group * ORDER * DIM;
-        let e = elementary_from_power(&power[start..start + ORDER * DIM]);
-        for k in 0..ORDER {
-            let block = &e[k * DIM..(k + 1) * DIM];
-            let rms = root_mean_square(block);
-            let scale = 1.0 / rms;
-            if KS {
-                kept[blocks] = rms;
-                blocks += 1;
-            }
-            let gamma = &net.gamma[k * DIM..(k + 1) * DIM];
-            let out = &mut out[start + k * DIM..start + (k + 1) * DIM];
-            for channel in 0..DIM {
-                // Left to right, the same grouping Manaka's own forward uses.
-                // f32 addition is not associative and neither is this product,
-                // so folding `scale * gamma` first would be a different number.
-                out[channel] = block[channel] * scale * gamma[channel];
-            }
-        }
-    }
+    power_blocks(power, &net.gamma, &mut out[..POWER_LEN]);
 
     if HAS_PAIR {
-        // The mean channels are a sum of 780 table rows and are normalised
-        // like an order block. The log-sum-exp ones are not, and must not be:
-        // `ln Σ exp` is already bounded and its magnitude is the half of the
-        // answer a norm would discard. They are not in the norm's mean either,
-        // so a shape with both kinds prices each on its own terms.
-        let (mean_out, lse_out) = out[PAIR_AT..PAIR_AT + PAIR].split_at_mut(MEAN);
-        if MEAN != 0 {
-            let rms = root_mean_square(&pair[..MEAN]);
-            let scale = 1.0 / rms;
-            if KS {
-                kept[blocks] = rms;
-                blocks += 1;
-            }
-            for ((slot, &sum), &gamma) in mean_out.iter_mut().zip(pair).zip(&net.pair_gamma) {
-                *slot = sum * scale * gamma;
-            }
-        }
-        let lse_in = pair[MEAN..].iter().zip(&net.pair_gamma[MEAN..]);
-        for (slot, (&sum, &gamma)) in lse_out.iter_mut().zip(lse_in) {
-            *slot = sum.max(LSE_FLOOR).ln() * gamma;
-        }
+        clip_by_gamma(pair, &net.pair_gamma, &mut out[PAIR_AT..PAIR_AT + PAIR]);
     }
 
     if HAS_MOMENT {
-        // One norm over all the entries of the triangle, and a gain for each
-        // entry. The diagonal is in the mean once, as it is in the triangle.
-        let rms = root_mean_square(moment);
-        if KS {
-            kept[blocks] = rms;
-            blocks += 1;
-        }
+        // One gain for each entry of the triangle. The diagonal is in once, as it
+        // is in the triangle.
         let out = &mut out[MOMENT_AT..MOMENT_AT + MOMENT_LEN];
-        scale_by_gamma(moment, 1.0 / rms, &net.moment_gamma, out);
+        clip_by_gamma(moment, &net.moment_gamma, out);
     }
 
     if HAS_FIELD {
-        // One norm over all 81 squares at once, and a gain for each channel
-        // that every square shares.
-        let rms = root_mean_square(field);
-        if KS {
-            kept[blocks] = rms;
-            blocks += 1;
-        }
+        // One gain for each channel, which every one of the 81 squares shares.
         let out = &mut out[FIELD_AT..FIELD_AT + FIELD_LEN];
-        scale_by_channel_gamma(field, 1.0 / rms, &net.field_gamma, out);
-    }
-
-    if KS {
-        debug_assert_eq!(blocks, SCALE_LEN);
-        // What each norm above divided away. Forty tokens go in whatever the
-        // position, so this is not the set-size correction a norm usually
-        // removes: it is the position moving pieces between the board and the
-        // hands, which the head would otherwise never be shown. The logarithm
-        // is of the root-mean-square of the *true-scale* sum, which these are:
-        // the readers divide every table by its scale on the way in.
-        let out = &mut out[SCALE_AT..SCALE_AT + SCALE_LEN];
-        for (slot, (&rms, &gamma)) in out.iter_mut().zip(kept.iter().zip(&net.scale_gamma)) {
-            *slot = rms.ln() * gamma;
-        }
+        clip_by_channel_gamma(field, &net.field_gamma, out);
     }
 }
 
-/// One dense layer and its ReLU: `out[row] = max(0, bias[row] + weights[row] · input)`.
-///
-/// The sum is left to right, the same grouping the first layer had before there
-/// was a second, so a shape with one layer produces the numbers it always did.
-fn dense_relu(weights: &[f32], bias: &[f32], input: &[f32], out: &mut [f32]) {
-    debug_assert_eq!(weights.len(), out.len() * input.len());
-    for (row, slot) in out.iter_mut().enumerate() {
-        let weights = &weights[row * input.len()..(row + 1) * input.len()];
-        let sum: f32 = weights.iter().zip(input).map(|(w, x)| w * x).sum();
-        *slot = (bias[row] + sum).max(0.0);
-    }
-}
-
-/// The head up to the `tanh`, from an accumulator: polynomials, norm, the
-/// hidden layers, and the value row's pre-activation.
-pub(super) fn pre_from_sums(net: &SymNetwork, acc: &Accumulator, stm: Color) -> f32 {
-    let mut features = [0.0f32; FEATURE_LEN];
+/// What the first hidden layer reads: both perspectives' blocks, side to move
+/// first, each in the layout `shape.rs` gives. Split out of [`value_from_sums`] so
+/// that a test can look at the head's input without a second implementation of
+/// how it is assembled.
+pub(super) fn features_from_sums(
+    net: &SymNetwork,
+    acc: &Accumulator,
+    stm: Color,
+    features: &mut [f32; FEATURE_LEN],
+) {
     // Side to move first: the head was trained reading its own frame in the
     // first half, and swapping them is a different network.
     for (half, frame) in [stm, stm.flip()].into_iter().enumerate() {
@@ -226,25 +248,105 @@ pub(super) fn pre_from_sums(net: &SymNetwork, acc: &Accumulator, stm: Color) -> 
             &mut features[half * BLOCK_LEN..(half + 1) * BLOCK_LEN],
         );
     }
-
-    let mut hidden = [0.0f32; HIDDEN];
-    dense_relu(&net.w1, &net.b1, &features, &mut hidden);
-
-    // Zero-sized, and never written, when the shape has one layer: `HIDDEN2`
-    // is a constant, so the branch below is decided before the code is.
-    let mut second = [0.0f32; HIDDEN2];
-    let head: &[f32] = if SECOND_LAYER {
-        dense_relu(&net.w2, &net.b2, &hidden, &mut second);
-        &second
-    } else {
-        &hidden
-    };
-
-    let sum: f32 = net.value_w.iter().zip(head).map(|(w, h)| w * h).sum();
-    net.value_b + sum
 }
 
-/// The head, from an accumulator: [`pre_from_sums`] and a `tanh`.
+/// The head, from an accumulator: the clipped blocks, the two clipped hidden
+/// layers, and the value row's output as it is.
+///
+/// It is not bounded by one. What bounds it is the same thing that bounds NNUE's
+/// output: a row of weights over activations that are themselves clipped to
+/// `[0, 1]`.
 pub(super) fn value_from_sums(net: &SymNetwork, acc: &Accumulator, stm: Color) -> f32 {
-    pre_from_sums(net, acc, stm).tanh()
+    let mut features = [0.0f32; FEATURE_LEN];
+    features_from_sums(net, acc, stm, &mut features);
+
+    let mut hidden = [0.0f32; HIDDEN];
+    match &net.qw1 {
+        Some(q) => q.layer_clip(&features, &net.b1, &mut hidden),
+        None => dense_clip(&net.w1, &net.b1, &features, &mut hidden),
+    }
+
+    let mut second = [0.0f32; HIDDEN2];
+    dense_clip(&net.w2, &net.b2, &hidden, &mut second);
+
+    // The value row's sum is the dense layers' too: eight lanes, as Manaka's is.
+    net.value_b + dense::dot(&net.value_w, &second)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The Newton identities as they were written with the channel as the outer
+    /// loop, then the gain and the clip as a pass of their own: the form the
+    /// fused pass replaced, kept to hold it to the same bits.
+    fn channel_outer(p: &[f32], gamma: &[f32]) -> [f32; ORDER * DIM] {
+        let mut out = [0.0f32; ORDER * DIM];
+        for channel in 0..DIM {
+            let mut e = [1.0f32; ORDER + 1];
+            for k in 1..=ORDER {
+                let mut acc = 0.0f32;
+                let mut sign = 1.0f32;
+                for j in 1..=k {
+                    acc += sign * e[k - j] * p[(j - 1) * DIM + channel];
+                    sign = -sign;
+                }
+                e[k] = acc / k as f32;
+                let at = (k - 1) * DIM + channel;
+                out[at] = (e[k] * gamma[at]).clamp(0.0, 1.0);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_fused_blocks_are_the_channel_at_a_time_ones_to_the_last_bit() {
+        let mut state = 9u64;
+        let mut next = |scale: f32| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            // Sums over forty tokens, so a few units either way, with the
+            // occasional exact zero and negative zero.
+            match (state >> 33) % 17 {
+                0 => 0.0,
+                1 => -0.0,
+                _ => ((state >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * scale,
+            }
+        };
+        for round in 0..50 {
+            let p: Vec<f32> = (0..ORDER * DIM).map(|_| next(12.0)).collect();
+            let gamma: Vec<f32> = (0..ORDER * DIM).map(|_| next(3.0)).collect();
+            let want = channel_outer(&p, &gamma);
+            let mut scalar = [0.0f32; ORDER * DIM];
+            power_blocks_scalar(&p, &gamma, &mut scalar);
+            let mut dispatched = [0.0f32; ORDER * DIM];
+            power_blocks(&p, &gamma, &mut dispatched);
+            #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+            let avx2 = {
+                let mut out = [0.0f32; ORDER * DIM];
+                // SAFETY: the `cfg` is the build enabling AVX2.
+                unsafe { power_blocks_avx2(&p, &gamma, &mut out) };
+                out
+            };
+            for (at, w) in want.iter().enumerate() {
+                assert_eq!(
+                    scalar[at].to_bits(),
+                    w.to_bits(),
+                    "scalar, round {round} entry {at}"
+                );
+                assert_eq!(
+                    dispatched[at].to_bits(),
+                    w.to_bits(),
+                    "dispatched, round {round} entry {at}"
+                );
+                #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+                assert_eq!(
+                    avx2[at].to_bits(),
+                    w.to_bits(),
+                    "avx2, round {round} entry {at}"
+                );
+            }
+        }
+    }
 }

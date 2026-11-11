@@ -1,77 +1,28 @@
 //! Reading the `nn.bin` container: the header and the architecture string, and
-//! which of the three encodings of its numbers the file is in.
+//! then the body.
 //!
-//! One layout, three encodings, and `ModelType` in the architecture string says
-//! which. Each encoding has a reader of its own in `body.rs` that takes the body
-//! from the first section to the last, so a new encoding is one more function
-//! there and one more arm of the `match` in [`parse_network`]; nothing else knows
-//! how a number is stored. Whatever the encoding, the result is the same `f32`
-//! tables, which is what keeps the forward pass free of any of them.
+//! One layout and one way to store a number, so the string says nothing about
+//! how the numbers are stored: it leads with `Features=` as YaneuraOu's does and
+//! spells the structure. `body.rs` reads the body from the first section to the
+//! last, and nothing else knows how a number is stored. The result is `f32`
+//! tables, which is what keeps the forward pass free of how they were written.
 
 use std::path::Path;
 
 use crate::types::NnueError;
 
-use super::body::{read_f32, read_legacy, read_scaled};
+use super::body::read_body;
 use super::reader::Reader;
 use super::{
     DIM, FEATURE_LEN, FIELD, FIELD_AT, FIELD_LEN, HAS_FIELD, HAS_MOMENT, HAS_PAIR, HIDDEN, HIDDEN2,
-    KS, LSE, MEAN, MOMENT, MOMENT_AT, MOMENT_LEN, ORDER, PAIR, PAIR_AT, SCALE_LEN, SPLIT,
-    SymNetwork, TOKENS,
+    MOMENT, MOMENT_AT, MOMENT_LEN, ORDER, PAIR, PAIR_AT, SymNetwork, TOKENS,
 };
 
 /// The container's version word, shared with every `nn.bin` YaneuraOu writes.
 ///
 /// These files are not YaneuraOu's — it would refuse one at the architecture
-/// string — but they are the same *container*, which is what lets one reader
-/// open both and decide from the header which it is holding.
+/// string — but they are the same *container*.
 pub(super) const VERSION: u32 = 0x7AF3_2F16;
-
-/// What one embedding channel was multiplied by on its way to `i16`, in the
-/// legacy encoding. `SYMscaled` carries a scale per group instead.
-pub(super) const EMBED_SCALE: f32 = 512.0;
-
-/// What a dense weight or bias was multiplied by in the legacy encoding: six
-/// bits of fraction, the same `1 << kWeightScaleBits` NNUE uses.
-pub(super) const WEIGHT_SCALE: f32 = 64.0;
-
-/// How the numbers of a file are stored. The three differ in the `ModelType`
-/// word of the architecture string and nowhere else.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) enum Encoding {
-    /// `i16` arrays, each with a scale per group that the file carries; biases,
-    /// gains and the value row `f32`. What `export-nnue` writes by default.
-    Scaled,
-    /// Every array `f32`, exactly as the trainer holds it.
-    F32,
-    /// `i16` embedding at one scale and `i8`/`i32` dense arrays at another. It
-    /// clamps any trained weight past 1.98, so it is read for the files already
-    /// written and no longer produced.
-    Legacy,
-}
-
-impl Encoding {
-    pub(super) const ALL: [Encoding; 3] = [Encoding::Scaled, Encoding::F32, Encoding::Legacy];
-
-    /// Whether a file of this shape can be in this encoding.
-    ///
-    /// The legacy one has no section for the pair table, the second moment, the
-    /// square field or the kept magnitudes' gains, and Manaka's writer refuses a
-    /// net with any of them rather than leave them out, so there is no such file
-    /// to read: matching one would be reading a string no exporter wrote.
-    pub(super) fn exists(self) -> bool {
-        self != Encoding::Legacy || !(HAS_PAIR || HAS_MOMENT || HAS_FIELD || KS)
-    }
-
-    /// The `ModelType` word.
-    pub(super) fn model_type(self) -> &'static str {
-        match self {
-            Encoding::Scaled => "SYMscaled",
-            Encoding::F32 => "SYMf32",
-            Encoding::Legacy => "SYM",
-        }
-    }
-}
 
 /// The architecture string a file for this build must carry.
 ///
@@ -82,10 +33,14 @@ impl Encoding {
 /// (`sym_arch_string`), parentheses included: it closes one fewer than it
 /// opens, and a reader that balanced them would refuse every file.
 ///
-/// The second hidden layer is spelled out when there is one. It is a layer in
-/// the file, not a detail of it: a name that left it out would describe a net
-/// whose value row is `HIDDEN` wide when it is `HIDDEN2` wide.
-pub(super) fn expected_arch(encoding: Encoding) -> String {
+/// The words are the names of what the arithmetic is, as `PowerSum` and `Newton`
+/// are: `ClipScaled` for each block, which is multiplied by its gain and clipped
+/// to `[0, 1]`, and `ClippedReLU` after each hidden layer. They are also all that
+/// tells this net from a SYM one, whose words are `RmsNormScaled` and `ReLU`, so a
+/// SYM file is refused here by its string. The second hidden layer is a layer in
+/// the file, not a detail of it: a name that left it out would describe a net whose
+/// value row is `HIDDEN` wide when it is `HIDDEN2` wide.
+pub(super) fn expected_arch() -> String {
     // Manaka's own space is the one that does not name its row count: the
     // exporter writes `Tokens[<d>x2]`, and the 2,344 is implied by the word.
     let features = if cfg!(feature = "sym_token") {
@@ -95,57 +50,40 @@ pub(super) fn expected_arch(encoding: Encoding) -> String {
     } else {
         format!("HalfKP(Friend)[{TOKENS}->")
     };
-    let model = encoding.model_type();
     let block = ORDER * DIM;
 
     // The head's input, block by block, as the exporter spells them. The power
-    // block comes first and is wrapped when it is split; the others follow in
-    // the order `shape.rs` lays them out, each only if the shape has it.
-    let power = format!(
-        "RmsNormScaled[{block}](Newton[{ORDER}](PowerSum[{ORDER}](InputSlice[{block}(0:{block})])))"
+    // block comes first and the others follow in the order `shape.rs` lays them
+    // out, each only if the shape has it.
+    let mut input = format!(
+        "ClipScaled[{block}](Newton[{ORDER}](PowerSum[{ORDER}](InputSlice[{block}(0:{block})])))"
     );
-    let mut input = if SPLIT {
-        format!("OwnerSplit[2]({power})")
-    } else {
-        power
-    };
-    if MEAN != 0 {
-        let end = PAIR_AT + MEAN;
-        input += &format!(
-            ",RmsNormScaled[{MEAN}](PairSum[{MEAN}](InputSlice[{MEAN}({PAIR_AT}:{end})]))"
-        );
+    if HAS_PAIR {
+        let end = PAIR_AT + PAIR;
+        input +=
+            &format!(",ClipScaled[{PAIR}](PairSum[{PAIR}](InputSlice[{PAIR}({PAIR_AT}:{end})]))");
     }
-    if LSE != 0 {
-        let (start, end) = (PAIR_AT + MEAN, PAIR_AT + PAIR);
-        input += &format!(",LogSumExp[{LSE}](PairSum[{LSE}](InputSlice[{LSE}({start}:{end})]))");
-    }
-    if MOMENT != 0 {
+    if HAS_MOMENT {
         let end = MOMENT_AT + MOMENT_LEN;
         input += &format!(
-            ",RmsNormScaled[{MOMENT_LEN}](SecondMoment[{MOMENT}](InputSlice[{MOMENT_LEN}({MOMENT_AT}:{end})]))"
+            ",ClipScaled[{MOMENT_LEN}](SecondMoment[{MOMENT}](InputSlice[{MOMENT_LEN}({MOMENT_AT}:{end})]))"
         );
     }
-    if FIELD != 0 {
+    if HAS_FIELD {
         let end = FIELD_AT + FIELD_LEN;
         input += &format!(
-            ",RmsNormScaled[{FIELD_LEN}](SquareField[{FIELD}](InputSlice[{FIELD_LEN}({FIELD_AT}:{end})]))"
+            ",ClipScaled[{FIELD_LEN}](SquareField[{FIELD}](InputSlice[{FIELD_LEN}({FIELD_AT}:{end})]))"
         );
-    }
-    if KS {
-        input += &format!(",KeepScale[{SCALE_LEN}]");
     }
 
     // One `)` short, as the exporter's is: the outermost `Dense` is never
-    // closed. What is closed here is the first layer and its ReLU, and with a
-    // second layer, that one and its ReLU too.
-    let network = match HIDDEN2 {
-        0 => format!("Dense[1<-{HIDDEN}](ReLU[{HIDDEN}](Dense[{HIDDEN}<-{FEATURE_LEN}]({input}))"),
-        _ => format!(
-            "Dense[1<-{HIDDEN2}](ReLU[{HIDDEN2}](Dense[{HIDDEN2}<-{HIDDEN}]\
-             (ReLU[{HIDDEN}](Dense[{HIDDEN}<-{FEATURE_LEN}]({input}))))"
-        ),
-    };
-    format!("ModelType={model};Features={features}{DIM}x2],Network={network}")
+    // closed. What is closed here is the first layer and its activation, and the
+    // second layer and its activation too.
+    let network = format!(
+        "Dense[1<-{HIDDEN2}](ClippedReLU[{HIDDEN2}](Dense[{HIDDEN2}<-{HIDDEN}]\
+         (ClippedReLU[{HIDDEN}](Dense[{HIDDEN}<-{FEATURE_LEN}]({input}))))"
+    );
+    format!("Features={features}{DIM}x2],Network={network}")
 }
 
 /// FNV-1a over the architecture string, the same digest Manaka's exporter
@@ -163,17 +101,23 @@ pub(super) fn arch_hash(arch: &str) -> u32 {
 /// Read a network from the `nn.bin` container, checking the architecture
 /// string before a single weight.
 ///
-/// The header is the whole of the identification: `ModelType=SYM…` says this is
-/// not one of YaneuraOu's, and the rest of the string spells the structure. A
-/// file for a different shape — another width, another feature space, another
-/// order — produces a different string and is refused here rather than read at
-/// the wrong stride.
+/// The header is the whole of the identification: the string spells the structure,
+/// and is compared with the one this build makes, byte for byte. A file for a
+/// different shape — another width, another feature space, another order, or a SYM
+/// net rather than a SYNN one — produces a different string and is refused here
+/// rather than read at the wrong stride.
 pub fn load_network(path: &Path) -> Result<SymNetwork, NnueError> {
     let bytes = std::fs::read(path).map_err(|source| NnueError::Io {
         path: path.display().to_string(),
         source,
     })?;
-    parse_network(&bytes)
+    let mut net = parse_network(&bytes)?;
+    // An experiment's switch and not a setting: `ATTIC_SYNN_W1=i16` puts the first
+    // layer on `i16` weights (see `SymNetwork::use_i16_w1`), and anything else, or
+    // nothing, leaves it on `f32`. Read here and not in `parse_network` so that the
+    // tests, which read bytes they made, never see it.
+    net.use_i16_w1(std::env::var("ATTIC_SYNN_W1").is_ok_and(|v| v.eq_ignore_ascii_case("i16")));
+    Ok(net)
 }
 
 /// [`load_network`] from the bytes of the file, so that a test can read a
@@ -188,27 +132,18 @@ pub(super) fn parse_network(bytes: &[u8]) -> Result<SymNetwork, NnueError> {
         });
     }
 
-    // Every spelling of this shape is accepted, and which one the file carries
-    // decides how the body is read. Keeping one reader for all is the point: a
-    // rating run that wants to price the quantisation has to be able to put the
-    // same binary behind each file.
     let hash = r.u32_le()?;
     let len = r.u32_le()? as usize;
     let arch = std::str::from_utf8(r.take(len)?).map_err(|_| NnueError::InvalidFormat {
         reason: "architecture string is not UTF-8".to_string(),
     })?;
-    let Some(encoding) = Encoding::ALL
-        .into_iter()
-        .filter(|e| e.exists())
-        .find(|e| arch == expected_arch(*e))
-    else {
+    // Built, not parsed: the string is this shape's or it is refused.
+    let want = expected_arch();
+    if arch != want {
         return Err(NnueError::InvalidFormat {
-            reason: format!(
-                "file says {arch:?}, this build reads {:?}",
-                expected_arch(Encoding::Scaled)
-            ),
+            reason: format!("file says {arch:?}, this build reads {want:?}"),
         });
-    };
+    }
     let want_hash = arch_hash(arch);
     // Redundant once the string matched, and kept for the same reason the
     // section hashes are: four bytes that catch a file whose header was
@@ -221,11 +156,7 @@ pub(super) fn parse_network(bytes: &[u8]) -> Result<SymNetwork, NnueError> {
         });
     }
 
-    let net = match encoding {
-        Encoding::Scaled => read_scaled(&mut r, want_hash)?,
-        Encoding::F32 => read_f32(&mut r, want_hash)?,
-        Encoding::Legacy => read_legacy(&mut r, want_hash)?,
-    };
+    let net = read_body(&mut r, want_hash)?;
 
     if r.pos != bytes.len() {
         return Err(NnueError::SizeMismatch {

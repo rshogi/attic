@@ -8,8 +8,8 @@
 //! ```
 //!
 //! One tab-separated row per position: index, sfen, then the score twice (the
-//! columns `sym_dump` calls `value` and `pre`; an NNUE output has no `tanh` to
-//! tell them apart). The score is the engine's integer evaluation divided by
+//! columns `sym_dump` calls `value` and `pre`, which are one number in an NNUE
+//! output too). The score is the engine's integer evaluation divided by
 //! the number of engine units one unit of Manaka's linear value row is worth:
 //! `127 · 64 / FV_SCALE`, which is 508 at the default 16. That is the whole
 //! of the conversion, so a difference here is the quantisation and the integer

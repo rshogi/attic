@@ -2,16 +2,19 @@
 //! to put the result beside Manaka's own `dump_eval`.
 //!
 //! ```text
-//! cargo run --release -p attic-eval --features sym_kp_256x2_512 --example sym_dump -- \
-//!     --net kp_pair0_d256_o3_h512.q.nn.bin --sfens positions.sfen [--limit N]
+//! cargo run --release -p attic-eval --features synn_kp_128x2_32_32 --example sym_dump -- \
+//!     --net kp_pair0_d128_o3_h32_h232.nn.bin --sfens positions.sfen [--limit N]
 //! ```
 //!
-//! The file may be in any of the three encodings (`SYMscaled`, `SYMf32`, `SYM`);
-//! the header says which.
+//! The file is what `manaka-train export-nnue` writes for a `--type synn` net, whose
+//! arrays are halves (and so are rounded from the trainer's `f32`).
 //!
-//! One tab-separated row per position: index, sfen, `value` (after the `tanh`,
-//! side to move's view) and `pre` (before it). The values are printed to nine
-//! significant digits, which is what an `f32` round-trips through.
+//! One tab-separated row per position: index, sfen, `value` (the side to move's
+//! view) and `pre` (the value row's pre-activation). There is nothing after the
+//! value row, so the two columns are one number; both are printed so that the
+//! rows read the same as `nnue_dump`'s and as Manaka's `dump_eval`'s. The values
+//! are printed to nine significant digits, which is what an `f32` round-trips
+//! through.
 //!
 //! A tool and not a test, because the networks it reads are tens to hundreds of
 //! megabytes and none of them live in the repository: `required-features`

@@ -7,38 +7,66 @@ use std::sync::OnceLock;
 use attic_state::{Move, Position};
 
 use super::super::{
-    DIM, FEATURE_LEN, FIELD, FIELD_LEN, HEAD, HIDDEN, HIDDEN2, MEAN, MOMENT, MOMENT_LEN, ORDER,
-    PAIR, PAIR_ROWS, SCALE_LEN, SymNetwork, TOKENS,
+    DIM, FEATURE_LEN, FIELD, FIELD_LEN, HEAD, HIDDEN, HIDDEN2, MOMENT, MOMENT_LEN, ORDER, PAIR,
+    PAIR_ROWS, SymNetwork, TOKENS,
 };
-use super::encode::map_channels;
 
-/// A network no trainer made, with weights small enough to stay inside the
-/// range the legacy encoding holds (`i8` at 64 reaches ±1.98), so that every
-/// encoding can write it without a clamp.
+/// A network no trainer made.
+///
+/// A block is only multiplied by its gain and clipped, and the sums here are in
+/// the units, so the gains and the first dense layer are drawn small: at gains
+/// around one every block would sit on a rail, and a clip that is always on a rail
+/// is a clip no test can see. The factors are in [`Gain`], found by looking at
+/// where the sums land (see
+/// `a_test_net_exercises_the_clip_in_every_block_and_layer`).
 pub(super) fn synthetic() -> &'static SymNetwork {
     static NET: OnceLock<SymNetwork> = OnceLock::new();
     NET.get_or_init(|| {
         let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
         SymNetwork {
             embed: rng.fill(TOKENS * DIM, 0.6),
-            gamma: rng.fill(ORDER * DIM, 0.4).iter().map(|g| 1.0 + g).collect(),
-            w1: rng.fill(HIDDEN * FEATURE_LEN, 0.3),
+            gamma: rng
+                .fill(ORDER * DIM, 0.4)
+                .iter()
+                .enumerate()
+                .map(|(i, g)| (1.0 + g) * Gain::order(i / DIM))
+                .collect(),
+            w1: rng.fill(HIDDEN * FEATURE_LEN, 0.3 * Gain::W1),
             b1: rng.fill(HIDDEN, 0.3),
-            w2: rng.fill(HIDDEN2 * HIDDEN, 0.3),
+            w2: rng.fill(HIDDEN2 * HIDDEN, 0.3 * Gain::W2),
             b2: rng.fill(HIDDEN2, 0.3),
             value_w: rng.fill(HEAD, 0.3),
             value_b: 0.1,
-            pair_gamma: rng.fill(PAIR, 0.4).iter().map(|g| 1.0 + g).collect(),
-            pair: pair_table(&mut rng),
-            scale_gamma: rng.fill(SCALE_LEN, 0.4),
+            pair_gamma: gains(&mut rng, PAIR, Gain::PAIR),
+            pair: rng.fill(PAIR_ROWS * PAIR, 0.3),
             // Drawn last, so that the networks of the shapes that have none of
             // these are the ones they were before there were any.
-            moment_gamma: gains(&mut rng, MOMENT_LEN),
+            moment_gamma: gains(&mut rng, MOMENT_LEN, Gain::MOMENT),
             moment_embed: rng.fill(TOKENS * MOMENT, 0.6),
-            field_gamma: gains(&mut rng, FIELD),
+            field_gamma: gains(&mut rng, FIELD, Gain::FIELD),
             field: rng.fill(TOKENS * FIELD_LEN, 0.3),
+            qw1: None,
         }
     })
+}
+
+/// The factor the test net takes off a unit gain, or puts on a layer's weights,
+/// for each kind of block.
+struct Gain;
+
+impl Gain {
+    const W1: f32 = 0.3;
+    /// The second layer reads at most `HIDDEN` activations in `[0, 1]`, where the
+    /// first reads hundreds, so it wants more weight to reach a rail.
+    const W2: f32 = 2.0;
+    const PAIR: f32 = 0.1;
+    const MOMENT: f32 = 0.2;
+    const FIELD: f32 = 0.6;
+
+    /// The power-sum block of order `k + 1`: the sums grow with the order.
+    fn order(k: usize) -> f32 {
+        [0.2, 0.1, 0.1, 0.05][k.min(3)]
+    }
 }
 
 /// `0..n`, for an `n` that is a shape's constant and is zero in the shapes that
@@ -49,19 +77,19 @@ pub(super) fn upto(n: usize) -> std::ops::Range<usize> {
     0..n
 }
 
-/// `len` gains around one, as a trained norm's are.
-fn gains(rng: &mut Rng, len: usize) -> Vec<f32> {
-    rng.fill(len, 0.4).iter().map(|g| 1.0 + g).collect()
+/// The smaller of two shape constants. Written as `HIDDEN.min(HIDDEN2)` it is a
+/// comparison clippy sees is decided at compile time, and refuses; through a
+/// function argument it is a number it does not know.
+pub(super) fn least(a: usize, b: usize) -> usize {
+    a.min(b)
 }
 
-/// A pair table: `PAIR_ROWS` rows of ±0.3 in the mean channels and, in the last
-/// `LSE` channels, `exp θ` for a `θ` spread over ±1.5 — positive, as a trained
-/// table's are, and wide enough that a sum of 780 of them is a few hundred and
-/// its logarithm is not flat. Empty without a pair table.
-fn pair_table(rng: &mut Rng) -> Vec<f32> {
-    let mut table = rng.fill(PAIR_ROWS * PAIR, 0.3);
-    map_channels(&mut table, PAIR, MEAN, |v| (v * 5.0).exp());
-    table
+/// `len` gains around one, as a trained norm's are, times `scale`.
+fn gains(rng: &mut Rng, len: usize, scale: f32) -> Vec<f32> {
+    rng.fill(len, 0.4)
+        .iter()
+        .map(|g| (1.0 + g) * scale)
+        .collect()
 }
 
 pub(super) fn assert_close(what: &str, got: &[f32], want: &[f32], tolerance: f32) {
@@ -143,15 +171,13 @@ impl Rng {
     }
 }
 
-/// Every token of `pos` as `frame` reads it, each with whether the opponent of
-/// the frame owns it.
+/// Every token of `pos` as `frame` reads it.
 ///
-/// The owner comes from the position (the piece's colour, the hand's owner) and
-/// not from the token's number, so that what reads the number back out can be
-/// checked against it. The shapes whose numbering says nothing about ownership
-/// have no `split`, and report every token as the frame's own.
+/// Derived from the position (the piece on each square, the copies in each hand)
+/// and not from `active_features`, so that what the accumulator reads can be
+/// checked against a second route to the same set.
 #[cfg(feature = "sym_token")]
-pub(super) fn owned_tokens(pos: &Position, frame: attic_state::Color) -> Vec<(u32, bool)> {
+pub(super) fn tokens_present(pos: &Position, frame: attic_state::Color) -> Vec<u32> {
     use crate::tokens::{HAND_KINDS, board_row, hand_row};
     use attic_state::{Color, Square};
 
@@ -159,33 +185,30 @@ pub(super) fn owned_tokens(pos: &Position, frame: attic_state::Color) -> Vec<(u3
     for index in 0..Square::COUNT as u8 {
         let sq = Square::from_index(index).expect("a square");
         if let Some(piece) = pos.board().get(sq) {
-            tokens.push((board_row(piece, sq, frame), piece.color != frame));
+            tokens.push(board_row(piece, sq, frame));
         }
     }
     for owner in [Color::Black, Color::White] {
         for kind in HAND_KINDS {
             for copy in 0..usize::from(pos.hand(owner).count(kind)) {
-                tokens.push((hand_row(owner, kind, copy, frame), owner != frame));
+                tokens.push(hand_row(owner, kind, copy, frame));
             }
         }
     }
     tokens
 }
 
-/// The KP and HalfKP shapes have no ownership in their numbering and no `split`:
-/// every token is the frame's own as far as a group is concerned.
+/// The KP and HalfKP shapes number a position's features in the one place there
+/// is for them, `active_features`.
 #[cfg(not(feature = "sym_token"))]
-pub(super) fn owned_tokens(pos: &Position, frame: attic_state::Color) -> Vec<(u32, bool)> {
+pub(super) fn tokens_present(pos: &Position, frame: attic_state::Color) -> Vec<u32> {
     crate::active_features(pos, frame)
-        .into_iter()
-        .map(|token| (token, false))
-        .collect()
 }
 
 /// [`assert_close`] with a tolerance that grows with the size of the numbers: a
-/// sum of `exp θ` over 780 pairs is in the hundreds, and the rounding of an
-/// `f32` there is a fraction of its own size, which an absolute bound meant for
-/// sums of order one cannot be right for.
+/// sum of 780 pair rows is large, and the rounding of an `f32` there is a
+/// fraction of its own size, which an absolute bound meant for sums of order one
+/// cannot be right for.
 pub(super) fn assert_close_relative(what: &str, got: &[f32], want: &[f32], relative: f32) {
     assert_eq!(got.len(), want.len(), "{what}: length");
     for (i, (g, w)) in got.iter().zip(want).enumerate() {

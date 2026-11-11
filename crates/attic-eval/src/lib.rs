@@ -3,7 +3,7 @@
 //! the forward pass and the SIMD kernels.
 //!
 //! It also carries two evaluators that are not NNUE, selected by shape like the
-//! rest: `manaka` for the `sym_*` shapes and `hce` for the hand-crafted ones.
+//! rest: `manaka` for the `synn_*` shapes and `hce` for the hand-crafted ones.
 //! Neither loads an `nn.bin`.
 //!
 //! It may import State and Storage, never Protocol or Search.

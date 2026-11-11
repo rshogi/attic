@@ -52,8 +52,11 @@ nnue_halfkp_768x2_16_64 = ["nnue_standard", "nnue_halfkp"]
 #                        never used, because V3 was trained with eight buckets.
 #   nnue_standard        every YaneuraOu standard shape
 #   nnue_halfkp          ... whose features are `HalfKP` (the other is K+P)
-#   sym                  every Manaka shape. Like `hce` it stands for them in the
-#                        guard's pairwise lists, so a new one widens none of them
+#   sym                  every Manaka shape, which is every `synn_*` one. Like `hce`
+#                        it stands for them in the guard's pairwise lists, so a new
+#                        one widens none of them. The name is the family's old one
+#                        and is kept so that the `cfg`s and the other crates'
+#                        features that name it do not change
 #   sym_kp               ... whose features are K+P
 #   sym_halfkp           ... whose features are Manaka's HalfKP
 #   sym_token            ... whose features are Manaka's own token space (2,344 rows,
@@ -72,105 +75,47 @@ sym_kp = ["sym"]
 sym_halfkp = ["sym"]
 sym_token = ["sym"]
 hce = []
-# Manaka's own shapes, spelled the way YaneuraOu spells its architectures:
-# feature space, transformer width by two perspectives, then the dense widths.
-# `SYM` is the prefix Manaka's `network_type` already uses. They read the
-# `nn.bin` container with `ModelType=SYMscaled` in the architecture string (or
-# `SYMf32`, or the first encoding, `SYM`): an RMS norm where NNUE clips, and a
-# tanh on the value. They share this crate's feature extraction and nothing
-# else, see `src/manaka/`.
+# Manaka's own shapes: `SYNN`, SYM's sums behind NNUE's arithmetic. They read the
+# `nn.bin` container, with an architecture string that leads with `Features=` and
+# says `ClipScaled` and `ClippedReLU` where a SYM net says `RmsNormScaled` and `ReLU`:
+# the token embedding and its power sums (and optionally a pair table, a second
+# moment and a square field), then each block scaled by its own gain and clipped to
+# [0, 1], two clipped dense layers, and a linear value. The embedding, the two dense
+# matrices and the three tables are stored as IEEE binary16, the gains, the biases and
+# the value row as f32. They share this crate's feature extraction and nothing else,
+# see `src/manaka/`.
+#
+# The name is spelled the way YaneuraOu spells its architectures: feature space,
+# transformer width by two perspectives, then both hidden widths. A shape that has a
+# pair table, a second moment or a square field is spelled by what follows:
+# `_pair<N>` for the table's width, `_m<N>` for a second moment over `N` channels
+# and `_f<N>` for a square field of `N` channels per square. Order three is
+# the order of every shape and is not spelled.
 #
 # `token` is Manaka's own space and the one the trainer starts from: the other two
-# borrow YaneuraOu's numbering so that the two engines' feature sets agree.
+# borrow YaneuraOu's numbering so that the two engines' feature sets agree. It is
+# also the only space with a pair table, a second moment or a square field, for the
+# reason Manaka's shape grammar gives: each wants a row per token or per pair of
+# them, and the other spaces have up to 125,389 of them.
 #
-# The name carries the power-sum order only when it is not three: `_o1_` is the
-# first power alone, with nothing for Newton's identities to do. Without it the
-# order is three. A second dense width follows the first, as in NNUE's names.
+# A SYNN net has two hidden layers (NNUE's back half has two) and none of the
+# blocks that need a norm to bound them, which Manaka's shape grammar refuses under
+# `--type synn`. These are the five that are trained:
 #
-#   feature                    Manaka's shape code
-#   sym_kp_64x2_512            kp_pair0_d64_o3_h512
-#   sym_halfkp_64x2_512        halfkp_pair0_d64_o3_h512
-#   sym_kp_128x2_512           kp_pair0_d128_o3_h512
-#   sym_halfkp_128x2_512       halfkp_pair0_d128_o3_h512
-#   sym_kp_256x2_512           kp_pair0_d256_o3_h512
-#   sym_halfkp_256x2_512       halfkp_pair0_d256_o3_h512
-#   sym_kp_256x2_o1_32_32      kp_pair0_d256_o1_h32_h232
-#   sym_halfkp_256x2_o1_32_32  halfkp_pair0_d256_o1_h32_h232
-#   sym_token_64x2_512         pair0_d64_o3_h512
-#   sym_token_128x2_512        pair0_d128_o3_h512
-#   sym_token_256x2_512        pair0_d256_o3_h512
-#   sym_token_256x2_o1_32_32   pair0_d256_o1_h32_h232
+#   feature                                Manaka's shape code
+#   synn_token_128x2_32_32                 pair0_d128_o3_h32_h232
+#   synn_kp_128x2_32_32                    kp_pair0_d128_o3_h32_h232
+#   synn_halfkp_128x2_32_32                halfkp_pair0_d128_o3_h32_h232
+#   synn_token_128x2_32_32_pair16          pair16_d128_o3_h32_h232
+#   synn_token_128x2_32_32_pair16_m8_f2    pair16_d128_o3_h32_h232_m8_f2
 #
-# The token space is also the only one with a pair table, a second moment or a
-# square field, and a shape that has one is spelled by what follows the
-# dimensions: `_pair<N>` for the table's width, then `_lse<N>` for how many of
-# its last channels read a log-sum-exp, `_ks` for the kept magnitudes, `_split`
-# for power sums taken per owner, `_m<N>` for a second moment over `N` channels
-# and `_f<N>` for a square field of `N` channels per square. The order is
-# spelled `_o<N>` when it is not three, and a second dense width follows the
-# first, both as in the names above.
-#
-#   feature                                  Manaka's shape code
-#   sym_token_128x2_512_pair16               pair16_d128_o3_h512
-#   sym_token_128x2_512_pair32               pair32_d128_o3_h512
-#   sym_token_128x2_512_pair64               pair64_d128_o3_h512
-#   sym_token_64x2_512_pair16                pair16_d64_o3_h512
-#   sym_token_256x2_512_pair16               pair16_d256_o3_h512
-#   sym_token_128x2_o2_512_pair16            pair16_d128_o2_h512
-#   sym_token_128x2_o4_512_pair16            pair16_d128_o4_h512
-#   sym_token_128x2_1024_pair16              pair16_d128_o3_h1024
-#   sym_token_128x2_512_256_pair16           pair16_d128_o3_h512_h2256
-#   sym_token_128x2_512_512_pair16           pair16_d128_o3_h512_h2512
-#   sym_token_128x2_512_pair16_lse4          pair16_d128_o3_h512_lse4
-#   sym_token_128x2_512_pair16_lse8          pair16_d128_o3_h512_lse8
-#   sym_token_128x2_512_pair16_lse16         pair16_d128_o3_h512_lse16
-#   sym_token_128x2_512_pair16_lse4_ks       pair16_d128_o3_h512_lse4_ks
-#   sym_token_128x2_512_pair16_ks            pair16_d128_o3_h512_ks
-#   sym_token_128x2_512_pair16_split         pair16_d128_o3_h512_split
-#   sym_token_128x2_512_pair16_m16           pair16_d128_o3_h512_m16
-#   sym_token_128x2_512_pair16_m32           pair16_d128_o3_h512_m32
-#   sym_token_128x2_512_pair16_f2            pair16_d128_o3_h512_f2
-#   sym_token_128x2_512_pair16_f4            pair16_d128_o3_h512_f4
-#   sym_token_128x2_512_pair16_f8            pair16_d128_o3_h512_f8
-#
-# `pair16_d128_o3_h512_pair-tie` is `sym_token_128x2_512_pair16` too: tying the
-# pair rows is a way of training, and the exporter writes the sum, so the file
-# has the shape of an ordinary `pair16_d128_o3_h512` and nothing in it says tied.
-#
-# The dimensions of each are one row of the table in `src/manaka/shape.rs`.
-sym_kp_64x2_512 = ["sym_kp"]
-sym_halfkp_64x2_512 = ["sym_halfkp"]
-sym_kp_128x2_512 = ["sym_kp"]
-sym_halfkp_128x2_512 = ["sym_halfkp"]
-sym_kp_256x2_512 = ["sym_kp"]
-sym_halfkp_256x2_512 = ["sym_halfkp"]
-sym_kp_256x2_o1_32_32 = ["sym_kp"]
-sym_halfkp_256x2_o1_32_32 = ["sym_halfkp"]
-sym_token_64x2_512 = ["sym_token"]
-sym_token_128x2_512 = ["sym_token"]
-sym_token_256x2_512 = ["sym_token"]
-sym_token_256x2_o1_32_32 = ["sym_token"]
-sym_token_128x2_512_pair16 = ["sym_token"]
-sym_token_128x2_512_pair32 = ["sym_token"]
-sym_token_128x2_512_pair64 = ["sym_token"]
-sym_token_64x2_512_pair16 = ["sym_token"]
-sym_token_256x2_512_pair16 = ["sym_token"]
-sym_token_128x2_o2_512_pair16 = ["sym_token"]
-sym_token_128x2_o4_512_pair16 = ["sym_token"]
-sym_token_128x2_1024_pair16 = ["sym_token"]
-sym_token_128x2_512_256_pair16 = ["sym_token"]
-sym_token_128x2_512_512_pair16 = ["sym_token"]
-sym_token_128x2_512_pair16_lse4 = ["sym_token"]
-sym_token_128x2_512_pair16_lse8 = ["sym_token"]
-sym_token_128x2_512_pair16_lse16 = ["sym_token"]
-sym_token_128x2_512_pair16_lse4_ks = ["sym_token"]
-sym_token_128x2_512_pair16_ks = ["sym_token"]
-sym_token_128x2_512_pair16_split = ["sym_token"]
-sym_token_128x2_512_pair16_m16 = ["sym_token"]
-sym_token_128x2_512_pair16_m32 = ["sym_token"]
-sym_token_128x2_512_pair16_f2 = ["sym_token"]
-sym_token_128x2_512_pair16_f4 = ["sym_token"]
-sym_token_128x2_512_pair16_f8 = ["sym_token"]
+# Manaka writes these with `manaka-train export-nnue` from a net trained under
+# `--type synn`; the dimensions of each are one row of `src/manaka/shape.rs`.
+synn_token_128x2_32_32 = ["sym_token"]
+synn_kp_128x2_32_32 = ["sym_kp"]
+synn_halfkp_128x2_32_32 = ["sym_halfkp"]
+synn_token_128x2_32_32_pair16 = ["sym_token"]
+synn_token_128x2_32_32_pair16_m8_f2 = ["sym_token"]
 # The two hand-crafted evaluations (HCE), spelled the same way: how many
 # coefficients, then how they are grouped. Material is 10 board slots and 7
 # hand slots; Mobility is 107 board features and 57 for a piece in hand.

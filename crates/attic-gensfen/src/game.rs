@@ -666,8 +666,9 @@ mod resignation_tests {
 }
 
 // These tests play real games on a network of zeros, and the zero network is
-// built with `NnueNetworkBuilder`, which the Manaka shapes (`sym_*`) do not have:
-// their weights are f32 and arrive as `MNW1`, so there is no builder to reach for.
+// built with `NnueNetworkBuilder`, which the Manaka shapes (`synn_*`) do not have:
+// their weights are f32 or scaled `i16` and arrive in the `nn.bin` container, so
+// there is no builder to reach for.
 // The hand-crafted shapes (`hce_*`) have no builder either, and no network for
 // one to build.
 #[cfg(all(test, not(any(feature = "sym", feature = "hce"))))]

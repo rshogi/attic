@@ -29,7 +29,7 @@ use attic_storage::{ArenaLayout, ArenaSlice, LargePageArena, Section};
 // reports that. What separates the shapes *within* a family is counted by a
 // `const` assertion there, beside the table of their dimensions: it does not grow
 // with the square of the shapes the way a pairwise chain does, and Manaka alone
-// has twenty-eight. And `hce_fit_qsearched` is a qualifier on a shape, not a
+// has five. And `hce_fit_qsearched` is a qualifier on a shape, not a
 // shape, so it is in no list at all.
 #[cfg(not(any(
     feature = "sfnn_halfkahm2_1536_15_32_k3k3",
@@ -48,7 +48,7 @@ compile_error!(
     "select a network: --features sfnn_halfkahm2_1536_15_32_k3k3, \
      sfnn_halfkahm2_1024_15_64_progress8kpabs, sfnn_halfkahm2_1024_15_64_progress8ek, \
      sfnn_halfkahm2_2304_15_64_progress8ek, nnue_kp_256x2_32_32, nnue_halfkp_256x2_32_32, \
-     nnue_halfkp_128x2_32_32, nnue_halfkp_768x2_16_64, one of the sym_* shapes listed in \
+     nnue_halfkp_128x2_32_32, nnue_halfkp_768x2_16_64, one of the synn_* shapes listed in \
      attic-eval's Cargo.toml, hce_material_17 or hce_mobility_107_57"
 );
 
@@ -157,7 +157,7 @@ compile_error!("a Manaka shape is a different evaluation from a hand-crafted one
 #[cfg(all(feature = "hce_material_17", feature = "hce_mobility_107_57"))]
 compile_error!("the two hand-crafted evaluations have different weights; select one");
 
-// Manaka's own shapes carry power sums and an RMS norm where NNUE clips, in
+// Manaka's own shapes carry power sums where NNUE has a single sum, in
 // f32 or quantised on their own scales, so none of the dimensions below apply
 // to them. The hand-crafted shapes have no network file at all. Both are gated
 // off individually rather than by a guard here, and `crate::manaka` and
