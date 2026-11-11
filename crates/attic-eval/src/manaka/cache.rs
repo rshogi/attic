@@ -1,29 +1,27 @@
 //! The buffers a derive needs, owned across the whole search.
 
 #[cfg(not(feature = "sym_token"))]
-use attic_state::Color;
+use crate::features::{FeatureIndex, MAX_ACTIVE_FEATURES};
 
-#[cfg(not(feature = "sym_token"))]
-use crate::features::{DiffScratch, FeatureIndex};
-
-/// Two feature lists and the diff's four vectors. Held here rather than in
+/// Where NNUE keeps its king-bucket refresh cache. Nothing here caches a
+/// bucket; what the KP and HalfKP shapes carry instead is the feature list a
+/// half is rebuilt through when its own king moves (HalfKP), so that the rebuild
+/// does not allocate. It is held here rather than in
 /// [`Accumulator`](super::Accumulator) because the accumulator is copied down the
-/// tree and this is not — one worker needs one set of these, not one per ply.
+/// tree and this is not — one worker needs one list, not one per ply.
 #[cfg(not(feature = "sym_token"))]
-#[derive(Debug, Default)]
-pub(super) struct Scratch {
-    pub(super) after: [Vec<FeatureIndex>; Color::COUNT],
-    pub(super) diff: DiffScratch,
+#[derive(Debug)]
+pub struct FinnyCache {
+    pub(super) features: Vec<FeatureIndex>,
 }
 
-/// Where NNUE keeps its king-bucket refresh cache. Nothing here buckets by
-/// king, so what it carries instead is the derive's scratch — the name is
-/// NNUE's because the search allocates one per worker and hands it to every
-/// derive, which is exactly what this needs too.
 #[cfg(not(feature = "sym_token"))]
-#[derive(Debug, Default)]
-pub struct FinnyCache {
-    pub(super) scratch: Scratch,
+impl Default for FinnyCache {
+    fn default() -> Self {
+        FinnyCache {
+            features: Vec::with_capacity(MAX_ACTIVE_FEATURES),
+        }
+    }
 }
 
 /// Where NNUE keeps its king-bucket refresh cache. The token shapes have

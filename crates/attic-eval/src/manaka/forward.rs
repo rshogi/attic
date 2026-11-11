@@ -133,7 +133,7 @@ unsafe fn power_blocks_avx2(p: &[f32], gamma: &[f32], out: &mut [f32]) {
                     _mm256_sub_ps(acc, term)
                 };
             }
-            e[k] = _mm256_div_ps(acc, _mm256_set1_ps(k as f32));
+            e[k] = divide_by(acc, k);
         }
         for k in 1..=ORDER {
             let base = (k - 1) * DIM + at;
@@ -150,6 +150,31 @@ unsafe fn power_blocks_avx2(p: &[f32], gamma: &[f32], out: &mut [f32]) {
                 _mm256_storeu_ps(out.as_mut_ptr().add(base), at_most_one);
             }
         }
+    }
+}
+
+/// `acc / k` in every lane, without a division where one is not needed.
+///
+/// A division by one is `acc` itself, and a division by any other power of two
+/// is a multiplication by its reciprocal, which is exact: both are the same real
+/// number correctly rounded, so the bits are the division's, for zeros,
+/// subnormals and `NaN` as well. Only the other `k` (three, in the shapes there
+/// are) divide. A division is several times the latency and a fraction of the
+/// throughput of a multiplication, and this runs `ORDER` times for every group of
+/// eight channels of both perspectives.
+///
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[inline]
+#[target_feature(enable = "avx2")]
+fn divide_by(acc: std::arch::x86_64::__m256, k: usize) -> std::arch::x86_64::__m256 {
+    use std::arch::x86_64::*;
+
+    if k == 1 {
+        acc
+    } else if k.is_power_of_two() {
+        _mm256_mul_ps(acc, _mm256_set1_ps(1.0 / k as f32))
+    } else {
+        _mm256_div_ps(acc, _mm256_set1_ps(k as f32))
     }
 }
 

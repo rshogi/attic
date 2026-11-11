@@ -588,6 +588,7 @@ pub(crate) fn changed_indices(
 
 /// Reusable buffers for [`changed_indices_into`], owned by the finny-table cache
 /// so that a cached rebuild allocates nothing.
+#[cfg(any(test, not(feature = "sym")))]
 #[derive(Debug, Default)]
 pub(crate) struct DiffScratch {
     sorted_before: Vec<FeatureIndex>,
@@ -600,6 +601,7 @@ pub(crate) struct DiffScratch {
 
 /// [`changed_indices`] writing into caller-owned buffers. This is the single
 /// implementation; `changed_indices` is a thin allocating wrapper.
+#[cfg(any(test, not(feature = "sym")))]
 pub(crate) fn changed_indices_into(
     before: &[FeatureIndex],
     after: &[FeatureIndex],

@@ -3,15 +3,11 @@
 use attic_state::{Color, Position};
 
 #[cfg(not(feature = "sym_token"))]
-use crate::features::{
-    FeatureIndex, MAX_ACTIVE_FEATURES, active_features, active_features_into, changed_indices_into,
-};
+use crate::features::{FeatureIndex, MoveDelta, active_features, active_features_into};
 #[cfg(feature = "sym_token")]
 use crate::tokens::{FeatureIndex, MAX_ACTIVE_FEATURES, MoveDelta, active_features};
 
 use super::cache::FinnyCache;
-#[cfg(not(feature = "sym_token"))]
-use super::cache::Scratch;
 #[cfg(feature = "sym_token")]
 use super::field::touch_field;
 #[cfg(feature = "sym_token")]
@@ -33,8 +29,8 @@ pub(super) type FieldSum = f64;
 
 /// The accumulator the search threads through the tree.
 ///
-/// Holds each perspective's power sums, and the active-feature list they were
-/// built from so that the next position can be reached by difference.
+/// Holds each perspective's power sums, and in the token shapes the tokens they
+/// were built from.
 ///
 /// ## Why the sums update incrementally and the polynomials do not
 ///
@@ -47,28 +43,28 @@ pub(super) type FieldSum = f64;
 /// per evaluation rather than per token, and it is the whole reason Newton's
 /// identities are in the forward at all.
 ///
-/// ## Why there is no king-move special case
+/// ## How a derive gets from one position to the next
 ///
-/// HalfKP renumbers all forty features when the perspective's own king moves,
-/// which for NNUE means a rebuild. Here it needs no special handling: the diff
-/// against the previous list reports thirty-eight removals and thirty-eight
-/// additions, and applying those is arithmetically a rebuild. It costs what a
-/// rebuild costs and produces what a rebuild produces, so the correctness does
-/// not depend on the caller noticing.
+/// The search hands every derive the accumulator of the position's parent and
+/// the `MoveDelta` of the move between them, and that names the (at most) two
+/// features that leave and the two that arrive without looking at the board.
+/// Every shape applies it to the parent's sums. The KP and HalfKP shapes used to
+/// scan the new position and diff its list against one they held instead, which
+/// found the same four or so features and cost a scan and two sorts per node,
+/// more than the rest of the derive put together.
 ///
-/// ## How the token shapes get from one position to the next
+/// The one move a delta cannot describe is HalfKP's own-king move: every
+/// feature of that half is crossed with the king's square, so all forty change.
+/// That half is rebuilt from the position after the move, which is forty rows
+/// where a diff of the two lists would have been seventy-six.
 ///
-/// The KP and HalfKP shapes scan the new position and diff the list against the
-/// one they hold, which is robust to being handed any earlier accumulator and
-/// costs a scan and two sorts per node. The token shapes do not: their search
-/// hands every derive the accumulator of the position's parent and the
-/// [`MoveDelta`] of the move between them, and that names the (at most) two
-/// tokens that leave and the two that arrive without looking at the board.
-/// `active` is kept up to date by the same delta, so that anything that needs
-/// the other tokens present — a pair table pairs each changed token with them —
-/// has the set it needs at the point it needs it: [`Accumulator::apply`] takes
-/// each removed token out of `active` *before* it subtracts the token's row, and
-/// puts each added one in *after* it adds the row.
+/// ## The token shapes' set of tokens
+///
+/// In the token shapes `active` is kept up to date by the same delta, so that
+/// anything that needs the other tokens present — a pair table pairs each
+/// changed token with them — has the set it needs at the point it needs it: a
+/// derive takes each removed token out of `active` *before* it subtracts the
+/// token's row, and puts each added one in *after* it adds the row.
 ///
 /// ## The pair table
 ///
@@ -97,8 +93,11 @@ pub struct Accumulator {
     /// `[perspective][FIELD_LEN]`: the sum of the present tokens' rows of the
     /// field, `[square][channel]`. Empty for a shape without a field.
     field: [Vec<FieldSum>; Color::COUNT],
-    /// What each half was built from, kept so a derive can diff against it (KP,
-    /// HalfKP) or so that the tokens present are known (the token shapes).
+    /// The tokens present in each half, which a table over pairs of tokens is
+    /// read against. The KP and HalfKP shapes have no such table and keep no
+    /// list: the delta names what changes, and a half that is rebuilt is
+    /// rebuilt from the position.
+    #[cfg(feature = "sym_token")]
     active: [Vec<FeatureIndex>; Color::COUNT],
 }
 
@@ -115,6 +114,7 @@ impl Accumulator {
             pair: [vec![0.0; PAIR], vec![0.0; PAIR]],
             moment: [vec![0.0; MOMENT_LEN], vec![0.0; MOMENT_LEN]],
             field: [vec![0.0; FIELD_LEN], vec![0.0; FIELD_LEN]],
+            #[cfg(feature = "sym_token")]
             active: [
                 Vec::with_capacity(MAX_ACTIVE_FEATURES),
                 Vec::with_capacity(MAX_ACTIVE_FEATURES),
@@ -129,18 +129,20 @@ impl Accumulator {
     pub fn refresh(&mut self, net: &SymNetwork, pos: &Position) {
         for color in [Color::Black, Color::White] {
             let i = color.index();
-            self.active[i] = active_features(pos, color);
-            self.sums[i].fill(0.0);
-            accumulate(&mut self.sums[i], &net.embed, &[], &self.active[i]);
-            // Every pair once: each token against the ones before it.
+            let features = active_features(pos, color);
+            accumulate(&ZERO_SUMS, &mut self.sums[i], &net.embed, &[], &features);
             self.pair[i].fill(0.0);
             self.moment[i].fill(0.0);
             self.field[i].fill(0.0);
+            // Every pair once: each token against the ones before it.
             #[cfg(feature = "sym_token")]
-            for (at, &feature) in self.active[i].iter().enumerate() {
-                touch_pairs(&mut self.pair[i], net, feature, &self.active[i][..at], 1.0);
-                touch_moment(&mut self.moment[i], net, feature, 1.0);
-                touch_field(&mut self.field[i], net, feature, 1.0);
+            {
+                for (at, &feature) in features.iter().enumerate() {
+                    touch_pairs(&mut self.pair[i], net, feature, &features[..at], 1.0);
+                    touch_moment(&mut self.moment[i], net, feature, 1.0);
+                    touch_field(&mut self.field[i], net, feature, 1.0);
+                }
+                self.active[i] = features;
             }
         }
     }
@@ -177,15 +179,17 @@ impl Accumulator {
     }
 }
 
-/// KP and HalfKP: by difference against the list the accumulator was built from.
+/// KP and HalfKP: by the move's delta, from the parent's accumulator, with a
+/// half rebuilt where the delta has none.
 #[cfg(not(feature = "sym_token"))]
 impl Accumulator {
     /// Derive the accumulator for the position after `mv` from `self`, the one
     /// before it.
     ///
     /// `pos` is the pre-move position and is left byte-for-byte unchanged: the
-    /// do/undo happens inside. Mirrors the NNUE accumulator's contract so that
-    /// the search treats the two the same way.
+    /// do/undo happens inside, because a half that is rebuilt is rebuilt from
+    /// the position after the move. Mirrors the NNUE accumulator's contract so
+    /// that the search treats the two the same way.
     ///
     /// # Panics
     /// Panics if `pos` is missing either king, before or after `mv`.
@@ -195,58 +199,75 @@ impl Accumulator {
         pos: &mut Position,
         mv: attic_state::Move,
     ) -> Accumulator {
+        let delta = MoveDelta::from_move(pos, mv);
         let undo = pos.do_move(mv);
-        let mut next = self.clone();
+        let mut next = Accumulator::new();
         // The one call site that has no cache to borrow from — the root, once
         // per iteration. The tree goes through `derive_into_cached`.
-        let mut scratch = Scratch::default();
-        next.rebase(net, pos, &mut scratch);
+        let mut cache = FinnyCache::default();
+        Self::derive_into_cached(self, &mut next, net, pos, &delta, &mut cache);
         pos.undo_move(mv, undo);
         next
     }
 
-    /// Move `dst` to the position `post_pos` describes, starting from `src`.
+    /// Write into `dst` the accumulator of the position after the move `delta`
+    /// describes, from `src`, which has to be the accumulator of the position the
+    /// move was made from.
     ///
-    /// The `delta` and `cache` arguments are NNUE's and go unread: the diff
-    /// this needs is over feature indices, which the two active lists already
-    /// give, and there is no king bucket to cache a rebuild for.
+    /// Each half of `dst` is written from `src` in one pass, the parent's sums
+    /// read, the move's rows taken out and put in, and the result stored: there is
+    /// no copy of the parent first. Whatever `dst` held is overwritten.
+    ///
+    /// The delta is NNUE's, and the features it names are the ones the scan of a
+    /// position would list: both read `features.rs`, which numbers K+P and HalfKP
+    /// for every shape that uses them (its tests hold `MoveDelta::from_move` to
+    /// the scan on every legal move of a spread of positions). A KP half always
+    /// has one, two removed and two added at most. A HalfKP half has none when
+    /// its own king moved, because every feature in it is crossed with that
+    /// king's square: that half is summed again from the forty features of
+    /// `post_pos`, through `cache`'s list so that the rebuild does not allocate.
+    /// That is the only time `post_pos` and `cache` are read.
     pub fn derive_into_cached(
         src: &Accumulator,
         dst: &mut Accumulator,
         net: &SymNetwork,
         post_pos: &Position,
-        _delta: &crate::features::MoveDelta,
+        delta: &MoveDelta,
         cache: &mut FinnyCache,
     ) {
-        // `clone_from` reuses `dst`'s allocations rather than replacing them,
-        // which is what makes a node free of the heap once the stack is warm.
-        dst.clone_from(src);
-        dst.rebase(net, post_pos, &mut cache.scratch);
-    }
-
-    /// Bring `self` — currently holding some earlier position — to `pos`, by
-    /// difference against the feature list it was built from.
-    ///
-    /// Every buffer it needs comes from `scratch`, so a node costs no
-    /// allocation: the new feature list is written over the previous one's
-    /// storage and then swapped in, and the diff reuses its own four vectors.
-    fn rebase(&mut self, net: &SymNetwork, pos: &Position, scratch: &mut Scratch) {
         for color in [Color::Black, Color::White] {
             let i = color.index();
-            active_features_into(pos, color, &mut scratch.after[i]);
-            changed_indices_into(&self.active[i], &scratch.after[i], &mut scratch.diff);
-            accumulate(
-                &mut self.sums[i],
-                &net.embed,
-                &scratch.diff.removed,
-                &scratch.diff.added,
-            );
-            // Swap rather than assign: `self.active[i]`'s allocation becomes
-            // next ply's scratch instead of being dropped and re-made.
-            std::mem::swap(&mut self.active[i], &mut scratch.after[i]);
+            match delta.half(color) {
+                Some(half) => accumulate(
+                    &src.sums[i],
+                    &mut dst.sums[i],
+                    &net.embed,
+                    half.removed(),
+                    half.added(),
+                ),
+                None => {
+                    active_features_into(post_pos, color, &mut cache.features);
+                    accumulate(
+                        &ZERO_SUMS,
+                        &mut dst.sums[i],
+                        &net.embed,
+                        &[],
+                        &cache.features,
+                    );
+                }
+            }
         }
     }
 }
+
+// The KP and HalfKP spaces have no pair table, second moment or square field
+// (Manaka's shape grammar refuses them there), so the power sums are all a
+// derive writes: the other three are empty in both accumulators.
+#[cfg(not(feature = "sym_token"))]
+const _: () = assert!(
+    PAIR == 0 && MOMENT_LEN == 0 && FIELD_LEN == 0,
+    "a KP or HalfKP shape carries nothing but its power sums"
+);
 
 /// The token shapes: by the move's delta, from the parent's accumulator.
 #[cfg(feature = "sym_token")]
@@ -264,18 +285,30 @@ impl Accumulator {
         mv: attic_state::Move,
     ) -> Accumulator {
         let delta = MoveDelta::from_move(pos, mv);
-        let mut next = self.clone();
-        next.apply(net, &delta);
+        let mut next = Accumulator::new();
+        Self::derive_into_cached(self, &mut next, net, pos, &delta, &mut FinnyCache);
         next
     }
 
-    /// Move `dst` to the position after the move `delta` describes, starting from
-    /// `src`, which has to be the accumulator of the position the move was made
-    /// from.
+    /// Write into `dst` the accumulator of the position after the move `delta`
+    /// describes, from `src`, which has to be the accumulator of the position the
+    /// move was made from. Whatever `dst` held is overwritten.
     ///
     /// The position and the cache go unread: a token's row does not depend on
     /// any other piece, so the delta is everything, and there is no bucket whose
     /// rebuild a cache could hold.
+    ///
+    /// The power sums are written from `src` in one pass, with no copy of the
+    /// parent's first. The pair, moment and field sums and the set of tokens are
+    /// copied and then changed, token by token: each removal leaves `active`
+    /// before its row is subtracted and each addition enters it after its row is
+    /// added, so at the moment a token's row is touched `active` is the set of
+    /// *other* tokens present — what a table over pairs of tokens must read to
+    /// subtract or add the right rows.
+    ///
+    /// # Panics
+    /// Panics if a removed token is not present, which means `src` was not the
+    /// accumulator of the position the move was made from.
     pub fn derive_into_cached(
         src: &Accumulator,
         dst: &mut Accumulator,
@@ -284,73 +317,94 @@ impl Accumulator {
         delta: &MoveDelta,
         _cache: &mut FinnyCache,
     ) {
-        // `clone_from` reuses `dst`'s allocations rather than replacing them,
-        // which is what makes a node free of the heap once the stack is warm.
-        dst.clone_from(src);
-        dst.apply(net, delta);
-    }
-
-    /// Take the tokens `delta` removes out of both halves and put the ones it
-    /// adds in.
-    ///
-    /// Each removal leaves `active` before its row is subtracted and each
-    /// addition enters it after its row is added, so at the moment a token's row
-    /// is touched `active` is the set of *other* tokens present — what a table
-    /// over pairs of tokens must read to subtract or add the right rows.
-    ///
-    /// # Panics
-    /// Panics if a removed token is not present, which means `self` was not the
-    /// accumulator of the position the move was made from.
-    fn apply(&mut self, net: &SymNetwork, delta: &MoveDelta) {
         for color in [Color::Black, Color::White] {
             let i = color.index();
             let half = delta.half(color).expect("a token delta is never a rebuild");
             // The power sums depend on nothing but the rows being taken out and put
             // in, and in what order, so they go in one pass ahead of the tables that
             // read `active`.
-            accumulate(&mut self.sums[i], &net.embed, half.removed(), half.added());
-            for &token in half.removed() {
-                let at = self.active[i]
-                    .iter()
-                    .position(|&present| present == token)
-                    .expect("a removed token was not in the accumulator it is removed from");
-                self.active[i].swap_remove(at);
-                touch_pairs(&mut self.pair[i], net, token, &self.active[i], -1.0);
-                touch_moment(&mut self.moment[i], net, token, -1.0);
-                touch_field(&mut self.field[i], net, token, -1.0);
-            }
-            for &token in half.added() {
-                touch_pairs(&mut self.pair[i], net, token, &self.active[i], 1.0);
-                touch_moment(&mut self.moment[i], net, token, 1.0);
-                touch_field(&mut self.field[i], net, token, 1.0);
-                self.active[i].push(token);
-            }
+            accumulate(
+                &src.sums[i],
+                &mut dst.sums[i],
+                &net.embed,
+                half.removed(),
+                half.added(),
+            );
+            dst.pair[i].copy_from_slice(&src.pair[i]);
+            dst.moment[i].copy_from_slice(&src.moment[i]);
+            dst.field[i].copy_from_slice(&src.field[i]);
+            dst.active[i].clone_from(&src.active[i]);
+            dst.touch_tokens(net, i, half.removed(), half.added());
+        }
+    }
+
+    /// The pair, moment and field sums and the set of tokens of half `i`, taken
+    /// from what they hold to the position after `removed` leave and `added`
+    /// arrive. The power sums are not touched.
+    fn touch_tokens(
+        &mut self,
+        net: &SymNetwork,
+        i: usize,
+        removed: &[FeatureIndex],
+        added: &[FeatureIndex],
+    ) {
+        for &token in removed {
+            let at = self.active[i]
+                .iter()
+                .position(|&present| present == token)
+                .expect("a removed token was not in the accumulator it is removed from");
+            self.active[i].swap_remove(at);
+            touch_pairs(&mut self.pair[i], net, token, &self.active[i], -1.0);
+            touch_moment(&mut self.moment[i], net, token, -1.0);
+            touch_field(&mut self.field[i], net, token, -1.0);
+        }
+        for &token in added {
+            touch_pairs(&mut self.pair[i], net, token, &self.active[i], 1.0);
+            touch_moment(&mut self.moment[i], net, token, 1.0);
+            touch_field(&mut self.field[i], net, token, 1.0);
+            self.active[i].push(token);
         }
     }
 }
 
-/// Take the powers of the `removed` features' rows out of `sums` and put the
-/// `added` ones in, in that order, in place.
+/// What a half's power sums start from when they are built rather than derived.
+static ZERO_SUMS: [f32; POWER_LEN] = [0.0; POWER_LEN];
+
+/// Write into `dst` the power sums `src` holds with the powers of the `removed`
+/// features' rows taken out and the `added` ones put in, in that order.
 ///
-/// The subtraction is exact in the sense that matters: `add` then `sub` of the
-/// same row restores the sum bit-for-bit only up to f32 rounding, which is why
-/// the KP and HalfKP shapes always diff against a list they hold rather than
-/// composing many small deltas blindly. The token shapes do compose them, from
-/// the parent's accumulator at every node, and the search seeds the root with a
-/// fresh [`Accumulator::refresh`] at the start of every search.
+/// `src` and `dst` are separate, so a derive reads its parent's sums and writes
+/// its own in the same pass and never copies the parent's first; a rebuild
+/// passes [`ZERO_SUMS`] as `src`.
 ///
-/// Eight channels at a time, each group's sums read once, taken through every
-/// feature in turn and written once, where doing a feature at a time reads and
-/// writes all of `sums` for each. A channel sees what it always saw — for each
-/// feature in order, `sums_k += sign · v^k` and then the power raised by one more
-/// multiplication by `v`, `k` from one to `ORDER` — so the sums are the same bits.
-fn accumulate(sums: &mut [f32], embed: &[f32], removed: &[FeatureIndex], added: &[FeatureIndex]) {
+/// The subtraction is not exact: `add` then `sub` of the same row restores the
+/// sum only up to f32 rounding. Every shape composes these deltas from the
+/// parent's accumulator at every node (a HalfKP half whose king moved starts
+/// again from zero), and the search seeds the root with a fresh
+/// [`Accumulator::refresh`] at the start of every search, which is what bounds
+/// the drift to a search's depth.
+///
+/// Eight channels at a time, each group's sums read once from `src`, taken
+/// through every feature in turn and written once to `dst`, where doing a
+/// feature at a time reads and writes all of the sums for each. A channel sees
+/// what it always saw — for each feature in order, `sums_k += sign · v^k` and
+/// then the power raised by one more multiplication by `v`, `k` from one to
+/// `ORDER` — so the sums are the same bits as copying `src` and updating it in
+/// place.
+fn accumulate(
+    src: &[f32],
+    dst: &mut [f32],
+    embed: &[f32],
+    removed: &[FeatureIndex],
+    added: &[FeatureIndex],
+) {
     const LANES: usize = 8;
     const _: () = assert!(
         DIM.is_multiple_of(LANES),
         "channels come in whole groups of eight"
     );
-    debug_assert_eq!(sums.len(), ORDER * DIM);
+    assert_eq!(src.len(), ORDER * DIM);
+    assert_eq!(dst.len(), ORDER * DIM);
     let row = |feature: FeatureIndex, at: usize| -> [f32; LANES] {
         let base = feature as usize * DIM + at;
         embed[base..base + LANES]
@@ -360,7 +414,7 @@ fn accumulate(sums: &mut [f32], embed: &[f32], removed: &[FeatureIndex], added: 
     for at in (0..DIM).step_by(LANES) {
         let mut group = [[0.0f32; LANES]; ORDER];
         for (k, sum) in group.iter_mut().enumerate() {
-            sum.copy_from_slice(&sums[k * DIM + at..k * DIM + at + LANES]);
+            sum.copy_from_slice(&src[k * DIM + at..k * DIM + at + LANES]);
         }
         for (features, sign) in [(removed, -1.0f32), (added, 1.0f32)] {
             for &feature in features {
@@ -377,7 +431,7 @@ fn accumulate(sums: &mut [f32], embed: &[f32], removed: &[FeatureIndex], added: 
             }
         }
         for (k, sum) in group.iter().enumerate() {
-            sums[k * DIM + at..k * DIM + at + LANES].copy_from_slice(sum);
+            dst[k * DIM + at..k * DIM + at + LANES].copy_from_slice(sum);
         }
     }
 }
@@ -422,15 +476,17 @@ mod tests {
         for round in 0..200 {
             let removed: Vec<FeatureIndex> = (0..round % 3).map(|_| pick()).collect();
             let added: Vec<FeatureIndex> = (0..round % 5).map(|_| pick()).collect();
-            let mut want = vec![0.25f32; ORDER * DIM];
-            let mut got = want.clone();
+            let start = vec![0.25f32; ORDER * DIM];
+            let mut want = start.clone();
+            // Whatever the destination held is overwritten, not added to.
+            let mut got = vec![f32::NAN; ORDER * DIM];
             for &feature in &removed {
                 one_at_a_time(&mut want, &embed, feature, -1.0);
             }
             for &feature in &added {
                 one_at_a_time(&mut want, &embed, feature, 1.0);
             }
-            accumulate(&mut got, &embed, &removed, &added);
+            accumulate(&start, &mut got, &embed, &removed, &added);
             for (at, (g, w)) in got.iter().zip(&want).enumerate() {
                 assert_eq!(g.to_bits(), w.to_bits(), "round {round} entry {at}");
             }
