@@ -38,7 +38,7 @@ pub(super) fn synthetic() -> &'static SymNetwork {
             value_w: rng.fill(HEAD, 0.3),
             value_b: 0.1,
             pair_gamma: gains(&mut rng, PAIR, Gain::PAIR),
-            pair: rng.fill(PAIR_ROWS * PAIR, 0.3),
+            pair: rng.fill(PAIR_ROWS * PAIR, 0.3).into(),
             // Drawn last, so that the networks of the shapes that have none of
             // these are the ones they were before there were any.
             moment_gamma: gains(&mut rng, MOMENT_LEN, Gain::MOMENT),

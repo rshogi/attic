@@ -186,7 +186,7 @@ fn a_net_of_halves_is_read_back_exactly() {
     assert_eq!(second.embed, first.embed);
     assert_eq!(second.w1, first.w1);
     assert_eq!(second.w2, first.w2);
-    assert_eq!(second.pair, first.pair);
+    assert_eq!(*second.pair, *first.pair);
     assert_eq!(second.moment_embed, first.moment_embed);
     assert_eq!(second.field, first.field);
 }
