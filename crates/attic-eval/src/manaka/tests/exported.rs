@@ -39,6 +39,14 @@ pub(super) const EXPORTED: Exported = Exported {
     hash: 0x7b28b1e1,
 };
 
+/// From the file `export-nnue` wrote at tideborn's develop 91421804 for this
+/// shape's seed-1 initial net (2026-11-11); the string depends on the shape alone.
+#[cfg(feature = "synn_token_256x2_32_32")]
+pub(super) const EXPORTED: Exported = Exported {
+    rest: "Tokens[256x2],Network=Dense[1<-32](ClippedReLU[32](Dense[32<-32](ClippedReLU[32](Dense[32<-1536](ClipScaled[768](Newton[3](PowerSum[3](InputSlice[768(0:768)])))))))",
+    hash: 0xbdfcdee1,
+};
+
 #[cfg(feature = "synn_halfkp_128x2_32_32")]
 pub(super) const EXPORTED: Exported = Exported {
     rest: "HalfKP(Friend)[125389->128x2],Network=Dense[1<-32](ClippedReLU[32](Dense[32<-32](ClippedReLU[32](Dense[32<-768](ClipScaled[384](Newton[3](PowerSum[3](InputSlice[384(0:384)])))))))",

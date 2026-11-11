@@ -29,7 +29,7 @@ use attic_storage::{ArenaLayout, ArenaSlice, LargePageArena, Section};
 // reports that. What separates the shapes *within* a family is counted by a
 // `const` assertion there, beside the table of their dimensions: it does not grow
 // with the square of the shapes the way a pairwise chain does, and Manaka alone
-// has six. And `hce_fit_qsearched` is a qualifier on a shape, not a
+// has seven. And `hce_fit_qsearched` is a qualifier on a shape, not a
 // shape, so it is in no list at all.
 #[cfg(not(any(
     feature = "sfnn_halfkahm2_1536_15_32_k3k3",
