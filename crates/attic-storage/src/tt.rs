@@ -504,9 +504,9 @@ impl TranspositionTable {
     ///
     /// The reference issues this mid-`do_move`, the instant the post-move key
     /// is known, because its `Position` holds a TT pointer. The layering rules
-    /// forbid that here, so the hint comes from the Search layer just after
-    /// `do_move` returns — a few nanoseconds later, and output-preserving, a
-    /// prefetch having no architectural semantics.
+    /// forbid that here, so the Search layer issues it just *before* `do_move`,
+    /// with the key `Position::key_after` predicts for the move. It is
+    /// output-preserving either way, a prefetch having no architectural semantics.
     #[inline]
     pub fn prefetch(&self, key: u64, side_to_move: u8) {
         #[cfg(target_arch = "x86_64")]

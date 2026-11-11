@@ -43,7 +43,15 @@ fn check_do_undo(pos: &mut Position) -> Result<(), TestCaseError> {
 
     for mv in legal {
         let usi = format_usi_move(mv);
+        let key_after = pos.key_after(mv);
         let undo = pos.do_move(mv);
+        prop_assert_eq!(
+            pos.key(),
+            key_after,
+            "{}: `{}` landed on a key `key_after` did not predict",
+            &before_sfen,
+            &usi
+        );
 
         // A real move always changes the position, so the round trip below is
         // never vacuous.

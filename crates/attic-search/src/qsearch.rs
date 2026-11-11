@@ -1014,20 +1014,27 @@ impl<'a> QSearch<'a> {
         self.acc_stack[0].refresh(net, pos);
     }
 
+    /// Prefetch the TT cluster of the position `mv` leads to, before `do_move`.
+    ///
+    /// The reference prefetches it inside `Position::do_move`, the moment the
+    /// post-move key is known. This port's `Position` cannot reach the TT, so the
+    /// hint is issued from the search, with the key [`Position::key_after`]
+    /// predicts: `do_move`, the stack updates and the accumulator push then all
+    /// run while the cluster is on its way, where a hint issued after `do_move`
+    /// had only the push to hide behind. A prefetch changes no result, so the
+    /// search visits the same nodes either way.
+    #[inline]
+    fn prefetch_child_tt(&self, pos: &Position, mv: Move) {
+        self.tt
+            .prefetch(pos.key_after(mv), pos.side_to_move().flip().index() as u8);
+    }
+
     /// Derive the child accumulator from the current top and advance the depth,
     /// mirroring a `do_move`. `post_pos` is the position *after* the move, read
     /// only to rebuild a perspective whose own king moved; that rebuild goes
     /// through this worker's finny table.
     #[inline]
     fn push_accumulator(&mut self, post_pos: &Position, delta: &MoveDelta) {
-        // The reference prefetches the child's TT cluster inside
-        // `Position::do_move`, the moment the post-move key is known. This
-        // port's `Position` cannot reach the TT, so the hint is issued from this
-        // seam instead — every real-search `do_move` funnels through it, a few
-        // nanoseconds later but well before the child probes.
-        self.tt
-            .prefetch(post_pos.key(), post_pos.side_to_move().index() as u8);
-
         // The child reads four correction slots in `correction_value`, after
         // its TT probe and evaluation. Their keys are known now, so the hints
         // go out here, with that much work to hide the miss behind.
@@ -1355,6 +1362,7 @@ impl<'a> QSearch<'a> {
             }
 
             // Step 7. Make and search.
+            self.prefetch_child_tt(pos, mv);
             let acc_delta = MoveDelta::from_move(pos, mv);
             self.nodes += 1; // sole node-count increment (worker do_move, 2072).
             let undo = pos.do_move_with_check(mv, gives_check);
@@ -2810,6 +2818,7 @@ impl QSearch<'_> {
                     if mv == excluded_move || !pos.is_legal(mv) {
                         continue;
                     }
+                    self.prefetch_child_tt(pos, mv);
                     let acc_delta = MoveDelta::from_move(pos, mv);
                     self.nodes += 1;
                     let undo = pos.do_move(mv);
@@ -3076,6 +3085,7 @@ impl QSearch<'_> {
             }
 
             // Step 16. Make the move.
+            self.prefetch_child_tt(pos, mv);
             let acc_delta = MoveDelta::from_move(pos, mv);
             self.nodes += 1;
             let undo = pos.do_move_with_check(mv, gives_check);

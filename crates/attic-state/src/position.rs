@@ -299,6 +299,36 @@ impl Position {
         self.board_key ^ self.hand_key
     }
 
+    /// The [`Self::key`] the position will have after `m`, without playing it:
+    /// the reference's `key_after`. The same terms [`Self::do_move_with_check`]
+    /// applies to the two halves of the key, read from the board as it stands.
+    ///
+    /// A search can prefetch the child's TT cluster with it before `do_move`,
+    /// rather than after, and so has more work to hide the miss behind.
+    ///
+    /// `m` must be a move of the side to move in this position; a non-drop move
+    /// must start on the square of the piece it names.
+    pub fn key_after(&self, m: Move) -> u64 {
+        let mover = self.side_to_move;
+        let to = m.to_sq();
+        let (mut board_key, mut hand_key) = (self.board_key, self.hand_key);
+        if m.is_drop() {
+            let kind = m.dropped_piece_kind();
+            board_key ^= crate::key::psq(Piece::new(kind, mover), to);
+            hand_key = hand_key.wrapping_sub(crate::key::hand_step(mover, kind));
+        } else {
+            let from = m.from_sq();
+            let piece_after = m.moved_piece_after();
+            if let Some(captured) = self.board.get(to) {
+                board_key ^= crate::key::psq(captured, to);
+                hand_key = hand_key.wrapping_add(crate::key::hand_step(mover, captured.kind));
+            }
+            board_key ^= crate::key::psq(piece_before_move(m, piece_after), from);
+            board_key ^= crate::key::psq(piece_after, to);
+        }
+        (board_key ^ crate::key::side()) ^ hand_key
+    }
+
     /// Board half of the key, the side-to-move term included.
     pub const fn board_key(&self) -> u64 {
         self.board_key
