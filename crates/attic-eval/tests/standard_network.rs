@@ -4,8 +4,9 @@
 //! `ATTIC_HALFKA2304_NN` unit test is: these networks are large and none of
 //! them live in the repository.
 //!
-//! One variable per shape, `ATTIC_KP256_NN`, `ATTIC_HALFKP256_NN`,
-//! `ATTIC_HALFKP128_NN` and `ATTIC_HALFKP768_NN`, rather than one for all: a
+//! One variable per shape, `ATTIC_KP256_NN`, `ATTIC_KP128_NN`,
+//! `ATTIC_HALFKP256_NN`, `ATTIC_HALFKP128_NN` and `ATTIC_HALFKP768_NN`, rather
+//! than one for all: a
 //! single name means whichever shape is not the one the crate was built with
 //! points the loader at a file of the wrong size, and running the shapes in a
 //! loop with the variable exported once fails on every shape but one.
@@ -18,6 +19,11 @@ use attic_eval::{HIDDEN_SIZE, LAYER_STACKS, NUM_FEATURES, load_network_with_warn
 
 #[cfg(feature = "nnue_kp_256x2_32_32")]
 const NETWORK_ENV: &str = "ATTIC_KP256_NN";
+// No YaneuraOu release has this shape: the file is one Manaka's exporter wrote,
+// whose hashes are derived rather than read (see `loader.rs`). So this shape has
+// the load test and not the comparison with YaneuraOu's own evaluation below.
+#[cfg(feature = "nnue_kp_128x2_32_32")]
+const NETWORK_ENV: &str = "ATTIC_KP128_NN";
 #[cfg(feature = "nnue_halfkp_256x2_32_32")]
 const NETWORK_ENV: &str = "ATTIC_HALFKP256_NN";
 #[cfg(feature = "nnue_halfkp_128x2_32_32")]

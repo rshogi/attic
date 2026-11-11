@@ -53,6 +53,22 @@ const NET_HASH: u32 = 0x6333_7156;
 #[cfg(feature = "nnue_kp_256x2_32_32")]
 const ARCH_STRING: &str = "Features=K+P[1710->256x2],Network=AffineTransform[1<-32](ClippedReLU[32](AffineTransform[32<-32](ClippedReLU[32](AffineTransform[32<-512](InputSlice[512(0:512)])))))";
 
+// No released network has this shape, so these were not read out of a file.
+// They follow from the three that were, each hash depending on one thing the
+// shapes vary: the transformer's is the feature set's constant xor `2 · width`
+// (KP256's `0x3F5715FF` gives `0x3F5716FF` at 128, as HalfKP's two agree), the
+// dense stack's depends on the width it reads and not the features (HalfKP128's
+// `0x63337136`), and the header's is their xor. Manaka's exporter writes the
+// same numbers.
+#[cfg(feature = "nnue_kp_128x2_32_32")]
+const NNUE_HASH_VALUE: u32 = 0x5C64_67C9;
+#[cfg(feature = "nnue_kp_128x2_32_32")]
+const FT_HASH: u32 = 0x3F57_16FF;
+#[cfg(feature = "nnue_kp_128x2_32_32")]
+const NET_HASH: u32 = 0x6333_7136;
+#[cfg(feature = "nnue_kp_128x2_32_32")]
+const ARCH_STRING: &str = "Features=K+P[1710->128x2],Network=AffineTransform[1<-32](ClippedReLU[32](AffineTransform[32<-32](ClippedReLU[32](AffineTransform[32<-256](InputSlice[256(0:256)])))))";
+
 #[cfg(feature = "nnue_halfkp_256x2_32_32")]
 const NNUE_HASH_VALUE: u32 = 0x3E5A_A6EE;
 #[cfg(feature = "nnue_halfkp_256x2_32_32")]
