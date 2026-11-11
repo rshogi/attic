@@ -15,6 +15,7 @@
 //! positions) it is 0.24 to 0.28 cp on average and about 1 cp at the 99th
 //! percentile, against 290 cp to the unit. It is the layer a loaded network runs;
 //! the `f32` layer stays the definition, and `ATTIC_SYNN_W1=f32` selects it.
+//! `ATTIC_SYNN_W1=i8` selects the coarser and faster layer of `qdense_i8.rs`.
 //!
 //! ## Why the sum cannot overflow
 //!

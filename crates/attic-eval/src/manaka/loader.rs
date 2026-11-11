@@ -15,7 +15,7 @@ use super::body::read_body;
 use super::reader::Reader;
 use super::{
     DIM, FEATURE_LEN, FIELD, FIELD_AT, FIELD_LEN, HAS_FIELD, HAS_MOMENT, HAS_PAIR, HIDDEN, HIDDEN2,
-    MOMENT, MOMENT_AT, MOMENT_LEN, ORDER, PAIR, PAIR_AT, SymNetwork, TOKENS,
+    MOMENT, MOMENT_AT, MOMENT_LEN, ORDER, PAIR, PAIR_AT, SymNetwork, TOKENS, W1Precision,
 };
 
 /// The container's version word, shared with every `nn.bin` YaneuraOu writes.
@@ -112,13 +112,15 @@ pub fn load_network(path: &Path) -> Result<SymNetwork, NnueError> {
         source,
     })?;
     let mut net = parse_network(&bytes)?;
-    // The first layer runs on `i16` weights (see `SymNetwork::use_i16_w1`), which
-    // is about 1.2 times the nodes per second for under a centipawn.
+    // The first layer runs on `i16` weights (see `SymNetwork::use_first_layer`),
+    // which is about 1.2 times the nodes per second for under a centipawn.
     // `ATTIC_SYNN_W1=f32` puts it back on the `f32` layer that defines it, to
-    // measure one against the other; anything else, or nothing, is `i16`. Read
-    // here and not in `parse_network` so that the tests, which read bytes they
-    // made, keep the `f32` layer.
-    net.use_i16_w1(!std::env::var("ATTIC_SYNN_W1").is_ok_and(|v| v.eq_ignore_ascii_case("f32")));
+    // measure one against the other, and `ATTIC_SYNN_W1=i8` puts it on `i8`
+    // weights, faster again for about ten centipawns; anything else, or nothing,
+    // is `i16`. Read here and not in `parse_network` so that the tests, which read
+    // bytes they made, keep the `f32` layer.
+    let name = std::env::var("ATTIC_SYNN_W1").ok();
+    net.use_first_layer(W1Precision::from_name(name.as_deref()));
     Ok(net)
 }
 

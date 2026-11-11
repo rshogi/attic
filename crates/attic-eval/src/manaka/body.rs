@@ -13,8 +13,8 @@ use crate::types::NnueError;
 use super::reader::Reader;
 use super::shape::SQUARES;
 use super::{
-    DIM, FEATURE_LEN, FIELD, HAS_FIELD, HAS_MOMENT, HAS_PAIR, HEAD, HIDDEN, HIDDEN2, MOMENT,
-    MOMENT_LEN, ORDER, PAIR, PAIR_ROWS, SymNetwork, TOKENS,
+    DIM, FEATURE_LEN, FIELD, FirstLayer, HAS_FIELD, HAS_MOMENT, HAS_PAIR, HEAD, HIDDEN, HIDDEN2,
+    MOMENT, MOMENT_LEN, ORDER, PAIR, PAIR_ROWS, SymNetwork, TOKENS,
 };
 
 /// The body of the file, from the first section to the last.
@@ -63,7 +63,7 @@ pub(super) fn read_body(r: &mut Reader<'_>, hash: u32) -> Result<SymNetwork, Nnu
         moment_embed,
         field_gamma,
         field,
-        qw1: None,
+        first: FirstLayer::F32,
     })
 }
 

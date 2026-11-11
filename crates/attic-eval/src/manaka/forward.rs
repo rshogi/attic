@@ -15,8 +15,9 @@ use attic_state::Color;
 
 use super::dense;
 use super::{
-    Accumulator, BLOCK_LEN, DIM, FEATURE_LEN, FIELD_AT, FIELD_LEN, HAS_FIELD, HAS_MOMENT, HAS_PAIR,
-    HIDDEN, HIDDEN2, MOMENT_AT, MOMENT_LEN, ORDER, PAIR, PAIR_AT, POWER_LEN, SymNetwork,
+    Accumulator, BLOCK_LEN, DIM, FEATURE_LEN, FIELD_AT, FIELD_LEN, FirstLayer, HAS_FIELD,
+    HAS_MOMENT, HAS_PAIR, HIDDEN, HIDDEN2, MOMENT_AT, MOMENT_LEN, ORDER, PAIR, PAIR_AT, POWER_LEN,
+    SymNetwork,
 };
 
 pub(super) use dense::dense_clip;
@@ -286,9 +287,10 @@ pub(super) fn value_from_sums(net: &SymNetwork, acc: &Accumulator, stm: Color) -
     features_from_sums(net, acc, stm, &mut features);
 
     let mut hidden = [0.0f32; HIDDEN];
-    match &net.qw1 {
-        Some(q) => q.layer_clip(&features, &net.b1, &mut hidden),
-        None => dense_clip(&net.w1, &net.b1, &features, &mut hidden),
+    match &net.first {
+        FirstLayer::F32 => dense_clip(&net.w1, &net.b1, &features, &mut hidden),
+        FirstLayer::I16(q) => q.layer_clip(&features, &net.b1, &mut hidden),
+        FirstLayer::I8(q) => q.layer_clip(&features, &net.b1, &mut hidden),
     }
 
     let mut second = [0.0f32; HIDDEN2];

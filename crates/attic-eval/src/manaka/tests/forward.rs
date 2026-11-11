@@ -6,7 +6,7 @@ use super::super::forward::{dense_clip, features_from_sums};
 use super::super::{
     Accumulator, BLOCK_LEN, DIM, FEATURE_LEN, FIELD_AT, FIELD_LEN, FinnyCache, HAS_FIELD,
     HAS_MOMENT, HAS_PAIR, HIDDEN, HIDDEN2, MOMENT_AT, MOMENT_LEN, ORDER, PAIR, PAIR_AT,
-    evaluate_pre, evaluate_value, value_from_sums,
+    W1Precision, evaluate_pre, evaluate_value, value_from_sums,
 };
 use super::fixtures::{assert_close, assert_close_relative, game, least, random_game, synthetic};
 use super::reference::reference_value;
@@ -216,6 +216,57 @@ fn the_forward_pass_matches_a_reference_written_from_the_definition() {
         worst < 1e-4,
         "f32 forward is {worst} from the f64 reference"
     );
+}
+
+/// Each integer first layer is the one the network runs once it is chosen, and
+/// lands near the `f32` value: the `i16` layer within a hundredth of a unit, the
+/// `i8` one within a tenth, on every position of a game. Neither is the `f32`
+/// value to the bit, which is what shows the choice reached the forward pass.
+#[test]
+fn an_integer_first_layer_runs_in_place_of_w1_and_stays_near_it() {
+    let base = synthetic();
+    for (precision, tolerance) in [(W1Precision::I16, 0.01f32), (W1Precision::I8, 0.1)] {
+        let mut net = base.replicate();
+        net.use_first_layer(precision);
+        let (mut worst, mut differs) = (0.0f32, false);
+        for (pos, _) in random_game(3, 120) {
+            let (exact, got) = (evaluate_value(base, &pos), evaluate_value(&net, &pos));
+            worst = worst.max((got - exact).abs());
+            differs |= got.to_bits() != exact.to_bits();
+        }
+        assert!(
+            differs,
+            "{precision:?}: the value is the f32 one to the bit"
+        );
+        assert!(
+            worst < tolerance,
+            "{precision:?}: {worst} from the f32 value"
+        );
+        net.use_first_layer(W1Precision::F32);
+        for (pos, _) in random_game(3, 40) {
+            assert_eq!(
+                evaluate_value(&net, &pos).to_bits(),
+                evaluate_value(base, &pos).to_bits(),
+                "{precision:?} switched back to f32 is the f32 layer"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_precision_is_read_from_its_name() {
+    for (name, want) in [
+        (None, W1Precision::I16),
+        (Some("i16"), W1Precision::I16),
+        (Some("f32"), W1Precision::F32),
+        (Some("F32"), W1Precision::F32),
+        (Some("i8"), W1Precision::I8),
+        (Some("I8"), W1Precision::I8),
+        (Some("u8"), W1Precision::I16),
+        (Some(""), W1Precision::I16),
+    ] {
+        assert_eq!(W1Precision::from_name(name), want, "{name:?}");
+    }
 }
 
 /// The second layer is read, not skipped: moving its bias moves the value.
