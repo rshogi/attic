@@ -44,6 +44,16 @@ YaneuraOu を 1.00 とし、YaneuraOu の平均秒数を Attic の平均秒数�
 
 平均秒数と標準偏差は [CSV](benchmark/results.csv) を参照してください。
 
+## 最適化前後の比較
+
+同じマシンの E コア（論理 CPU 17〜19 のいずれか1つ）に固定し、同じ局面を100万ノードずつ各ビルド10回測定しました。速度比は各行の変更前を 1.00× とした値です。NPS は実ノード数の合計を経過時間の合計で割っています。
+
+![最適化前後の探索速度比と実測NPS](benchmark/optimization.svg)
+
+Relaxed SIMD は SIMD128 版と比較しました。YaneuraOu の累積値再利用では、AVX2 で専用の特徴変換カーネルも有効にし、WASM では変更前後とも Relaxed SIMD を有効にしました。
+
+平均探索時間と NPS は [最適化の計測 CSV](benchmark/optimization-results.csv) を参照してください。
+
 ## ビルド条件
 
 計測に使った局面です。
