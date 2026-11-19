@@ -30,6 +30,11 @@ cargo build --release -p attic --no-default-features --features <shape>,ref_chec
 | `sfnn_ka2_2048_8_64_progress8x` | 21,884/21,884 (100%) | 20,233/20,233 (100%) | 1,651/1,651 (100%) |
 | `sfnn_ka2_4096_8_64_progress8x` | 21,884/21,884 (100%) | 20,233/20,233 (100%) | 1,651/1,651 (100%) |
 
+## ネットワーク別の最適化
+
+- `sfnn_halfkahm2_2304_15_64_progress8` の配布版互換ブランチでは、探索係数、指し手の採点、千日手判定、置換表を配布版に合わせています。上の照合表は V9.96 系での結果です。 [配布版向けの調整（PR #66）](https://github.com/rshogi/attic/pull/66)
+- `sfnn_halfkahm2_threat_1024_15_64_8gp` では、threat 特徴量の差分更新と AVX2 カーネルで評価を高速化し、専用の層スタック選択と境界での補間を再現しています。 [評価実装と検証結果（PR #51）](https://github.com/rshogi/attic/pull/51)
+
 ## `sfnn_halfkahm2_1024_15_64_progress8ek`
 
 この構成は `sfnn_halfkahm2_1024_15_64_progress8kpabs` とファイル形式や進行度係数が共通で、層スタックの選択規則が異なります。先手玉が1〜5段、後手玉が5〜9段にいる相入玉局面は、`sfnn_halfkahm2_2304_15_64_progress8ek` と同じく9番目の層スタックを使います。
