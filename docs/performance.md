@@ -19,7 +19,7 @@ Linux AVX2 と WASM SIMD128 の測定結果です。各ネットワークで **Y
 
 ## NPS
 
-NPS は、探索した実ノード数の合計を経過時間の合計で割って求めました。
+各回の最後にエンジンが出力した `nps` の平均です。
 
 ![AVX2 と WASM の実測 NPS](benchmark/nps.svg)
 
