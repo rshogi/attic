@@ -126,7 +126,8 @@ impl Board {
         self.occupied
     }
 
-    pub(crate) fn pieces_color(&self, color: Color) -> Bitboard {
+    /// Every square holding one of `color`'s pieces.
+    pub fn pieces_color(&self, color: Color) -> Bitboard {
         self.by_color[color.index()]
     }
 

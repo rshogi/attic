@@ -439,9 +439,9 @@ fn king_count_bucket(pos: &Position, color: Color) -> u32 {
     }
     count += 5 * (hand.count(PieceKind::Bishop) as u32 + hand.count(PieceKind::Rook) as u32);
     let board = pos.board();
-    for sq in (board.occupied() & promotion_zone(color)).squares() {
+    for sq in (board.pieces_color(color) & promotion_zone(color)).squares() {
         let Some(piece) = board.get(sq) else { continue };
-        if piece.color != color || piece.kind == PieceKind::King {
+        if piece.kind == PieceKind::King {
             continue;
         }
         count += if matches!(piece.kind, PieceKind::Bishop | PieceKind::Rook) {
@@ -675,6 +675,65 @@ mod tests {
         // Black sees: rook -> pawn. White sees: rook -> pawn, gold -> pawn.
         assert_eq!(lists[0].edge_count(), 1);
         assert_eq!(lists[1].edge_count(), 2);
+    }
+
+    /// [`king_count_bucket`] square by square over the camp, whoever stands there.
+    fn king_count_bucket_by_squares(pos: &Position, color: Color) -> u32 {
+        let hand = pos.hand(color);
+        let mut count = 0u32;
+        for kind in [
+            PieceKind::Pawn,
+            PieceKind::Lance,
+            PieceKind::Knight,
+            PieceKind::Silver,
+            PieceKind::Gold,
+        ] {
+            count += hand.count(kind) as u32;
+        }
+        count += 5 * (hand.count(PieceKind::Bishop) as u32 + hand.count(PieceKind::Rook) as u32);
+        let board = pos.board();
+        for sq in (board.occupied() & promotion_zone(color)).squares() {
+            let Some(piece) = board.get(sq) else { continue };
+            if piece.color != color || piece.kind == PieceKind::King {
+                continue;
+            }
+            count += if matches!(piece.kind, PieceKind::Bishop | PieceKind::Rook) {
+                5
+            } else {
+                1
+            };
+        }
+        (count >> 2).min(7)
+    }
+
+    #[test]
+    fn the_king_count_bucket_matches_the_square_scan() {
+        let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let mut nonzero = 0;
+        for _ in 0..40 {
+            let mut pos = parse_sfen(STARTPOS).unwrap();
+            for _ in 0..200 {
+                for color in [Color::Black, Color::White] {
+                    let bucket = king_count_bucket(&pos, color);
+                    assert_eq!(bucket, king_count_bucket_by_squares(&pos, color), "{pos:?}");
+                    nonzero += usize::from(bucket != 0);
+                }
+                let mut moves = Vec::new();
+                pos.generate_legal_all(&mut moves);
+                if moves.is_empty() {
+                    break;
+                }
+                let mv = moves[(next() % moves.len() as u64) as usize];
+                let _ = pos.do_move(mv);
+            }
+        }
+        assert!(nonzero > 1000, "{nonzero}");
     }
 
     fn diff_applies(old: &ThreatList, new: &ThreatList) {

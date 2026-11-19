@@ -14,8 +14,8 @@
 //! `table_is_what_the_published_bucket_function_gives` recomputes it with this crate's own
 //! `f64::exp` and `f64::ln` and compares, which is what ties the numbers to their source.
 
-use attic_state::bitboard::promotion_zone;
-use attic_state::{Color, PieceKind, Position, Square};
+use attic_state::bitboard::{file_mask, promotion_zone, rank_mask};
+use attic_state::{Bitboard, Color, PieceKind, Position};
 
 /// Hand-piece weights in `S`, indexed by [`HAND_ORDER`]: pawn, lance, knight, silver, gold,
 /// bishop, rook.
@@ -206,11 +206,8 @@ pub fn phase_sum(pos: &Position) -> i32 {
         for (kind, weight) in HAND_ORDER.iter().zip(HAND_WEIGHT) {
             sum = sum.wrapping_add((hand.count(*kind) as i32).wrapping_mul(weight));
         }
-        for sq in (board.occupied() & promotion_zone(color)).squares() {
+        for sq in (board.pieces_color(color) & promotion_zone(color)).squares() {
             let Some(piece) = board.get(sq) else { continue };
-            if piece.color != color {
-                continue;
-            }
             if let Some(slot) = camp_slot(piece.kind, piece.promoted) {
                 sum = sum.wrapping_add(CAMP_WEIGHT[slot]);
             }
@@ -237,22 +234,21 @@ pub fn king_code(pos: &Position) -> usize {
         if adv < 0 {
             continue;
         }
-        let mut support = 0usize;
+        // Two ranks ahead of the king to one behind it, on the files within two of it.
+        let (low, high) = match color {
+            Color::Black => (rank - 2, rank + 1),
+            Color::White => (rank - 1, rank + 2),
+        };
+        let mut files = Bitboard::EMPTY;
         for f in (file - 2).max(0)..=(file + 2).min(8) {
-            for r in (rank - 2).max(0)..=(rank + 2).min(8) {
-                let behind_ok = match color {
-                    Color::Black => r <= rank + 1,
-                    Color::White => r >= rank - 1,
-                };
-                if !behind_ok || (f == file && r == rank) {
-                    continue;
-                }
-                let sq = Square::new(f as u8, r as u8).expect("clamped to the board");
-                if board.get(sq).is_some_and(|p| p.color == color) {
-                    support += 1;
-                }
-            }
+            files |= file_mask(f as u8);
         }
+        let mut ranks = Bitboard::EMPTY;
+        for r in low.max(0)..=high.min(8) {
+            ranks |= rank_mask(r as u8);
+        }
+        // The king stands in its own box and is not a defender.
+        let support = (board.pieces_color(color) & files & ranks).popcount() as usize - 1;
         code += (2 * adv as usize + 1) * (support.min(3) + 1);
     }
     code
@@ -328,7 +324,97 @@ pub fn blend(raw: i32, other: i32, t: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use attic_state::parse_sfen;
+    use attic_state::{Square, parse_sfen};
+
+    const STARTPOS: &str = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1";
+
+    /// [`phase_sum`] square by square over the camp, whoever stands there.
+    fn phase_sum_by_squares(pos: &Position) -> i32 {
+        let board = pos.board();
+        let mut sum = 0i32;
+        for color in [Color::Black, Color::White] {
+            let hand = pos.hand(color);
+            for (kind, weight) in HAND_ORDER.iter().zip(HAND_WEIGHT) {
+                sum = sum.wrapping_add((hand.count(*kind) as i32).wrapping_mul(weight));
+            }
+            for sq in (board.occupied() & promotion_zone(color)).squares() {
+                let Some(piece) = board.get(sq) else { continue };
+                if piece.color != color {
+                    continue;
+                }
+                if let Some(slot) = camp_slot(piece.kind, piece.promoted) {
+                    sum = sum.wrapping_add(CAMP_WEIGHT[slot]);
+                }
+            }
+        }
+        sum
+    }
+
+    /// [`king_code`] square by square over the box around each king.
+    fn king_code_by_squares(pos: &Position) -> usize {
+        let board = pos.board();
+        let mut code = 0usize;
+        for color in [Color::Black, Color::White] {
+            let king = pos.king_square(color).unwrap();
+            let (file, rank) = (king.file() as i32, king.rank() as i32);
+            let adv = match color {
+                Color::Black => 6 - rank,
+                Color::White => rank - 2,
+            };
+            if adv < 0 {
+                continue;
+            }
+            let mut support = 0usize;
+            for f in (file - 2).max(0)..=(file + 2).min(8) {
+                for r in (rank - 2).max(0)..=(rank + 2).min(8) {
+                    let behind_ok = match color {
+                        Color::Black => r <= rank + 1,
+                        Color::White => r >= rank - 1,
+                    };
+                    if !behind_ok || (f == file && r == rank) {
+                        continue;
+                    }
+                    let sq = Square::new(f as u8, r as u8).unwrap();
+                    if board.get(sq).is_some_and(|p| p.color == color) {
+                        support += 1;
+                    }
+                }
+            }
+            code += (2 * adv as usize + 1) * (support.min(3) + 1);
+        }
+        code
+    }
+
+    #[test]
+    fn the_piece_set_forms_match_the_square_scans() {
+        let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let (mut in_camp, mut advanced) = (0, 0);
+        for _ in 0..40 {
+            let mut pos = parse_sfen(STARTPOS).unwrap();
+            for _ in 0..200 {
+                let sum = phase_sum(&pos);
+                assert_eq!(sum, phase_sum_by_squares(&pos), "{pos:?}");
+                let code = king_code(&pos);
+                assert_eq!(code, king_code_by_squares(&pos), "{pos:?}");
+                in_camp += usize::from(sum != 0);
+                advanced += usize::from(code != 0);
+                let mut moves = Vec::new();
+                pos.generate_legal_all(&mut moves);
+                if moves.is_empty() {
+                    break;
+                }
+                let mv = moves[(next() % moves.len() as u64) as usize];
+                let _ = pos.do_move(mv);
+            }
+        }
+        assert!(in_camp > 1000 && advanced > 1000, "{in_camp} {advanced}");
+    }
 
     /// The bound function Sirius bisects, with the constants of the stack bounds. It is a
     /// transcription of `SPEC.md` section 8 and uses `f64::exp` / `f64::ln`.
@@ -439,8 +525,7 @@ mod tests {
 
     #[test]
     fn startpos_is_the_first_stack_with_no_blend() {
-        let pos =
-            parse_sfen("lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1").unwrap();
+        let pos = parse_sfen(STARTPOS).unwrap();
         // Nothing in a hand or in the enemy camp, and neither king has advanced.
         assert_eq!(phase_sum(&pos), 0);
         assert_eq!(king_code(&pos), 0);
