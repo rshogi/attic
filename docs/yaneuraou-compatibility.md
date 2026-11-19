@@ -60,6 +60,5 @@ cargo build --release -p attic --no-default-features --features <shape>,ref_chec
 
 - 進行度による層スタックの選択
 - 層スタックの境界での補間
-- 評価値のスケーリング（`FV_SCALE`）
 
 [Sirius](https://yfamate.booth.pm/items/9158204) · [調整内容（PR #51）](https://github.com/rshogi/attic/pull/51)
