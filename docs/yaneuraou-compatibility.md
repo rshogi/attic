@@ -32,7 +32,7 @@ cargo build --release -p attic --no-default-features --features <shape>,ref_chec
 
 ## ネットワーク別のパラメータ調整
 
-- `sfnn_halfkahm2_2304_15_64_progress8` の配布版互換ブランチでは、探索係数、指し手の採点、千日手判定、置換表を配布版に合わせています。上の照合表は V9.96 系での結果です。 [配布版向けの調整（PR #66）](https://github.com/rshogi/attic/pull/66)
+- `sfnn_halfkahm2_2304_15_64_progress8` の配布版互換ブランチでは、探索係数、指し手の採点、千日手判定、置換表を配布版に合わせています。上の照合表は V9.96 系での結果です。 [配布ページ（GitHub Releases）](https://github.com/keinoda/YaneuraOu/releases/tag/nagisa-v4) · [配布版向けの調整（PR #66）](https://github.com/rshogi/attic/pull/66)
 - `sfnn_halfkahm2_threat_1024_15_64_8gp` では、進行度による層スタックの選択と境界での補間、`FV_SCALE` を配布版に合わせています。 [配布ページ（BOOTH）](https://yfamate.booth.pm/items/9158204) · [評価設定と検証結果（PR #51）](https://github.com/rshogi/attic/pull/51)
 
 ## `sfnn_halfkahm2_1024_15_64_progress8ek`
