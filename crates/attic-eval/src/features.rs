@@ -739,6 +739,8 @@ impl PerspectiveDelta {
 #[derive(Clone, Copy)]
 pub struct MoveDelta {
     halves: [PerspectiveDelta; Color::COUNT],
+    #[cfg(feature = "sfnn_threat")]
+    board_change: crate::threat::BoardChange,
 }
 
 impl MoveDelta {
@@ -748,6 +750,12 @@ impl MoveDelta {
     pub fn half(&self, perspective: Color) -> Option<&PerspectiveDelta> {
         let half = &self.halves[perspective.index()];
         if half.rebuild { None } else { Some(half) }
+    }
+
+    #[cfg(feature = "sfnn_threat")]
+    #[inline]
+    pub fn board_change(&self) -> crate::threat::BoardChange {
+        self.board_change
     }
 
     /// Compute the delta for `mv` from the **pre-move** `pos`, which is not
@@ -768,7 +776,15 @@ impl MoveDelta {
             // appears at `to`.
             let kind = mv.dropped_piece_kind();
             let count = pos.hand(mover).count(kind) as usize;
+            #[cfg(feature = "sfnn_threat")]
+            let change = crate::threat::BoardChange {
+                changed: attic_state::Bitboard::from_square(to),
+                flipped: attic_state::Bitboard::from_square(to),
+            };
+            #[cfg(not(feature = "sfnn_threat"))]
+            let change = ();
             return Self::assemble(
+                change,
                 pos,
                 mv,
                 [Dirty::Hand {
@@ -809,14 +825,32 @@ impl MoveDelta {
             piece: after,
         };
 
+        #[cfg(feature = "sfnn_threat")]
+        let change = {
+            let (f, t) = (
+                attic_state::Bitboard::from_square(from),
+                attic_state::Bitboard::from_square(to),
+            );
+            crate::threat::BoardChange {
+                changed: f | t,
+                flipped: if pos.board().get(to).is_none() {
+                    f | t
+                } else {
+                    f
+                },
+            }
+        };
+        #[cfg(not(feature = "sfnn_threat"))]
+        let change = ();
         match pos.board().get(to) {
-            None => Self::assemble(pos, mv, [lifted], [placed]),
+            None => Self::assemble(change, pos, mv, [lifted], [placed]),
             // The victim leaves the board and enters the mover's hand as its
             // unpromoted kind, at the next count slot.
             Some(captured) => {
                 let base = captured.kind;
                 let count = pos.hand(mover).count(base) as usize + 1;
                 Self::assemble(
+                    change,
                     pos,
                     mv,
                     [
@@ -842,6 +876,8 @@ impl MoveDelta {
     /// Encode the dirty slots for both perspectives.
     #[inline(always)]
     fn assemble<const R: usize, const A: usize>(
+        #[cfg(feature = "sfnn_threat")] board_change: crate::threat::BoardChange,
+        #[cfg(not(feature = "sfnn_threat"))] _board_change: (),
         pos: &Position,
         mv: Move,
         removed: [Dirty; R],
@@ -852,6 +888,8 @@ impl MoveDelta {
                 Self::encode_half(pos, mv, Color::Black, &removed, &added),
                 Self::encode_half(pos, mv, Color::White, &removed, &added),
             ],
+            #[cfg(feature = "sfnn_threat")]
+            board_change,
         }
     }
 

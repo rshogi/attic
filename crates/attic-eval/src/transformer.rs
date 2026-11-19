@@ -50,7 +50,7 @@ use crate::finny::FinnyCache;
 use crate::simd::post_ft_kernel;
 use crate::simd::transformer_kernel;
 #[cfg(feature = "sfnn_threat")]
-use crate::threat::{MAX_LIST, ThreatDiff, ThreatList, build_lists};
+use crate::threat::{MAX_LIST, ThreatDiff, ThreatList, build_lists, update_lists};
 use crate::types::{FC_0_INPUT_DIMS, HIDDEN_SIZE, NnueNetwork};
 
 /// Width of the byte buffer the output transform fills: one lane per fc_0
@@ -286,7 +286,23 @@ impl Accumulator {
             return;
         }
         #[cfg(feature = "sfnn_threat")]
-        let lists = build_lists(post_pos);
+        let mut diffs = [ThreatDiff::new(), ThreatDiff::new()];
+        #[cfg(feature = "sfnn_threat")]
+        let followed = delta.half(Color::Black).is_some()
+            && delta.half(Color::White).is_some()
+            && update_lists(
+                post_pos,
+                &src.threats,
+                delta.board_change(),
+                &mut dst.threats,
+                &mut diffs,
+            );
+        #[cfg(feature = "sfnn_threat")]
+        {
+            if !followed {
+                dst.threats = build_lists(post_pos);
+            }
+        }
         for color in [Color::Black, Color::White] {
             let i = color.index();
             match delta.half(color) {
@@ -300,23 +316,28 @@ impl Accumulator {
                     );
                     #[cfg(feature = "sfnn_threat")]
                     {
-                        dst.threats[i] = lists[i];
-                        apply_threat_change(
-                            &mut dst.perspectives[i],
-                            net,
-                            &src.threats[i],
-                            &lists[i],
-                        );
+                        if followed {
+                            transformer_kernel::apply_threat_rows(
+                                &mut dst.perspectives[i],
+                                &net.threat_weights,
+                                diffs[i].removed(),
+                                diffs[i].added(),
+                            );
+                        } else {
+                            apply_threat_change(
+                                &mut dst.perspectives[i],
+                                net,
+                                &src.threats[i],
+                                &dst.threats[i],
+                            );
+                        }
                     }
                 }
                 None => {
                     // The cached half is bias plus HalfKA rows; the threat rows go on top.
                     cache.refresh_into(net, post_pos, color, &mut dst.perspectives[i]);
                     #[cfg(feature = "sfnn_threat")]
-                    {
-                        dst.threats[i] = lists[i];
-                        add_threat_list(&mut dst.perspectives[i], net, &lists[i]);
-                    }
+                    add_threat_list(&mut dst.perspectives[i], net, &dst.threats[i]);
                 }
             }
         }

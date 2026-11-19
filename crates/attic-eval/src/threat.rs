@@ -516,10 +516,7 @@ pub fn build_lists(pos: &Position) -> [ThreatList; 2] {
                 if n[p] >= MAX_EDGES {
                     continue;
                 }
-                let row = t.block_start[a_side][ac][d_side][dc]
-                    + t.pattern_row[((ac + 9 * a_side) * 81 + frame[p][from_ix] as usize) * 81
-                        + frame[p][to_ix] as usize] as u32;
-                debug_assert!((row as usize) < EDGE_ROWS);
+                let row = edge_row(t, frame[p], a_side, ac, d_side, dc, from_ix, to_ix);
                 lists[p].edges[n[p]] = key | row;
                 n[p] += 1;
             }
@@ -529,22 +526,201 @@ pub fn build_lists(pos: &Position) -> [ThreatList; 2] {
         }
     }
 
+    [lists[0].king, lists[1].king] = king_rows(pos, frame, black_king, white_king);
+    lists[0].len = n[0] as u32;
+    lists[1].len = n[1] as u32;
+    lists
+}
+
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn edge_row(
+    t: &Tables,
+    frame: &[u8; 81],
+    a_side: usize,
+    ac: usize,
+    d_side: usize,
+    dc: usize,
+    from_ix: usize,
+    to_ix: usize,
+) -> u32 {
+    let row = t.block_start[a_side][ac][d_side][dc]
+        + t.pattern_row
+            [((ac + 9 * a_side) * 81 + frame[from_ix] as usize) * 81 + frame[to_ix] as usize]
+            as u32;
+    debug_assert!((row as usize) < EDGE_ROWS);
+    row
+}
+
+#[inline]
+fn king_rows(
+    pos: &Position,
+    frame: [&[u8; 81]; 2],
+    black_king: Square,
+    white_king: Square,
+) -> [[u32; 2]; 2] {
     let bucket = [
         king_count_bucket(pos, Color::Black),
         king_count_bucket(pos, Color::White),
     ];
     let (bk, wk) = (black_king.index() as usize, white_king.index() as usize);
-    lists[0].king = [
-        KING_ROWS_OWN + bucket[0] * 81 + frame[0][bk] as u32,
-        KING_ROWS_OTHER + bucket[1] * 81 + frame[0][wk] as u32,
+    [
+        [
+            KING_ROWS_OWN + bucket[0] * 81 + frame[0][bk] as u32,
+            KING_ROWS_OTHER + bucket[1] * 81 + frame[0][wk] as u32,
+        ],
+        [
+            KING_ROWS_OWN + bucket[1] * 81 + frame[1][wk] as u32,
+            KING_ROWS_OTHER + bucket[0] * 81 + frame[1][bk] as u32,
+        ],
+    ]
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BoardChange {
+    pub changed: Bitboard,
+    /// `changed` squares that went from empty to occupied or back.
+    pub flipped: Bitboard,
+}
+
+/// `build_lists(pos)` from the parent's lists, for a move that moved neither king.
+/// Returns `false` at the `MAX_EDGES` cap; the caller then uses `build_lists`.
+pub fn update_lists(
+    pos: &Position,
+    old: &[ThreatList; 2],
+    change: BoardChange,
+    new: &mut [ThreatList; 2],
+    diff: &mut [ThreatDiff; 2],
+) -> bool {
+    if old[0].len as usize >= MAX_EDGES || old[1].len as usize >= MAX_EDGES {
+        return false;
+    }
+    let t = tables();
+    let board = pos.board();
+    let occ = board.occupied();
+    let occ_before = occ ^ change.flipped;
+    let black_king = pos
+        .king_square(Color::Black)
+        .unwrap_or_else(|| panic!("position has no Black king"));
+    let white_king = pos
+        .king_square(Color::White)
+        .unwrap_or_else(|| panic!("position has no White king"));
+    let targets =
+        occ.and_not(Bitboard::from_square(black_king) | Bitboard::from_square(white_king));
+
+    let mut near = Bitboard::EMPTY;
+    for sq in change.changed.squares() {
+        near |= rook_attacks(sq, occ)
+            | bishop_attacks(sq, occ)
+            | rook_attacks(sq, occ_before)
+            | bishop_attacks(sq, occ_before)
+            | knight_attacks(Color::Black, sq)
+            | knight_attacks(Color::White, sq);
+    }
+    let mut touched = change.changed;
+    for sq in (near & targets).and_not(change.changed).squares() {
+        let piece = board
+            .get(sq)
+            .expect("an occupied square holds a piece by construction");
+        let reach = attacks_of(piece, sq, occ) | attacks_of(piece, sq, occ_before);
+        if !(reach & change.changed).is_empty() {
+            touched |= Bitboard::from_square(sq);
+        }
+    }
+    let mut touched_ix = 0u128;
+    for sq in touched.squares() {
+        touched_ix |= 1u128 << sq.index();
+    }
+
+    let mirrored = [
+        usize::from(black_king.file() >= 5),
+        usize::from(white_king.file() <= 3),
     ];
-    lists[1].king = [
-        KING_ROWS_OWN + bucket[1] * 81 + frame[1][wk] as u32,
-        KING_ROWS_OTHER + bucket[0] * 81 + frame[1][bk] as u32,
-    ];
-    lists[0].len = n[0] as u32;
-    lists[1].len = n[1] as u32;
-    lists
+    let frame = [&t.frame[0][mirrored[0]], &t.frame[1][mirrored[1]]];
+
+    let mut fresh = [ThreatList::EMPTY; 2];
+    let mut nf = [0usize; 2];
+    for from in touched.squares() {
+        let Some(attacker) = board.get(from) else {
+            continue;
+        };
+        if attacker.kind == PieceKind::King {
+            continue;
+        }
+        let a_color = attacker.color.index();
+        let ac = class_of(attacker);
+        let from_ix = from.index() as usize;
+        for to in (attacks_of(attacker, from, occ) & targets).squares() {
+            let target = board
+                .get(to)
+                .expect("a target square holds a piece by construction");
+            let t_color = target.color.index();
+            let dc = class_of(target);
+            let to_ix = to.index() as usize;
+            let key = ((from_ix * 81 + to_ix) as u32) << ROW_BITS;
+            for p in 0..2 {
+                let a_side = usize::from(a_color != p);
+                let d_side = usize::from(t_color != p);
+                if a_side == 1 && d_side == 1 {
+                    continue;
+                }
+                if nf[p] >= MAX_EDGES {
+                    return false;
+                }
+                fresh[p].edges[nf[p]] =
+                    key | edge_row(t, frame[p], a_side, ac, d_side, dc, from_ix, to_ix);
+                nf[p] += 1;
+            }
+        }
+    }
+
+    let king = king_rows(pos, frame, black_king, white_king);
+    for p in 0..2 {
+        let o = &old[p];
+        let f = &mut fresh[p];
+        let out = &mut new[p];
+        let mut stale = ThreatList::EMPTY;
+        let (mut i, mut j, mut n, mut ns) = (0usize, 0usize, 0usize, 0usize);
+        let (no, nfp) = (o.len as usize, nf[p]);
+        while i < no {
+            let e = o.edges[i];
+            i += 1;
+            if (touched_ix >> ((e >> ROW_BITS) / 81)) & 1 != 0 {
+                stale.edges[ns] = e;
+                ns += 1;
+                continue;
+            }
+            while j < nfp && f.edges[j] < e {
+                if n + 1 >= MAX_EDGES {
+                    return false;
+                }
+                out.edges[n] = f.edges[j];
+                n += 1;
+                j += 1;
+            }
+            if n + 1 >= MAX_EDGES {
+                return false;
+            }
+            out.edges[n] = e;
+            n += 1;
+        }
+        while j < nfp {
+            if n + 1 >= MAX_EDGES {
+                return false;
+            }
+            out.edges[n] = f.edges[j];
+            n += 1;
+            j += 1;
+        }
+        out.len = n as u32;
+        out.king = king[p];
+        stale.len = ns as u32;
+        stale.king = o.king;
+        f.len = nfp as u32;
+        f.king = king[p];
+        diff[p].between(&stale, f);
+    }
+    true
 }
 
 #[cfg(test)]
