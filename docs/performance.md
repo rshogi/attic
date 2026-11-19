@@ -26,6 +26,8 @@ YaneuraOu を 1.00 とし、YaneuraOu の平均秒数を Attic の平均秒数�
 
 ### NPS
 
+![AVX2 と WASM の実測 NPS を Attic と YaneuraOu で比較](benchmark/nps.svg)
+
 各条件の 10 回で探索した実ノード数の合計を、計測した経過時間の合計で割っています。単位はノード/秒です。
 
 | ネットワーク | AVX2 Attic | AVX2 YaneuraOu | WASM Attic | WASM YaneuraOu |
