@@ -2,7 +2,9 @@
 
 Attic の基準は [YaneuraOu V9.96](https://github.com/yaneurao/YaneuraOu/commit/b707119bbeeeb1972806c3371545d6056b30e061)（`b707119b`）です。
 
-照合には、YaneuraOu の `make normal` と同じく 4 回目の同一局面で千日手と判定するビルドを使います。`ref_check_time` は `go nodes N` の止まる位置を YaneuraOu に合わせます。`quick-draw` は YaneuraOu の `ENABLE_QUICK_DRAW`（`FOR_TOURNAMENT` ビルドで有効）に相当するため外します。
+- YaneuraOu のビルドは `make normal`
+- Attic の `ref_check_time` は有効、`quick-draw` は無効
+- 千日手は同一局面の4回目で判定
 
 ```sh
 cargo build --release -p attic --no-default-features --features <shape>,ref_check_time
