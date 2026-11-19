@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1030" height="1139" viewBox="0 0 1030 1139" role="img" aria-labelledby="title">
+<title id="title">Engine-reported NPS</title>
+<rect width="1030" height="1139" rx="12" fill="#f8fafc"/>
+<g font-family="system-ui,sans-serif" fill="#163047">
+<text x="22" y="33" font-size="20" font-weight="600">Engine-reported NPS</text>
+<rect x="24" y="51" width="13" height="13" rx="2" fill="#40688d"/>
+<text x="45" y="63" font-size="14">YaneuraOu AVX2</text>
+<rect x="229" y="51" width="13" height="13" rx="2" fill="#087b70"/>
+<text x="250" y="63" font-size="14">Attic AVX2</text>
+<rect x="434" y="51" width="13" height="13" rx="2" fill="#87a5bf"/>
+<text x="455" y="63" font-size="14">YaneuraOu WASM</text>
+<rect x="639" y="51" width="13" height="13" rx="2" fill="#4caf9d"/>
+<text x="660" y="63" font-size="14">Attic WASM</text>
+<rect x="13" y="82" width="1004" height="111" rx="5" fill="#edf3f8"/>
+<text x="24" y="106" font-family="monospace" font-size="15">nnue_kp_256x2_32_32</text>
+<rect x="397" y="94" width="427.34" height="16" rx="3" fill="#40688d"/>
+<text class="value" x="834.34" y="107" font-size="14">1,944,389</text>
+<rect x="397" y="117" width="482.25" height="16" rx="3" fill="#087b70"/>
+<text class="value" x="889.25" y="130" font-size="14">2,194,193</text>
+<rect x="397" y="140" width="294.20" height="16" rx="3" fill="#87a5bf"/>
+<text class="value" x="701.20" y="153" font-size="14">1,338,606</text>
+<rect x="397" y="163" width="293.84" height="16" rx="3" fill="#4caf9d"/>
+<text class="value" x="700.84" y="176" font-size="14">1,336,955</text>
+<rect x="13" y="199" width="1004" height="111" rx="5" fill="#f8fafc"/>
+<text x="24" y="223" font-family="monospace" font-size="15">nnue_halfkp_128x2_32_32</text>
+<rect x="397" y="211" width="482.81" height="16" rx="3" fill="#40688d"/>
+<text class="value" x="889.81" y="224" font-size="14">2,196,773</text>
+<rect x="397" y="234" width="485.00" height="16" rx="3" fill="#087b70"/>
+<text class="value" x="892.00" y="247" font-size="14">2,206,727</text>
+<rect x="397" y="257" width="278.08" height="16" rx="3" fill="#87a5bf"/>
+<text class="value" x="685.08" y="270" font-size="14">1,265,268</text>
+<rect x="397" y="280" width="281.17" height="16" rx="3" fill="#4caf9d"/>
+<text class="value" x="688.17" y="293" font-size="14">1,279,296</text>
+<rect x="13" y="316" width="1004" height="111" rx="5" fill="#edf3f8"/>
+<text x="24" y="340" font-family="monospace" font-size="15">nnue_halfkp_256x2_32_32</text>
+<rect x="397" y="328" width="415.63" height="16" rx="3" fill="#40688d"/>
+<text class="value" x="822.63" y="341" font-size="14">1,891,111</text>
+<rect x="397" y="351" width="432.90" height="16" rx="3" fill="#087b70"/>
+<text class="value" x="839.90" y="364" font-size="14">1,969,654</text>
+<rect x="397" y="374" width="220.78" height="16" rx="3" fill="#87a5bf"/>
+<text class="value" x="627.78" y="387" font-size="14">1,004,538</text>
+<rect x="397" y="397" width="237.77" height="16" rx="3" fill="#4caf9d"/>
+<text class="value" x="644.77" y="410" font-size="14">1,081,859</text>
+<rect x="13" y="433" width="1004" height="111" rx="5" fill="#f8fafc"/>
+<text x="24" y="457" font-family="monospace" font-size="15">nnue_halfkp_768x2_16_64</text>
+<rect x="397" y="445" width="284.62" height="16" rx="3" fill="#40688d"/>
+<text class="value" x="691.62" y="458" font-size="14">1,294,996</text>
+<rect x="397" y="468" width="340.20" height="16" rx="3" fill="#087b70"/>
+<text class="value" x="747.20" y="481" font-size="14">1,547,879</text>
+<rect x="397" y="491" width="162.96" height="16" rx="3" fill="#87a5bf"/>
+<text class="value" x="569.96" y="504" font-size="14">741,442</text>
+<rect x="397" y="514" width="184.71" height="16" rx="3" fill="#4caf9d"/>
+<text class="value" x="591.71" y="527" font-size="14">840,425</text>
+<rect x="13" y="550" width="1004" height="111" rx="5" fill="#edf3f8"/>
+<text x="24" y="574" font-family="monospace" font-size="15">sfnn_halfkahm2_1024_15_64_progress8kpabs</text>
+<rect x="397" y="562" width="326.69" height="16" rx="3" fill="#40688d"/>
+<text class="value" x="733.69" y="575" font-size="14">1,486,422</text>
+<rect x="397" y="585" width="319.87" height="16" rx="3" fill="#087b70"/>
+<text class="value" x="726.87" y="598" font-size="14">1,455,391</text>
+<rect x="397" y="608" width="163.04" height="16" rx="3" fill="#87a5bf"/>
+<text class="value" x="570.04" y="621" font-size="14">741,826</text>
+<rect x="397" y="631" width="201.25" height="16" rx="3" fill="#4caf9d"/>
+<text class="value" x="608.25" y="644" font-size="14">915,675</text>
+<rect x="13" y="667" width="1004" height="111" rx="5" fill="#f8fafc"/>
+<text x="24" y="691" font-family="monospace" font-size="15">sfnn_halfkahm2_2304_15_64_progress8ek</text>
+<rect x="397" y="679" width="232.57" height="16" rx="3" fill="#40688d"/>
+<text class="value" x="639.57" y="692" font-size="14">1,058,185</text>
+<rect x="397" y="702" width="221.18" height="16" rx="3" fill="#087b70"/>
+<text class="value" x="628.18" y="715" font-size="14">1,006,362</text>
+<rect x="397" y="725" width="115.62" height="16" rx="3" fill="#87a5bf"/>
+<text class="value" x="522.62" y="738" font-size="14">526,065</text>
+<rect x="397" y="748" width="142.29" height="16" rx="3" fill="#4caf9d"/>
+<text class="value" x="549.29" y="761" font-size="14">647,427</text>
+<rect x="13" y="784" width="1004" height="111" rx="5" fill="#edf3f8"/>
+<text x="24" y="808" font-family="monospace" font-size="15">sfnn_ka2_2048_8_64_progress8x</text>
+<rect x="397" y="796" width="190.44" height="16" rx="3" fill="#40688d"/>
+<text class="value" x="597.44" y="809" font-size="14">866,474</text>
+<rect x="397" y="819" width="283.67" height="16" rx="3" fill="#087b70"/>
+<text class="value" x="690.67" y="832" font-size="14">1,290,691</text>
+<rect x="397" y="842" width="111.36" height="16" rx="3" fill="#87a5bf"/>
+<text class="value" x="518.36" y="855" font-size="14">506,670</text>
+<rect x="397" y="865" width="171.44" height="16" rx="3" fill="#4caf9d"/>
+<text class="value" x="578.44" y="878" font-size="14">780,065</text>
+<rect x="13" y="901" width="1004" height="111" rx="5" fill="#f8fafc"/>
+<text x="24" y="925" font-family="monospace" font-size="15">sfnn_ka2_4096_8_64_progress8x</text>
+<rect x="397" y="913" width="112.94" height="16" rx="3" fill="#40688d"/>
+<text class="value" x="519.94" y="926" font-size="14">513,872</text>
+<rect x="397" y="936" width="185.71" height="16" rx="3" fill="#087b70"/>
+<text class="value" x="592.71" y="949" font-size="14">844,961</text>
+<rect x="397" y="959" width="63.07" height="16" rx="3" fill="#87a5bf"/>
+<text class="value" x="470.07" y="972" font-size="14">286,972</text>
+<rect x="397" y="982" width="114.21" height="16" rx="3" fill="#4caf9d"/>
+<text class="value" x="521.21" y="995" font-size="14">519,646</text>
+<rect x="13" y="1018" width="1004" height="111" rx="5" fill="#edf3f8"/>
+<text x="24" y="1042" font-family="monospace" font-size="15">sfnn_halfkahm2_threat_1024_15_64_8gp</text>
+<rect x="397" y="1030" width="109.79" height="16" rx="3" fill="#40688d"/>
+<text class="value" x="516.79" y="1043" font-size="14">499,537</text>
+<rect x="397" y="1053" width="147.07" height="16" rx="3" fill="#087b70"/>
+<text class="value" x="554.07" y="1066" font-size="14">669,169</text>
+<rect x="397" y="1076" width="76.90" height="16" rx="3" fill="#87a5bf"/>
+<text class="value" x="483.90" y="1089" font-size="14">349,912</text>
+<rect x="397" y="1099" width="85.80" height="16" rx="3" fill="#4caf9d"/>
+<text class="value" x="492.80" y="1112" font-size="14">390,373</text>
+</g>
+</svg>

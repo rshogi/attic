@@ -1,32 +1,26 @@
 # attic-shogi
 
-Rust で書かれた、[YaneuraOu](https://github.com/yaneurao/YaneuraOu) の探索部の互換エンジンです。基準は [V9.96](https://github.com/yaneurao/YaneuraOu/commit/b707119bbeeeb1972806c3371545d6056b30e061) で、`usi` の `id name` は `Attic 9.96git` です。
+Rust 製の [YaneuraOu](https://github.com/yaneurao/YaneuraOu) 互換探索エンジンです。ベースは [V9.96](https://github.com/yaneurao/YaneuraOu/commit/b707119bbeeeb1972806c3371545d6056b30e061) で、`usi` の `id name` は `Attic 9.96git` です。
 
 - [パフォーマンス](https://github.com/rshogi/attic/blob/master/docs/performance.md)
-- [YaneuraOu との互換性](https://github.com/rshogi/attic/blob/master/docs/yaneuraou-compatibility.md)
+- [YaneuraOu との互換性](docs/compatibility.md)
 
 ## ビルドと実行
 
-評価関数に合う feature を1つ選びます。KP256 の場合は次のとおりです。
+評価関数に合う feature を 1 つ選びます。KP256 の場合は次のとおりです。
 
 ```sh
 cargo build --release -p attic --no-default-features --features nnue_kp_256x2_32_32
 ```
 
-評価ファイルを `EvalDir` に置き、USI 対応 GUI に `target/release/attic` を登録します。引数なしで起動すると標準入出力で USI コマンドを受け付けます。
+評価ファイルを `EvalDir` に配置し、USI 対応 GUI に `target/release/attic` を登録します。引数なしで起動すると、標準入出力で USI コマンドを受け付けます。
 
 - `usi` はオプション一覧を返します。`setoption` で設定し、`isready` で評価関数や定跡を読み込みます。
 - `position` で局面を設定し、`go` で探索します。`bench` で NPS を計測できます。
 
-### つようら王11 Micro / Mini
-
-Micro は `sfnn_ka2_2048_8_64_progress8x`、Mini は `sfnn_ka2_4096_8_64_progress8x` でビルドします。
-[配布](https://yaneuraou.yaneu.com/2026/10/14/tsuyou-11-mini-micro-released-under-mit-license/)の `nn.bin` と `progress.bin` を同じ `EvalDir` に置き、USI の `FV_SCALE` を 24 に設定してください。
-どちらも K-A2 特徴量を使い、進行度だけで 8 つの層スタックを選びます。
-
 ## 対応している評価関数
 
-表の名前に種類の小文字とアンダースコアを付けたものが Cargo feature です。
+Cargo feature は、表の種類を小文字にして名前の前に付けます。区切りは `_` です。
 
 | type | feature                               |
 | ---- | ------------------------------------- |
