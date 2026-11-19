@@ -1,71 +1,44 @@
 # パフォーマンス
 
-## Linux AVX2 と WASM SIMD128
+Intel Core Ultra 7 265KF の P コア1つ（論理 CPU 7）に固定し、同じ局面を各ビルド10回ずつ、1スレッド、置換表16 MiB、定跡無効で探索しました。評価ファイルを読み込んだあと、`go nodes 1000000` から `bestmove` までを計測しました。
 
-Intel Core Ultra 7 265KF の P コア（論理 CPU 6）に固定し、1 スレッド、置換表 16 MiB、定跡無効で探索しました。
-同じ局面（fixture 565）を各条件で 10 回探索し、毎回 `usinewgame` と `isready` を送ります。
-`go nodes 1000000` から `bestmove` までの経過時間を測ります。評価ファイルは計測前に読み込みます。
+## 探索速度比
 
-![やねうら王を1倍とした Attic の速度比](benchmark/attic-vs-yaneuraou.svg)
+Linux AVX2 と WASM SIMD128 の測定結果です。各ネットワークで **YaneuraOu AVX2 を 1.00×** とし、その平均探索時間を各ビルドの平均探索時間で割っています。
 
-### 探索速度比
+![YaneuraOu AVX2 を基準にした探索速度比](benchmark/attic-vs-yaneuraou.svg)
 
-YaneuraOu を 1.00 とし、YaneuraOu の平均秒数を Attic の平均秒数で割っています。
+## NPS
 
-| ネットワーク | Linux AVX2 | WASM SIMD128 |
-|---|---:|---:|
-| `nnue_kp_256x2_32_32` | 1.11× | 1.14× |
-| `nnue_halfkp_128x2_32_32` | 1.01× | 1.01× |
-| `nnue_halfkp_256x2_32_32` | 1.04× | 1.07× |
-| `nnue_halfkp_768x2_16_64` | 1.26× | 1.14× |
-| `sfnn_halfkahm2_1024_15_64_progress8kpabs` | 0.98× | 1.06× |
-| `sfnn_halfkahm2_2304_15_64_progress8ek` | 0.94× | 1.00× |
-| `sfnn_ka2_2048_8_64_progress8x` | 1.91× | 1.89× |
-| `sfnn_ka2_4096_8_64_progress8x` | 2.21× | 2.20× |
-| `sfnn_halfkahm2_threat_1024_15_64_8gp` | 1.28× | 1.20× |
+NPS は、探索した実ノード数の合計を経過時間の合計で割って求めました。
 
-### NPS
+![AVX2 と WASM の実測 NPS](benchmark/nps.svg)
 
-![AVX2 と WASM の実測 NPS を Attic と YaneuraOu で比較](benchmark/nps.svg)
-
-各条件の 10 回で探索した実ノード数の合計を、計測した経過時間の合計で割っています。単位はノード/秒です。
-
-| ネットワーク | AVX2 Attic | AVX2 YaneuraOu | WASM Attic | WASM YaneuraOu |
+| ネットワーク | Attic AVX2 | Attic WASM | YaneuraOu AVX2 | YaneuraOu WASM |
 |---|---:|---:|---:|---:|
-| `nnue_kp_256x2_32_32` | 2,153,970 | 1,947,807 | 1,135,123 | 997,651 |
-| `nnue_halfkp_128x2_32_32` | 2,243,614 | 2,220,612 | 1,287,181 | 1,276,309 |
-| `nnue_halfkp_256x2_32_32` | 1,990,282 | 1,911,921 | 1,079,088 | 1,006,710 |
-| `nnue_halfkp_768x2_16_64` | 1,636,779 | 1,301,233 | 846,631 | 745,023 |
-| `sfnn_halfkahm2_1024_15_64_progress8kpabs` | 1,471,397 | 1,497,626 | 791,332 | 746,435 |
-| `sfnn_halfkahm2_2304_15_64_progress8ek` | 987,860 | 1,054,924 | 521,166 | 522,542 |
-| `sfnn_ka2_2048_8_64_progress8x` | 1,285,372 | 674,476 | 703,405 | 371,207 |
-| `sfnn_ka2_4096_8_64_progress8x` | 843,976 | 381,686 | 464,690 | 211,410 |
-| `sfnn_halfkahm2_threat_1024_15_64_8gp` | 756,322 | 591,093 | 449,975 | 373,509 |
+| `nnue_kp_256x2_32_32` | 989,274 | 736,066 | 945,199 | 727,882 |
+| `nnue_halfkp_128x2_32_32` | 1,016,866 | 714,014 | 1,058,241 | 699,505 |
+| `nnue_halfkp_256x2_32_32` | 901,692 | 617,054 | 876,395 | 574,534 |
+| `nnue_halfkp_768x2_16_64` | 759,590 | 455,661 | 602,754 | 406,297 |
+| `sfnn_halfkahm2_1024_15_64_progress8kpabs` | 739,832 | 459,486 | 651,081 | 452,916 |
+| `sfnn_halfkahm2_2304_15_64_progress8ek` | 479,533 | 306,441 | 453,730 | 275,065 |
+| `sfnn_ka2_2048_8_64_progress8x` | 689,289 | 446,240 | 494,210 | 339,267 |
+| `sfnn_ka2_4096_8_64_progress8x` | 508,839 | 297,580 | 302,411 | 211,542 |
+| `sfnn_halfkahm2_threat_1024_15_64_8gp` | 360,086 | 221,379 | 246,092 | 212,149 |
 
-平均秒数と標準偏差は [CSV](benchmark/results.csv) を参照してください。
+平均探索時間と計測条件は [CSV](benchmark/results.csv) を参照してください。
 
-## 最適化前後の比較
+## 計測条件
 
-同じマシンの E コア（論理 CPU 17〜19 のいずれか1つ）に固定し、同じ局面を100万ノードずつ各ビルド10回測定しました。速度比は各行の変更前を 1.00× とした値です。NPS は実ノード数の合計を経過時間の合計で割っています。
+Attic は Rust release の AVX2 ビルドと単一スレッド WASI ビルドを使いました。YaneuraOu は V9.96 系の AVX2 ビルドと Emscripten ビルドを使いました。WASM は Node.js 26.5.0 で実行しました。
 
-![最適化前後の探索速度比と実測NPS](benchmark/optimization.svg)
+高速化を確認したネットワークでは、累積値の遅延更新や再利用を有効にしたビルドを使っています。Relaxed SIMD は対応ビルドで有効にしました。同時に別のコアで局面照合を実行していました。
 
-Relaxed SIMD は SIMD128 版と比較しました。YaneuraOu の累積値再利用では、AVX2 で専用の特徴変換カーネルも有効にし、WASM では変更前後とも Relaxed SIMD を有効にしました。
-
-平均探索時間と NPS は [最適化の計測 CSV](benchmark/optimization-results.csv) を参照してください。
-
-## ビルド条件
-
-計測に使った局面です。
+計測局面
 
 ```text
 sfen +B4g1nl/2g2k3/ppnppsbpp/4r1p2/5p2P/3S2P2/PPPPPP1P1/2GS2S2/LN2KG1NL w Lrp 32
 ```
-
-- Attic Linux は `e6a5dfe` と同じソースツリー（`7953ccf`）、Rust release、`target-cpu=x86-64-v3`、`ref_check_time`。
-- Attic WASM は同じベースに実験版の WASI ホスト対応と SIMD128 評価カーネルを重ねた単一スレッドビルド。Node.js 26.5.0 で実行。
-- やねうら王は V9.96 系。進行度付きネットワークには対応するビルド、`sfnn_halfkahm2_threat_1024_15_64_8gp` には評価関数を追加したパッチ版を使いました。WASM は Emscripten SIMD128 を同じ Node.js で実行。
-- `FV_SCALE` は両エンジンで共通。`sfnn_ka2_*` は 24、`sfnn_halfkahm2_*_progress8*` は 28、`sfnn_halfkahm2_threat_1024_15_64_8gp` は 26 です。
 
 ## 探索結果の照合
 
