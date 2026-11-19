@@ -1,7 +1,8 @@
 //! Transposition table, a port of the reference's, specialised to the engine's
-//! default build configuration: a 64-bit position key whose low 16 bits are the
-//! in-cluster fragment, and three 10-byte entries per 32-byte cluster
-//! (`TT_CLUSTER_SIZE == 3`).
+//! default build configuration: a 64-bit position key with a 16-bit entry tag,
+//! and three entries per 32-byte cluster. The NAGISA V4 profile keeps the
+//! full 64-bit Attic key as the entry tag and uses four entries per 64-byte
+//! cluster, matching the distribution's cluster geometry.
 //!
 //! Those choices are load-bearing for search-node parity. The cluster size and
 //! the `clusterCount = mb·2²⁰ / sizeof(Cluster)` arithmetic together decide
@@ -73,8 +74,20 @@ const BOUND_MASK: u8 = 0b11 << BOUND_SHIFT;
 const PV_SHIFT: u8 = BOUND_SHIFT + 2;
 const PV_MASK: u8 = 1 << PV_SHIFT;
 
-/// Number of entries per cluster (`TT_CLUSTER_SIZE == 3`).
+/// Number of entries per cluster.
+#[cfg(not(feature = "nagisa-v4-tt"))]
 const CLUSTER_SIZE: usize = 3;
+#[cfg(feature = "nagisa-v4-tt")]
+const CLUSTER_SIZE: usize = 4;
+
+#[cfg(not(feature = "nagisa-v4-tt"))]
+type EntryKey = u16;
+#[cfg(feature = "nagisa-v4-tt")]
+type EntryKey = u64;
+#[cfg(not(feature = "nagisa-v4-tt"))]
+type AtomicEntryKey = AtomicU16;
+#[cfg(feature = "nagisa-v4-tt")]
+type AtomicEntryKey = std::sync::atomic::AtomicU64;
 
 /// Bound type of a stored value. The discriminants matter:
 /// `Exact == Upper | Lower`, and the value is packed into `genBound8`.
@@ -148,15 +161,13 @@ fn relative_age(gen_bound8: u8, curr_generation: u8) -> u8 {
     curr_generation.wrapping_sub(gen_bound8) & GENERATION_MASK
 }
 
-/// A single transposition-table entry — 10 bytes, laid out field-for-field like
-/// the reference's `TTEntry`, with each field an atomic. `#[repr(C)]` pins the
-/// layout so that a [`Cluster`] is exactly 32 bytes and the `clusterCount`
-/// arithmetic matches the reference.
+/// One transposition-table entry with atomic fields. `#[repr(C)]` pins
+/// the layout so that the cluster count matches the configured geometry.
 #[repr(C)]
 #[derive(Default)]
 struct TTEntry {
-    /// Low 16 bits of the position key (`TTE_KEY_TYPE`).
-    key: AtomicU16,
+    /// Position key truncated to the configured entry width.
+    key: AtomicEntryKey,
     /// `depth − DEPTH_NONE`; `0` means unoccupied.
     depth8: AtomicU8,
     /// Packed `generation | bound << 5 | pv << 7`.
@@ -223,7 +234,7 @@ impl TTEntry {
     #[allow(clippy::too_many_arguments)]
     fn save(
         &self,
-        k: u16,
+        k: EntryKey,
         v: Value,
         pv: bool,
         b: Bound,
@@ -263,18 +274,25 @@ impl TTEntry {
     }
 }
 
-/// A cluster of [`CLUSTER_SIZE`] entries plus padding to a round 32 bytes.
+/// One cluster of entries with the reference build’s padding.
 /// Entries in one cluster share a hash slot.
 #[repr(C)]
 #[derive(Default)]
 struct Cluster {
     entry: [TTEntry; CLUSTER_SIZE],
+    #[cfg(not(feature = "nagisa-v4-tt"))]
     _padding: [u8; 2],
 }
 
-// The `clusterCount` arithmetic assumes a 32-byte cluster, so a layout
-// regression must be a compile error.
-const _: () = assert!(size_of::<Cluster>() == 32);
+// Cluster geometry affects replacement order and search parity.
+const _: () = assert!(
+    size_of::<Cluster>()
+        == if cfg!(feature = "nagisa-v4-tt") {
+            64
+        } else {
+            32
+        }
+);
 
 /// Base alignment of the cluster allocation, an alias for the shared
 /// [`crate::large_page::LARGE_PAGE_ALIGN`] the TT allocates through.
@@ -319,7 +337,7 @@ impl ClusterArray {
             return Self::empty();
         }
 
-        // A `Cluster` is 32 bytes, so the product cannot overflow for any table
+        // The product cannot overflow for any table
         // size the driver can request.
         let bytes = cluster_count * size_of::<Cluster>();
         let (raw, layout) = large_page::alloc_zeroed_large(bytes);
@@ -552,11 +570,11 @@ impl TranspositionTable {
         );
 
         let ci = self.cluster_index(key, side_to_move);
-        let key16 = key as u16;
+        let entry_key = key as EntryKey;
         let generation = self.generation8.load(REL);
         let cluster = &self.table[ci];
 
-        if let Some(i) = (0..CLUSTER_SIZE).find(|&i| cluster.entry[i].key.load(REL) == key16) {
+        if let Some(i) = (0..CLUSTER_SIZE).find(|&i| cluster.entry[i].key.load(REL) == entry_key) {
             let found = cluster.entry[i].is_occupied();
             let data = cluster.entry[i].read();
             return (found, data, TTWriter::new(&cluster.entry[i]));
@@ -592,12 +610,12 @@ impl TranspositionTable {
     ) -> (bool, TTData, TtSlot) {
         assert!(!self.table.is_empty());
         let ci = self.cluster_index(key, side_to_move);
-        let key16 = key as u16;
+        let entry_key = key as EntryKey;
         let generation = self.generation8.load(REL);
         let cluster = &self.table[ci];
 
         for i in 0..CLUSTER_SIZE {
-            if cluster.entry[i].key.load(REL) == key16 {
+            if cluster.entry[i].key.load(REL) == entry_key {
                 let found = cluster.entry[i].is_occupied();
                 let data = cluster.entry[i].read();
                 if data.move16 != 0 && !accept(data.move16) {
@@ -663,11 +681,11 @@ impl TranspositionTable {
         );
 
         let ci = self.cluster_index(key, side_to_move);
-        let key16 = key as u16;
+        let entry_key = key as EntryKey;
         let generation = self.generation8.load(REL);
         let cluster = &self.table[ci];
 
-        if let Some(i) = (0..CLUSTER_SIZE).find(|&i| cluster.entry[i].key.load(REL) == key16) {
+        if let Some(i) = (0..CLUSTER_SIZE).find(|&i| cluster.entry[i].key.load(REL) == entry_key) {
             let found = cluster.entry[i].is_occupied();
             let data = cluster.entry[i].read();
             return (
@@ -715,8 +733,16 @@ impl TranspositionTable {
         eval: Value,
         generation: u8,
     ) {
-        self.table[slot.cluster].entry[slot.entry]
-            .save(key as u16, value, pv, bound, depth, mv, eval, generation);
+        self.table[slot.cluster].entry[slot.entry].save(
+            key as EntryKey,
+            value,
+            pv,
+            bound,
+            depth,
+            mv,
+            eval,
+            generation,
+        );
     }
 
     /// A stable checksum over the whole table, for determinism tests.
@@ -779,8 +805,16 @@ impl<'a> TTWriter<'a> {
         eval: Value,
         generation: u8,
     ) {
-        self.entry
-            .save(key as u16, value, pv, bound, depth, mv, eval, generation);
+        self.entry.save(
+            key as EntryKey,
+            value,
+            pv,
+            bound,
+            depth,
+            mv,
+            eval,
+            generation,
+        );
     }
 }
 
@@ -847,6 +881,7 @@ mod alloc_tests {
                 assert_eq!(e.value16.load(REL), 0);
                 assert_eq!(e.eval16.load(REL), 0);
             }
+            #[cfg(not(feature = "nagisa-v4-tt"))]
             assert_eq!(cluster._padding, [0u8; 2]);
         }
     }

@@ -19,12 +19,12 @@ use crate::history::{
 
 /// Reference `clear()` init constants.
 const MAIN_HISTORY_INIT: i16 = 0;
-const CAPTURE_HISTORY_INIT: i16 = -678;
-const CONTINUATION_INIT: i16 = -523;
-const CONTINUATION_CORRECTION_INIT: i16 = 6;
+const CAPTURE_HISTORY_INIT: i16 = tuned!(-678, -847);
+const CONTINUATION_INIT: i16 = tuned!(-523, -893);
+const CONTINUATION_CORRECTION_INIT: i16 = tuned!(6, 7);
 /// The pawn-history init is applied by [`SharedHistories::new`] instead.
 #[cfg(test)]
-const PAWN_HISTORY_INIT: i16 = -1238;
+const PAWN_HISTORY_INIT: i16 = tuned!(-1238, -1193);
 
 /// Capacity of a searched-move list (`SEARCHEDLIST_CAPACITY`).
 pub const SEARCHED_LIST_CAPACITY: usize = 32;
@@ -212,8 +212,14 @@ impl Default for SearchStackCell {
 
 /// Plies-and-weights for [`update_continuation_histories`]:
 /// `{1:1157, 2:648, 3:288, 4:576, 5:140, 6:441}`.
-const CONTHIST_BONUSES: [(usize, i32); 6] =
-    [(1, 1157), (2, 648), (3, 288), (4, 576), (5, 140), (6, 441)];
+const CONTHIST_BONUSES: [(usize, i32); 6] = [
+    (1, tuned!(1157, 1101)),
+    (2, tuned!(648, 687)),
+    (3, tuned!(288, 312)),
+    (4, tuned!(576, 1036)),
+    (5, tuned!(140, 120)),
+    (6, tuned!(441, 1169)),
+];
 
 /// A *plain* capture test (`Position::capture`): a non-drop landing on an
 /// occupied square. In this engine `capture_stage == capture`, so this is the
@@ -268,16 +274,30 @@ pub fn update_quiet_histories(
 
     let ply = stack[ss].ply;
     if (ply as usize) < LOW_PLY_HISTORY_SIZE {
-        hist.low_ply.update(ply as usize, m, bonus * 761 / 1024);
+        hist.low_ply
+            .update(ply as usize, m, bonus * tuned!(761, 765) / 1024);
     }
 
     // `pos.moved_piece(move)` is `moved_piece_after` in this engine.
     let moved = m.moved_piece_after();
-    update_continuation_histories(hist, stack, ss, moved, m.to_sq(), bonus * 955 / 1024);
+    update_continuation_histories(
+        hist,
+        stack,
+        ss,
+        moved,
+        m.to_sq(),
+        bonus * tuned!(955, 871) / 1024,
+    );
 
     // Asymmetric pawn-history bump: +850/1024 of a positive bonus, +550/1024 of
     // a non-positive one.
-    let pawn_bonus = bonus * if bonus > 0 { 850 } else { 550 } / 1024;
+    let pawn_bonus = bonus
+        * if bonus > 0 {
+            tuned!(850, 1041)
+        } else {
+            tuned!(550, 631)
+        }
+        / 1024;
     hist.shared
         .pawn_update(pos.pawn_key(), moved, m.to_sq(), pawn_bonus);
 }
@@ -307,10 +327,10 @@ pub fn update_all_stats(
 ) {
     let moved_piece = best_move.moved_piece_after();
 
-    let bonus = (128 * depth - 77).min(1529)
-        + 353 * (best_move == tt_move) as i32
+    let bonus = (tuned!(128, 263) * depth - tuned!(77, 45)).min(tuned!(1529, 1566))
+        + tuned!(353, 711) * (best_move == tt_move) as i32
         + stack[ss - 1].stat_score / 32;
-    let malus = (882 * depth - 204).min(2122);
+    let malus = (tuned!(882, 709) * depth - tuned!(204, 205)).min(tuned!(2122, 2460));
 
     if !is_capture(pos, best_move) {
         update_quiet_histories(hist, pos, stack, ss, best_move, bonus * 806 / 1024);
@@ -377,19 +397,19 @@ pub fn update_correction_history(
         pos.minor_piece_key(),
         us,
         CorrChannel::Minor,
-        bonus * 153 / 128,
+        bonus * tuned!(153, 189) / 128,
     );
     hist.shared.correction_update(
         pos.non_pawn_key(Color::White),
         us,
         CorrChannel::NonPawnWhite,
-        bonus * 187 / 128,
+        bonus * tuned!(187, 147) / 128,
     );
     hist.shared.correction_update(
         pos.non_pawn_key(Color::Black),
         us,
         CorrChannel::NonPawnBlack,
-        bonus * 187 / 128,
+        bonus * tuned!(187, 147) / 128,
     );
 
     let m = stack[ss - 1].current_move;
@@ -400,13 +420,13 @@ pub fn update_correction_history(
                 stack[ss - 2].cont_corr,
                 pc,
                 to,
-                bonus * 126 / 128,
+                bonus * tuned!(126, 120) / 128,
             );
             hist.continuation_correction.update_at(
                 stack[ss - 4].cont_corr,
                 pc,
                 to,
-                bonus * 63 / 128,
+                bonus * tuned!(63, 61) / 128,
             );
         }
     }
@@ -770,10 +790,10 @@ mod tests {
         );
         assert_eq!(
             hist.low_ply.get(2, mv),
-            apply_gravity(low_pre, bonus * 761 / 1024, MAIN_HISTORY_D) as i32,
+            apply_gravity(low_pre, bonus * tuned!(761, 765) / 1024, MAIN_HISTORY_D) as i32,
         );
         // continuation write uses bonus*955/1024 (+88 since i==1) at plane 3.
-        let cont_write = (bonus * 955 / 1024 * CONTHIST_BONUSES[0].1 / 1024) + 88;
+        let cont_write = (bonus * tuned!(955, 871) / 1024 * CONTHIST_BONUSES[0].1 / 1024) + 88;
         assert_eq!(
             hist.continuation.get_at(3, moved, to),
             apply_gravity(cont_pre, cont_write, CONTINUATION_HISTORY_D) as i32,
@@ -781,13 +801,13 @@ mod tests {
         // pawn write: bonus>0 ⇒ *850/1024.
         assert_eq!(
             hist.shared.pawn_get(pk, moved, to),
-            apply_gravity(pawn_pre, bonus * 850 / 1024, PAWN_HISTORY_D) as i32,
+            apply_gravity(pawn_pre, bonus * tuned!(850, 1041) / 1024, PAWN_HISTORY_D) as i32,
         );
     }
 
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn quiet_histories_negative_bonus_uses_550_pawn_scale() {
+    fn quiet_histories_negative_bonus_uses_the_negative_pawn_scale() {
         let mut hist = WorkerHistories::new();
         let pos = simple_pos();
         let ss = 7usize;
@@ -802,7 +822,7 @@ mod tests {
         update_quiet_histories(&mut hist, &pos, &stack, ss, mv, bonus);
         assert_eq!(
             hist.shared.pawn_get(pk, moved, to),
-            apply_gravity(pawn_pre, bonus * 550 / 1024, PAWN_HISTORY_D) as i32,
+            apply_gravity(pawn_pre, bonus * tuned!(550, 631) / 1024, PAWN_HISTORY_D) as i32,
         );
     }
 
@@ -828,7 +848,7 @@ mod tests {
 
         let depth = 6;
         // bestMove != ttMove here (ttMove is none), so the +353 term is 0.
-        let bonus = (128 * depth - 77).min(1529) + stack[ss - 1].stat_score / 32;
+        let bonus = (tuned!(128, 263) * depth - tuned!(77, 45)).min(tuned!(1529, 1566)) + stack[ss - 1].stat_score / 32;
         let pre = hist.capture.get(rook, to, captured) as i16;
 
         update_all_stats(
@@ -869,8 +889,8 @@ mod tests {
 
         let depth = 5;
         let tt_move = best; // bestMove == ttMove ⇒ +353 in the bonus.
-        let bonus = (128 * depth - 77).min(1529) + 353 + stack[ss - 1].stat_score / 32;
-        let malus = (882 * depth - 204).min(2122);
+        let bonus = (tuned!(128, 263) * depth - tuned!(77, 45)).min(tuned!(1529, 1566)) + tuned!(353, 711) + stack[ss - 1].stat_score / 32;
+        let malus = (tuned!(882, 709) * depth - tuned!(204, 205)).min(tuned!(2122, 2460));
 
         let us = pos.side_to_move();
         let best_main_pre = hist.main.get(us, best) as i16;
@@ -927,7 +947,7 @@ mod tests {
         let captured = pos.board().get(cto).unwrap();
 
         let depth = 4;
-        let malus = (882 * depth - 204).min(2122);
+        let malus = (tuned!(882, 709) * depth - tuned!(204, 205)).min(tuned!(2122, 2460));
         let pre = hist.capture.get(rook, cto, captured) as i16;
 
         update_all_stats(
@@ -979,7 +999,7 @@ mod tests {
         let bk = Piece::new(PieceKind::King, Color::Black);
         let best = Move::make(Square::new(4, 8).unwrap(), Square::new(3, 8).unwrap(), bk);
         let depth = 4;
-        let malus = (882 * depth - 204).min(2122);
+        let malus = (tuned!(882, 709) * depth - tuned!(204, 205)).min(tuned!(2122, 2460));
 
         // (ss-1) continuation write: pc=prev_piece, to=prev_sq, plane from
         // (ss-2).cont_hist (=5), i==1 weight 1157, +88.
@@ -1062,7 +1082,7 @@ mod tests {
         assert_eq!(
             hist.shared
                 .correction_get(pos2.minor_piece_key(), us, CorrChannel::Minor),
-            apply_gravity(minor_pre, bonus * 153 / 128, CORRECTION_HISTORY_D) as i32,
+            apply_gravity(minor_pre, bonus * tuned!(153, 189) / 128, CORRECTION_HISTORY_D) as i32,
         );
         assert_eq!(
             hist.shared.correction_get(
@@ -1070,7 +1090,7 @@ mod tests {
                 us,
                 CorrChannel::NonPawnWhite
             ),
-            apply_gravity(wnp_pre, bonus * 187 / 128, CORRECTION_HISTORY_D) as i32,
+            apply_gravity(wnp_pre, bonus * tuned!(187, 147) / 128, CORRECTION_HISTORY_D) as i32,
         );
         assert_eq!(
             hist.shared.correction_get(
@@ -1078,12 +1098,12 @@ mod tests {
                 us,
                 CorrChannel::NonPawnBlack
             ),
-            apply_gravity(bnp_pre, bonus * 187 / 128, CORRECTION_HISTORY_D) as i32,
+            apply_gravity(bnp_pre, bonus * tuned!(187, 147) / 128, CORRECTION_HISTORY_D) as i32,
         );
         // The two continuation-correction planes are the same plane here, so the
         // 126/128 write then the 63/128 write compose.
-        let after_126 = apply_gravity(cc_pre, bonus * 126 / 128, CORRECTION_HISTORY_D);
-        let after_63 = apply_gravity(after_126, bonus * 63 / 128, CORRECTION_HISTORY_D);
+        let after_126 = apply_gravity(cc_pre, bonus * tuned!(126, 120) / 128, CORRECTION_HISTORY_D);
+        let after_63 = apply_gravity(after_126, bonus * tuned!(63, 61) / 128, CORRECTION_HISTORY_D);
         assert_eq!(
             hist.continuation_correction.get_at(plane, bp, to),
             after_63 as i32,

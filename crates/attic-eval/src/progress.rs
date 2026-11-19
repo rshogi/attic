@@ -191,7 +191,9 @@ impl ProgressParameters {
     /// `cfg!` rather than `#[cfg]`: both arms stay compiled, and so type-checked
     /// and tested, in every build, and the dead one costs nothing.
     pub fn bucket_index(&self, pos: &Position) -> usize {
-        if cfg!(feature = "sfnn_progress_ek") {
+        if cfg!(feature = "sfnn_progress_ek")
+            && !cfg!(feature = "sfnn_halfkahm2_2304_15_64_progress8")
+        {
             // The entering-king test comes first and the progress sum is only
             // taken when it fails: the sum is the expensive half.
             bucket_progress8ek(is_mutual_entering_king(pos), || self.value_0_to_255(pos))
@@ -494,7 +496,8 @@ mod tests {
     #[test]
     fn bucket_index_follows_the_mode_of_the_build() {
         let pos = parse_sfen(MUTUAL_ENTERING_KING).unwrap();
-        let ek = cfg!(feature = "sfnn_progress_ek");
+        let ek = cfg!(feature = "sfnn_progress_ek")
+            && !cfg!(feature = "sfnn_halfkahm2_2304_15_64_progress8");
 
         // Progress 128: bucket 4 by progress, 8 when the kings have entered.
         let mid = flat_table(0).bucket_index(&pos);
