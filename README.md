@@ -39,6 +39,10 @@ USI プロトコルを標準入出力で話します。引数なしで `attic` �
 
 上の 2 つの SFNN は、YaneuraOu V9.80 に層スタックの選び方がないため、shielune 版と比べています。一致しなかった局面の原因は調べていません。同じ shielune 版を KP256 でビルドして同じ局面を探索しても、V9.80 の KP256 と 26 局面で違います。
 
+### NAGISA V4 の配布版モード
+
+`cargo build --release -p attic --no-default-features --features sfnn_halfkahm2_2304_15_64_progress8` で選びます。配布版の `nn.bin`、`progress.bin`、`eval_options.txt` を同じ `EvalDir` に置いてください。進行度で先頭8スタックを選び、探索パラメータと簡易千日手判定を配布版に合わせます。相入玉用の9番目のスタックを使うネットには `sfnn_halfkahm2_2304_15_64_progress8ek` を選びます。
+
 ### `sfnn_halfkahm2_1024_15_64_progress8ek` の確認
 
 この構成は `sfnn_halfkahm2_1024_15_64_progress8kpabs`（NAGISA V3）と、ファイルの形も進行度の係数も同じで、層スタックの選び方だけが違います。相入玉の局面（先手玉が 1〜5 段、後手玉が 5〜9 段）を 9 番目の層スタックに割り当てます。規則は `sfnn_halfkahm2_2304_15_64_progress8ek` と同じです。どちらの規則で学習したネットかは、ファイルから分かりません。手元の、相入玉の bucket つきで学習したネット（tatara で学習して変換したもの）は、アーキテクチャ名もヘッダと FT のハッシュも V3 と同じでした。使うネットに合う構成を、ビルドで選んでください。

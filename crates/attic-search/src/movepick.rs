@@ -69,7 +69,7 @@ use crate::update::WorkerHistories;
 
 /// `goodQuietThreshold`: quiets scoring above this go to `GOOD_QUIET`, the rest
 /// to `BAD_QUIET`.
-const GOOD_QUIET_THRESHOLD: i32 = -14000;
+const GOOD_QUIET_THRESHOLD: i32 = tuned!(-14000, -10165);
 
 /// The reference `MovePicker`'s fixed buffer capacity. The maximum number of
 /// legal moves in a shogi position is 593.
@@ -303,7 +303,12 @@ fn score_capture(pos: &Position, m: Move, hist: &WorkerHistories) -> i32 {
     let Some(victim) = pos.board().get(to) else {
         return 0;
     };
-    hist.capture.get(moved, to, victim) + 7 * piece_value(victim)
+    let history = hist.capture.get(moved, to, victim);
+    let victim_value = piece_value(victim);
+    tuned!(
+        history + 7 * victim_value,
+        (256 * history + 2269 * victim_value) / 256
+    )
 }
 
 /// `score<EVASIONS>` for a single evasion. A capturing evasion is offset by
@@ -376,23 +381,25 @@ impl<'a> QuietScorer<'a> {
         let raw = move16_index(m);
         let pc_to = piece_to_index(m);
 
-        let mut value = 2 * self.main[raw] as i32;
-        value += 2 * self.pawn[pc_to].load(Ordering::Relaxed) as i32;
-        value += self.cont[0][pc_to] as i32;
-        value += self.cont[1][pc_to] as i32;
-        value += self.cont[2][pc_to] as i32;
-        value += self.cont[3][pc_to] as i32;
-        value += self.cont[4][pc_to] as i32;
+        let mut value = tuned!(2, 442) * self.main[raw] as i32;
+        value += tuned!(2, 488) * self.pawn[pc_to].load(Ordering::Relaxed) as i32;
+        value += tuned!(1, 256) * self.cont[0][pc_to] as i32;
+        value += tuned!(1, 256) * self.cont[1][pc_to] as i32;
+        value += tuned!(1, 256) * self.cont[2][pc_to] as i32;
+        value += tuned!(1, 256) * self.cont[3][pc_to] as i32;
+        value += tuned!(1, 256) * self.cont[4][pc_to] as i32;
 
         // A bonus for a direct check that is not a losing sacrifice, read off the
         // `checkSquares` snapshot taken once at `QUIET_INIT` entry.
-        if check_squares.gives_direct_check(m) && pos.see_ge(m, -75) {
-            value += 16384;
+        if check_squares.gives_direct_check(m) && pos.see_ge(m, tuned!(-75, -62)) {
+            value += tuned!(16384, 256 * 16326);
         }
+
+        value /= tuned!(1, 256);
 
         // `lowPlyHistory` near the root.
         if let Some(low_ply) = self.low_ply {
-            value += 8 * low_ply[raw] as i32 / (1 + self.ply);
+            value += tuned!(8, 1941) * low_ply[raw] as i32 / (tuned!(1, 256) * (1 + self.ply));
         }
 
         value
@@ -415,23 +422,25 @@ fn score_quiet(
     let to = m.to_sq();
     let pc = m.moved_piece_after();
 
-    let mut value = 2 * hist.main.get(us, m);
-    value += 2 * hist.shared.pawn_get(pos.pawn_key(), pc, to);
-    value += hist.continuation.get_at(cont_planes[0], pc, to);
-    value += hist.continuation.get_at(cont_planes[1], pc, to);
-    value += hist.continuation.get_at(cont_planes[2], pc, to);
-    value += hist.continuation.get_at(cont_planes[3], pc, to);
-    value += hist.continuation.get_at(cont_planes[5], pc, to);
+    let mut value = tuned!(2, 442) * hist.main.get(us, m);
+    value += tuned!(2, 488) * hist.shared.pawn_get(pos.pawn_key(), pc, to);
+    value += tuned!(1, 256) * hist.continuation.get_at(cont_planes[0], pc, to);
+    value += tuned!(1, 256) * hist.continuation.get_at(cont_planes[1], pc, to);
+    value += tuned!(1, 256) * hist.continuation.get_at(cont_planes[2], pc, to);
+    value += tuned!(1, 256) * hist.continuation.get_at(cont_planes[3], pc, to);
+    value += tuned!(1, 256) * hist.continuation.get_at(cont_planes[5], pc, to);
 
     // A bonus for a direct check that is not a losing sacrifice, read off the
     // `checkSquares` snapshot taken once at `QUIET_INIT` entry.
-    if check_squares.gives_direct_check(m) && pos.see_ge(m, -75) {
-        value += 16384;
+    if check_squares.gives_direct_check(m) && pos.see_ge(m, tuned!(-75, -62)) {
+        value += tuned!(16384, 256 * 16326);
     }
+
+    value /= tuned!(1, 256);
 
     // `lowPlyHistory` near the root.
     if (ply as usize) < LOW_PLY_HISTORY_SIZE {
-        value += 8 * hist.low_ply.get(ply as usize, m) / (1 + ply);
+        value += tuned!(8, 1941) * hist.low_ply.get(ply as usize, m) / (tuned!(1, 256) * (1 + ply));
     }
 
     value
@@ -721,7 +730,7 @@ impl MovePicker {
         self.score_quiets_in_place(pos, hist);
         partial_insertion_sort(
             &mut self.scratch.buf[self.end_captures..self.end_generated],
-            -3560 * self.depth,
+            tuned!(-3560, -2986) * self.depth,
         );
     }
 
@@ -774,7 +783,7 @@ impl MovePicker {
                 Stage::GoodCapture => {
                     if let Some(m) = self.select(pos, |s, p| {
                         let e = s.scratch.buf[s.cur];
-                        if p.see_ge(e.mv, -e.value / 18) {
+                        if p.see_ge(e.mv, -e.value / tuned!(18, 13)) {
                             true
                         } else {
                             s.scratch.buf.swap(s.end_bad_captures, s.cur);
@@ -1098,7 +1107,7 @@ mod twin {
                 Kind::Main => {
                     for i in 0..self.scratch.scored.len() {
                         let e = self.scratch.scored[i];
-                        if pos.see_ge(e.mv, -e.value / 18) {
+                        if pos.see_ge(e.mv, -e.value / tuned!(18, 13)) {
                             self.scratch.good_captures.push(e.mv);
                         } else {
                             self.scratch.bad_captures.push(e.mv);
@@ -1130,7 +1139,7 @@ mod twin {
                 let value = score_quiet(pos, m, self.ply, hist, self.cont_planes, &check_squares);
                 self.scratch.scored.push(ExtMove { mv: m, value });
             }
-            partial_insertion_sort(&mut self.scratch.scored, -3560 * self.depth);
+            partial_insertion_sort(&mut self.scratch.scored, tuned!(-3560, -2986) * self.depth);
             for i in 0..self.scratch.scored.len() {
                 let e = self.scratch.scored[i];
                 if e.value > GOOD_QUIET_THRESHOLD {

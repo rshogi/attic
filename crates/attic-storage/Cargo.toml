@@ -15,3 +15,6 @@ publish = false
 # targets never pull it in.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[features]
+nagisa-v4-tt = []

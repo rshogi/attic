@@ -2,7 +2,7 @@
 //!
 //! # Addressing model used throughout
 //!
-//! With `resize(1)` the table holds `1 MiB / 32 = 2¹⁵` clusters, so
+//! With `resize(1)` the default table holds `1 MiB / 32 = 2¹⁵` clusters, so
 //!
 //! ```text
 //! cluster_index_pre_side = mul_hi64(key, 32768) = key >> 49
@@ -12,8 +12,16 @@
 //! Those ranges are disjoint, so [`key`] can set each independently. The
 //! side-to-move is OR-ed into cluster-index bit 0, so fixing `hi` **and**
 //! `side` keeps a family of keys in one cluster while the fragment varies.
+//! The 64-byte V4 clusters use one fewer index bit and the full key as the tag;
+//! the same families still address a single cluster.
 
 use attic_storage::{Bound, DEPTH_NONE, TTData, TranspositionTable};
+
+const CLUSTERS_PER_MIB: usize = if cfg!(feature = "nagisa-v4-tt") {
+    16_384
+} else {
+    32_768
+};
 
 /// Build a key that lands in cluster `hi` (before the side fold) with
 /// in-cluster fragment `frag`. Requires `hi < 2¹⁵`.
@@ -133,7 +141,7 @@ fn miss_on_wrong_key() {
 #[test]
 #[cfg_attr(miri, ignore)]
 fn replacement_evicts_lowest_priority_entry() {
-    // Fill one three-entry cluster, all written at generation 0 so every
+    // Fill one cluster, all written at generation 0 so every
     // relative_age is 0 and replace_priority == depth8 == depth − DEPTH_NONE.
     //
     //   slot 0: frag 1, depth 10 → depth8 13, priority 13
@@ -154,6 +162,9 @@ fn replacement_evicts_lowest_priority_entry() {
     assert!(tt.probe(key(hi, 2), side).0);
     assert!(tt.probe(key(hi, 3), side).0);
 
+    if cfg!(feature = "nagisa-v4-tt") {
+        store(&mut tt, key(hi, 5), side, 0, false, Bound::Lower, 12, 5, 0);
+    }
     store(&mut tt, key(hi, 4), side, 0, false, Bound::Lower, 1, 4, 0);
 
     assert!(
@@ -197,6 +208,9 @@ fn generation_aging_lowers_replacement_priority() {
     assert!(tt.probe(key(hi, 2), side).0);
     assert!(tt.probe(key(hi, 3), side).0);
 
+    if cfg!(feature = "nagisa-v4-tt") {
+        store(&mut tt, key(hi, 5), side, 0, false, Bound::Lower, 10, 5, 0);
+    }
     store(&mut tt, key(hi, 4), side, 0, false, Bound::Lower, 1, 4, 3);
     assert!(
         !tt.probe(key(hi, 1), side).0,
@@ -239,16 +253,16 @@ fn resize_sizes_by_formula_and_clears() {
     assert_eq!(tt.cluster_count(), 0, "fresh table is empty");
 
     tt.resize(1);
-    assert_eq!(tt.cluster_count(), 32_768);
+    assert_eq!(tt.cluster_count(), CLUSTERS_PER_MIB);
     tt.resize(4);
-    assert_eq!(tt.cluster_count(), 4 * 32_768);
+    assert_eq!(tt.cluster_count(), 4 * CLUSTERS_PER_MIB);
 
     let k = key(1, 0x1);
     store(&mut tt, k, 0, 5, false, Bound::Exact, 9, 0x1, 5);
     assert!(tt.probe(k, 0).0);
 
     tt.resize(2);
-    assert_eq!(tt.cluster_count(), 2 * 32_768);
+    assert_eq!(tt.cluster_count(), 2 * CLUSTERS_PER_MIB);
     assert!(!tt.probe(k, 0).0, "resize to a new size clears the table");
 
     store(&mut tt, k, 0, 7, false, Bound::Exact, 9, 0x1, 7);
@@ -267,7 +281,7 @@ fn resize_to_same_size_is_a_no_op() {
     // The same MiB yields the same cluster count, which the reference's early
     // return leaves untouched.
     tt.resize(1);
-    assert_eq!(tt.cluster_count(), 32_768);
+    assert_eq!(tt.cluster_count(), CLUSTERS_PER_MIB);
     assert_eq!(
         tt.checksum(),
         before,
@@ -388,7 +402,7 @@ fn resize_grow_shrink_same_cycles_preserve_semantics() {
         let prev_count = tt.cluster_count();
         let prev_sum = tt.checksum();
         tt.resize(mb);
-        assert_eq!(tt.cluster_count(), mb * 32_768);
+        assert_eq!(tt.cluster_count(), mb * CLUSTERS_PER_MIB);
 
         if tt.cluster_count() == prev_count {
             assert_eq!(tt.checksum(), prev_sum, "same-size resize must be a no-op");

@@ -398,7 +398,7 @@ impl CorrChannel {
 /// Reference `SharedHistories::clear()` init values: correction entries `0`,
 /// pawn entries `-1238`.
 const CORRECTION_INIT: i16 = 0;
-const PAWN_INIT: i16 = -1238;
+const PAWN_INIT: i16 = tuned!(-1238, -1193);
 
 /// [`apply_gravity`] on an atomic entry: a plain relaxed load-modify-store
 /// rather than a CAS loop, because the reference leaves its read-modify-write
@@ -881,13 +881,13 @@ mod shared_tests {
         let _ = SharedHistories::new(0);
     }
 
-    /// Init values: pawn `-1238`, correction `0`, across distinct slots.
+    /// Check the initial pawn and correction values across distinct slots.
     #[test]
     #[cfg_attr(miri, ignore)]
     fn init_values() {
         let sh = SharedHistories::new(1);
-        assert_eq!(sh.pawn_get(0, bp(), to()), -1238);
-        assert_eq!(sh.pawn_get(0xFFFF, bp(), to()), -1238);
+        assert_eq!(sh.pawn_get(0, bp(), to()), tuned!(-1238, -1193));
+        assert_eq!(sh.pawn_get(0xFFFF, bp(), to()), tuned!(-1238, -1193));
         for &color in &[Color::Black, Color::White] {
             for &ch in &CHANNELS {
                 assert_eq!(sh.correction_get(0, color, ch), 0);

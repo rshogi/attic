@@ -78,9 +78,9 @@ const DEPTH_QS: i32 = 0;
 /// `DEPTH_UNSEARCHED`.
 const DEPTH_UNSEARCHED: i32 = -2;
 /// Futility margin added to `ss->staticEval`.
-const FUTILITY_MARGIN: Value = 328;
+const FUTILITY_MARGIN: Value = tuned!(328, 110);
 /// SEE cutoff for a capture with no futility exemption.
-const SEE_CAPTURE_MARGIN: i32 = -73;
+const SEE_CAPTURE_MARGIN: i32 = tuned!(-73, -58);
 /// The default-remapped `MaxMovesToDraw`: the `0` option default is rewritten
 /// to `100000`.
 const MAX_MOVES_TO_DRAW: i32 = 100_000;
@@ -626,7 +626,7 @@ impl<'a> QSearch<'a> {
     pub fn new(net: &'a NnueNetwork, tt: &'a TranspositionTable) -> Self {
         let histories = {
             let mut h = WorkerHistories::new();
-            h.low_ply.fill(98);
+            h.low_ply.fill(tuned!(98, 88));
             h
         };
         Self::with_histories(net, tt, histories)
@@ -684,7 +684,7 @@ impl<'a> QSearch<'a> {
             reductions: {
                 let mut r = vec![0i32; 600];
                 for (i, slot) in r.iter_mut().enumerate().skip(1) {
-                    *slot = (2763.0 / 128.0 * (i as f64).ln()) as i32;
+                    *slot = (tuned!(2763.0, 2490.0) / 128.0 * (i as f64).ln()) as i32;
                 }
                 r
             },
@@ -1562,8 +1562,8 @@ impl QSearch<'_> {
         self.best_move_changes = 0.0;
         self.stop_on_ponderhit = false;
         self.ponderhit_synced = false;
-        // lowPlyHistory is refilled to 98 per `go` (1525 / 2175).
-        self.histories.low_ply.fill(98);
+        // Reset low-ply history before each search.
+        self.histories.low_ply.fill(tuned!(98, 88));
 
         // Full search-stack reset: every cell returns to the sentinel state the
         // interior search's improving / hindsight / continuation logic assumes.
@@ -1686,8 +1686,17 @@ impl QSearch<'_> {
 
                 // Aspiration window. On iteration 1 the sentinels make `delta`
                 // huge, so alpha and beta clamp to the full window naturally.
-                let mut delta: Value =
-                    5 + (root_moves[pv_idx].mean_squared_score.unsigned_abs() / 9000) as Value;
+                let worker_offset = if crate::NAGISA_V4 {
+                    self.node_tally
+                        .as_ref()
+                        .map_or(0, |(_, index)| (index % 8) as Value)
+                } else {
+                    0
+                };
+                let mut delta: Value = tuned!(5, 28)
+                    + worker_offset
+                    + (root_moves[pv_idx].mean_squared_score.unsigned_abs() / tuned!(9000, 9831))
+                        as Value;
                 let avg = root_moves[pv_idx].average_score;
                 let mut alpha = (avg - delta).max(-VALUE_INFINITE);
                 let mut beta = (avg + delta).min(VALUE_INFINITE);
@@ -2279,7 +2288,7 @@ impl QSearch<'_> {
         captured: Option<Piece>,
     ) -> i32 {
         if let (true, Some(cap_piece)) = (capture, captured) {
-            863 * piece_value(cap_piece) / 128
+            tuned!(863, 1025) * piece_value(cap_piece) / 128
                 + self
                     .histories
                     .capture
@@ -2307,9 +2316,9 @@ impl QSearch<'_> {
     /// Reads [`Self::root_delta`].
     fn reduction(&self, improving: bool, d: i32, mn: i32, delta: i32) -> i32 {
         let reduction_scale = self.reductions[d as usize] * self.reductions[mn as usize];
-        reduction_scale - delta * 585 / self.root_delta
-            + (!improving as i32) * reduction_scale * 206 / 512
-            + 1133
+        reduction_scale - delta * tuned!(585, 769) / self.root_delta
+            + (!improving as i32) * reduction_scale * tuned!(206, 407) / 512
+            + tuned!(1133, 1030)
     }
 
     /// `correction_value(*this, pos, ss)`: a weighted sum of the side-to-move
@@ -2361,7 +2370,10 @@ impl QSearch<'_> {
             8
         };
 
-        12153 * pcv + 8620 * micv + 12355 * (wnpcv + bnpcv) + 7982 * cntcv
+        tuned!(12153, 6984) * pcv
+            + tuned!(8620, 5372) * micv
+            + tuned!(12355, 9107) * (wnpcv + bnpcv)
+            + tuned!(7982, 13604) * cntcv
     }
 
     /// Run `search` at ply 0 as a *non-root* node, for tests and smoke checks;
@@ -2559,7 +2571,7 @@ impl QSearch<'_> {
                         &self.stack[..],
                         s,
                         ttm,
-                        (130 * depth - 71).min(1043),
+                        (tuned!(130, 28) * depth - tuned!(71, 87)).min(tuned!(1043, 1392)),
                     );
                 }
                 if let Some(psq) = prev_sq
@@ -2573,7 +2585,7 @@ impl QSearch<'_> {
                         s - 1,
                         pc,
                         psq,
-                        -2142,
+                        tuned!(-2142, -1076),
                     );
                 }
             }
@@ -2631,13 +2643,13 @@ impl QSearch<'_> {
                 unadjusted_static_eval = static_eval;
                 eval = static_eval;
             } else if tt_hit {
-                // The reference, built without `USE_LAZY_EVALUATE`, evaluates the
-                // position again on every hit rather than trusting the stored
-                // value: `else unadjustedStaticEval = evaluate(pos);`. A stored
-                // value can be one this search itself wrote corrected (the
-                // ProbCut inside a singular search does), and trusting it would
-                // correct it twice.
-                unadjusted_static_eval = self.static_eval(pos);
+                // The NAGISA V4 tournament build reuses a valid TT eval at
+                // non-PV nodes under USE_LAZY_EVALUATE.
+                unadjusted_static_eval = if crate::NAGISA_V4 && !pv_node && is_valid(tt_data.eval) {
+                    tt_data.eval
+                } else {
+                    self.static_eval(pos)
+                };
                 let corrected = to_corrected_static_eval(unadjusted_static_eval, correction_value);
                 static_eval = corrected;
                 eval = if is_valid(tt_value) && bound_matches(tt_data.bound, tt_value > corrected) {
@@ -2667,13 +2679,17 @@ impl QSearch<'_> {
                 && !self.stack[s - 1].in_check
                 && !prior_capture
             {
-                let eval_diff =
-                    (-(self.stack[s - 1].static_eval + static_eval)).clamp(-214, 171) + 60;
-                self.histories.main.update(
-                    us.flip(),
-                    self.stack[s - 1].current_move,
-                    eval_diff * 10,
-                );
+                let eval_sum = self.stack[s - 1].static_eval + static_eval;
+                let (main_bonus, pawn_bonus) = if crate::NAGISA_V4 {
+                    let eval_diff_q8 = (-eval_sum * 256).clamp(-35860, 17575) + 11480;
+                    (eval_diff_q8 * 1269 / 65536, eval_diff_q8 * 3891 / 65536)
+                } else {
+                    let eval_diff = (-eval_sum).clamp(-214, 171) + 60;
+                    (eval_diff * 10, eval_diff * 12)
+                };
+                self.histories
+                    .main
+                    .update(us.flip(), self.stack[s - 1].current_move, main_bonus);
                 if !tt_hit
                     && let Some(psq) = prev_sq
                     && let Some(pc) = pos.board().get(psq)
@@ -2682,7 +2698,7 @@ impl QSearch<'_> {
                     if not_pawn && !self.stack[s - 1].current_move.is_promote() {
                         self.histories
                             .shared
-                            .pawn_update(pos.pawn_key(), pc, psq, eval_diff * 12);
+                            .pawn_update(pos.pawn_key(), pc, psq, pawn_bonus);
                     }
                 }
             }
@@ -2696,24 +2712,26 @@ impl QSearch<'_> {
             }
             if prior_reduction >= 2
                 && depth >= 2
-                && static_eval + self.stack[s - 1].static_eval > 173
+                && static_eval + self.stack[s - 1].static_eval > tuned!(173, 188)
             {
                 depth -= 1;
             }
 
             // Step 7. Razoring.
-            if !pv_node && eval < alpha - 502 - 306 * depth * depth {
+            if !pv_node && eval < alpha - tuned!(502, 211) - tuned!(306, 187) * depth * depth {
                 self.pv_node = false;
                 self.read_tt = true;
                 return self.qsearch(pos, ply, alpha, beta);
             }
 
             // Step 8. Futility pruning.
-            let futility_mult = 76 - 21 * (!tt_hit) as i32;
+            let futility_mult = tuned!(76, 58) - tuned!(21, 26) * (!tt_hit) as i32;
             let margin = futility_mult * depth
-                - (2686 * improving as i32 + 362 * opponent_worsening as i32) * futility_mult
+                - (tuned!(2686, 1931) * improving as i32
+                    + tuned!(362, 467) * opponent_worsening as i32)
+                    * futility_mult
                     / 1024
-                + correction_value.abs() / 180600;
+                + correction_value.abs() / tuned!(180600, 66154);
             if !ttpv
                 && depth < 15
                 && eval >= beta
@@ -2730,12 +2748,14 @@ impl QSearch<'_> {
             // `#if STOCKFISH`, so it is absent here; `ss->ply >= nmpMinPly` is
             // what disables the pass while a verification search is in flight.
             if cut_node
-                && static_eval >= beta - 16 * depth - 53 * improving as i32 + 378
+                && static_eval
+                    >= beta - tuned!(16, 20) * depth - tuned!(53, 57) * improving as i32
+                        + tuned!(378, 248)
                 && !excluded_move.is_ok()
                 && ply >= self.nmp_min_ply
                 && !is_loss(beta)
             {
-                let r = 7 + depth / 3;
+                let r = tuned!(7, 8) + depth / 3;
                 self.stack[s].current_move = Move::null();
                 self.stack[s].cont_hist = NULL_MOVE_CONT_PLANE;
                 self.stack[s].cont_corr = ContinuationCorrectionHistory::SENTINEL_PLANE;
@@ -2802,7 +2822,7 @@ impl QSearch<'_> {
             // Step 10. Internal iterative reduction.
             if !self.stack[s].follow_pv
                 && !all_node
-                && depth >= 6
+                && depth >= tuned!(6, 4)
                 && tt_move.is_none()
                 && prior_reduction <= 3
             {
@@ -2810,7 +2830,7 @@ impl QSearch<'_> {
             }
 
             // Step 11. ProbCut.
-            let prob_cut_beta = beta + 224 - 61 * improving as i32;
+            let prob_cut_beta = beta + tuned!(224, 152) - tuned!(61, 80) * improving as i32;
             if depth >= 3 && !is_decisive(beta) && !(is_valid(tt_value) && tt_value < prob_cut_beta)
             {
                 let prob_cut_depth = depth - 4;
@@ -2874,7 +2894,7 @@ impl QSearch<'_> {
         // ---- moves_loop: (in-check nodes resume here) ----
 
         // Step 12. Small ProbCut.
-        let prob_cut_beta = beta + 416;
+        let prob_cut_beta = beta + tuned!(416, 179);
         if bound_matches(tt_data.bound, true)
             && tt_data.depth >= depth - 4
             && tt_value >= prob_cut_beta
@@ -2939,7 +2959,7 @@ impl QSearch<'_> {
             // move's singular re-entry can flip it, and the flip persists for the
             // rest of this node's move loop.
             if self.stack[s].tt_pv {
-                r += 1013;
+                r += tuned!(1013, 292);
             }
 
             // Step 14. Pruning at shallow depths, skipped at the root, where
@@ -2957,15 +2977,16 @@ impl QSearch<'_> {
                     };
                     if !gives_check && lmr_depth < 7 {
                         let futility_value = static_eval
-                            + 218
-                            + 223 * lmr_depth
+                            + tuned!(218, 483)
+                            + tuned!(223, 348) * lmr_depth
                             + victim.map_or(0, piece_value)
-                            + 131 * capt_hist / 1024;
+                            + tuned!(131, 144) * capt_hist / 1024;
                         if futility_value <= alpha {
                             continue;
                         }
                     }
-                    let margin = (167 * depth + capt_hist * 34 / 1024).max(0);
+                    let margin =
+                        (tuned!(167, 137) * depth + capt_hist * tuned!(34, 41) / 1024).max(0);
                     if alpha >= VALUE_DRAW && !pos.see_ge(mv, -margin) {
                         continue;
                     }
@@ -2983,16 +3004,16 @@ impl QSearch<'_> {
                         moved_piece,
                         mv.to_sq(),
                     );
-                    if history < -4097 * depth {
+                    if history < tuned!(-4097, -4096) * depth {
                         continue;
                     }
-                    history += 71 * self.histories.main.get(us, mv) / 32;
-                    lmr_depth += history / 3220;
+                    history += tuned!(71, 40) * self.histories.main.get(us, mv) / 32;
+                    lmr_depth += history / tuned!(3220, 3171);
                     let futility_value = static_eval
                         + 42
                         + 151 * (!best_move.is_ok()) as i32
-                        + 120 * lmr_depth
-                        + 86 * (static_eval > alpha) as i32;
+                        + tuned!(120, 59) * lmr_depth
+                        + tuned!(86, 74) * (static_eval > alpha) as i32;
                     if !in_check && lmr_depth < 13 && futility_value <= alpha {
                         if best_value <= futility_value
                             && !is_decisive(best_value)
@@ -3003,7 +3024,7 @@ impl QSearch<'_> {
                         continue;
                     }
                     lmr_depth = lmr_depth.max(0);
-                    if !pos.see_ge(mv, -25 * lmr_depth * lmr_depth) {
+                    if !pos.see_ge(mv, tuned!(-25, -44) * lmr_depth * lmr_depth) {
                         continue;
                     }
                 }
@@ -3026,8 +3047,10 @@ impl QSearch<'_> {
                 && tt_data.depth >= depth - 3
                 && !self.is_shuffling(mv, capture, ply, pos)
             {
-                let singular_beta =
-                    tt_value - (60 + 66 * (self.stack[s].tt_pv && !pv_node) as i32) * depth / 55;
+                let singular_beta = tt_value
+                    - (tuned!(60, 70) + tuned!(66, 70) * (self.stack[s].tt_pv && !pv_node) as i32)
+                        * depth
+                        / tuned!(55, 38);
                 let singular_depth = new_depth / 2;
 
                 // Re-enter on the **same** node — no `do_move`, same ply, same
@@ -3050,20 +3073,21 @@ impl QSearch<'_> {
                 self.stack[s].excluded_move = Move::none();
 
                 if s_value < singular_beta {
-                    let corr_val_adj = correction_value.abs() / 210590;
-                    let double_margin = -4 + 212 * pv_node as i32
-                        - 182 * (!tt_capture) as i32
+                    let corr_val_adj = correction_value.abs() / tuned!(210590, 294860);
+                    let double_margin = tuned!(-4, 2) + tuned!(212, 202) * pv_node as i32
+                        - tuned!(182, 243) * (!tt_capture) as i32
                         - corr_val_adj
-                        - 906 * self.histories.tt_move.get() / 116517
-                        - (ply > self.root_depth) as i32 * 44;
+                        - tuned!(906, 717) * self.histories.tt_move.get() / 116517
+                        - (ply > self.root_depth) as i32 * tuned!(44, 23);
                     // This reads `ss->ttPv` **live**, after the re-entry: the
                     // inner search failed low here, so it applied
                     // `ss->ttPv |= (ss-1)->ttPv`. The guard and `singular_beta`
                     // above ran before the re-entry and saw the original value.
-                    let triple_margin = 73 + 320 * pv_node as i32 - 218 * (!tt_capture) as i32
-                        + 92 * self.stack[s].tt_pv as i32
+                    let triple_margin = tuned!(73, 80) + tuned!(320, 366) * pv_node as i32
+                        - tuned!(218, 12) * (!tt_capture) as i32
+                        + tuned!(92, 126) * self.stack[s].tt_pv as i32
                         - corr_val_adj
-                        - (ply > self.root_depth) as i32 * 45;
+                        - (ply > self.root_depth) as i32 * tuned!(45, 47);
 
                     extension = 1
                         + (s_value < singular_beta - double_margin) as i32
@@ -3108,32 +3132,34 @@ impl QSearch<'_> {
             // Read **live**, so it reflects any singular flip from this or an
             // earlier move in the loop.
             if self.stack[s].tt_pv {
-                r -= 2819
-                    + pv_node as i32 * 973
-                    + (tt_value > alpha) as i32 * 905
-                    + (tt_data.depth >= depth) as i32 * (935 + cut_node as i32 * 959);
+                r -= tuned!(2819, 2517)
+                    + pv_node as i32 * tuned!(973, 1371)
+                    + (tt_value > alpha) as i32 * tuned!(905, 505)
+                    + (tt_data.depth >= depth) as i32
+                        * (tuned!(935, 714) + cut_node as i32 * tuned!(959, 1181));
             }
-            r += 691;
-            r -= move_count * 65;
-            r -= correction_value.abs() / 25600;
+            r += tuned!(691, 932);
+            r -= move_count * tuned!(65, 12);
+            r -= correction_value.abs() / tuned!(25600, 27632);
             if cut_node {
-                r += 3611 + 985 * tt_move.is_none() as i32;
+                r += tuned!(3611, 2025) + tuned!(985, 1192) * tt_move.is_none() as i32;
             }
             if tt_capture {
-                r += 1054;
+                r += tuned!(1054, 1597);
             }
             if self.stack[s + 1].cutoff_cnt > 1 {
-                r +=
-                    251 + 1124 * (self.stack[s + 1].cutoff_cnt > 2) as i32 + 1042 * all_node as i32;
+                r += tuned!(251, 175)
+                    + tuned!(1124, 1152) * (self.stack[s + 1].cutoff_cnt > 2) as i32
+                    + tuned!(1042, 559) * all_node as i32;
             }
             if Some(mv) == tt_move {
-                r -= 2239;
+                r -= tuned!(2239, 1983);
             }
             let stat_score = self.move_stat_score(us, moved_piece, mv, s, capture, undo.captured());
             self.stack[s].stat_score = stat_score;
-            r -= stat_score * 428 / 4096;
+            r -= stat_score * tuned!(428, 509) / 4096;
             if all_node {
-                r += r * 273 / (256 * depth + 260);
+                r += r * tuned!(273, 172) / (256 * depth + 260);
             }
 
             // Step 17. Late-move reduction / extension.
@@ -3156,8 +3182,8 @@ impl QSearch<'_> {
                 );
                 self.stack[s].reduction = 0;
                 if value > alpha {
-                    let do_deeper = d < new_depth && value > best_value + 48;
-                    let do_shallower = value < best_value + 9;
+                    let do_deeper = d < new_depth && value > best_value + tuned!(48, 50);
+                    let do_shallower = value < best_value + tuned!(9, 10);
                     new_depth += do_deeper as i32 - do_shallower as i32;
                     if new_depth > d {
                         value = -self.search(
@@ -3178,16 +3204,18 @@ impl QSearch<'_> {
                         s,
                         moved_piece,
                         mv.to_sq(),
-                        1426,
+                        tuned!(1426, 649),
                     );
                 }
             }
             // Step 18. Full-depth search when LMR is skipped.
             else if !pv_node || move_count > 1 {
                 if tt_move.is_none() {
-                    r += 1057;
+                    r += tuned!(1057, 1030);
                 }
-                let nd = new_depth - (r > 4628) as i32 - (r > 5772 && new_depth > 2) as i32;
+                let nd = new_depth
+                    - (r > tuned!(4628, 2578)) as i32
+                    - (r > tuned!(5772, 4889) && new_depth > 2) as i32;
                 self.pv_node = false;
                 self.read_tt = true;
                 value = -self.search(
@@ -3358,22 +3386,25 @@ impl QSearch<'_> {
                 self.histories
                     .tt_move
                     .update(if Some(best_move) == tt_move {
-                        805
+                        tuned!(805, 658)
                     } else {
-                        -787
+                        tuned!(-787, -642)
                     });
             }
         } else if !prior_capture && let Some(psq) = prev_sq {
-            let mut bonus_scale = -232;
-            bonus_scale -= self.stack[s - 1].stat_score / 108;
-            bonus_scale += (59 * depth).min(454);
-            bonus_scale += 169 * (self.stack[s - 1].move_count > 8) as i32;
-            bonus_scale += 145 * (!in_check && best_value <= static_eval - 110) as i32;
-            bonus_scale += 154
-                * (!self.stack[s - 1].in_check && best_value <= -self.stack[s - 1].static_eval - 73)
+            let mut bonus_scale = tuned!(-232, -203);
+            bonus_scale -= self.stack[s - 1].stat_score / tuned!(108, 81);
+            bonus_scale += (tuned!(59, 70) * depth).min(tuned!(454, 351));
+            bonus_scale += tuned!(169, 177) * (self.stack[s - 1].move_count > tuned!(8, 6)) as i32;
+            bonus_scale += tuned!(145, 118)
+                * (!in_check && best_value <= static_eval - tuned!(110, 85)) as i32;
+            bonus_scale += tuned!(154, 162)
+                * (!self.stack[s - 1].in_check
+                    && best_value <= -self.stack[s - 1].static_eval - tuned!(73, 79))
                     as i32;
             bonus_scale = bonus_scale.max(0);
-            let scaled_bonus = (135 * depth - 80).min(1400) * bonus_scale;
+            let scaled_bonus =
+                (tuned!(135, 123) * depth - tuned!(80, 41)).min(tuned!(1400, 1466)) * bonus_scale;
             if let Some(pc) = pos.board().get(psq) {
                 update_continuation_histories(
                     &mut self.histories,
@@ -3381,12 +3412,12 @@ impl QSearch<'_> {
                     s - 1,
                     pc,
                     psq,
-                    scaled_bonus * 221 / 16384,
+                    scaled_bonus * tuned!(221, 283) / 16384,
                 );
                 self.histories.main.update(
                     us.flip(),
                     self.stack[s - 1].current_move,
-                    scaled_bonus * 235 / 32768,
+                    scaled_bonus * tuned!(235, 234) / 32768,
                 );
                 let not_pawn = pc.kind != PieceKind::Pawn || pc.promoted;
                 if not_pawn && !self.stack[s - 1].current_move.is_promote() {
@@ -3394,7 +3425,7 @@ impl QSearch<'_> {
                         pos.pawn_key(),
                         pc,
                         psq,
-                        scaled_bonus * 290 / 8192,
+                        scaled_bonus * tuned!(290, 244) / 8192,
                     );
                 }
             }
@@ -3403,7 +3434,9 @@ impl QSearch<'_> {
             && let Some(pc) = pos.board().get(psq)
             && let Some(cap) = prior_captured
         {
-            self.histories.capture.update(pc, psq, cap, 1018);
+            self.histories
+                .capture
+                .update(pc, psq, cap, tuned!(1018, 1273));
         }
 
         if best_value <= alpha {
@@ -3442,14 +3475,18 @@ impl QSearch<'_> {
         if !(in_check || (best_move.is_ok() && Self::is_capture(pos, best_move)))
             && (best_value > static_eval) == best_move.is_ok()
         {
-            let sign = if best_move.is_ok() { 12 } else { 17 };
+            let sign = if best_move.is_ok() {
+                12
+            } else {
+                tuned!(17, 19)
+            };
             let bonus = ((best_value - static_eval) * depth * sign / 128).clamp(-256, 256);
             update_correction_history(
                 &mut self.histories,
                 pos,
                 &self.stack[..],
                 s,
-                1069 * bonus / 1024,
+                tuned!(1069, 1342) * bonus / 1024,
             );
         }
 
@@ -3746,15 +3783,16 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore)]
     fn futility_first_prune_floors_bestvalue_at_futility_value() {
-        // alpha == 418 == futilityBase(328) + PawnValue(90): the first futility
-        // test `futilityValue <= alpha` fires, flooring bestValue at 418.
+        // At the exact futility boundary the capture is pruned, but
+        // bestValue is raised to the capture’s futility value.
+        let futility = tuned!(418, 200);
         let net = zero_net();
         let table = fresh_tt();
         let out = {
             let mut q = QSearch::new(&net, &table);
-            q.run(&mut pos(LANCE_SEE), 418, 419, false, true)
+            q.run(&mut pos(LANCE_SEE), futility, futility + 1, false, true)
         };
-        assert_eq!(out.value, 418);
+        assert_eq!(out.value, futility);
         assert_eq!(out.nodes, 0, "the only capture is futility-pruned");
     }
 
@@ -3845,19 +3883,17 @@ mod tests {
             Piece::new(PieceKind::Pawn, Color::White),
         );
         q.stack[STACK_BASE - 1].current_move = prev;
-        let _ = q.qsearch(&mut p, 0, 0, 1);
+        // The V4 continuation-correction seed makes stand pat 1 here.
+        let alpha = tuned!(0, 1);
+        let _ = q.qsearch(&mut p, 0, alpha, alpha + 1);
         assert_eq!(q.nodes, 3, "the recapture is exempt from moveCount pruning");
     }
 
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn correction_value_is_eval_neutral_on_fresh_tables() {
-        // On fresh correction tables (unified channels all 0,
-        // continuation-correction all 6), the correction contributes nothing to
-        // the eval: `cv / 131072 == 0`, so `to_corrected_static_eval` matches
-        // the uncorrected clamp. Checked both at ply 0 (prev move not ok ⇒
-        // cntcv == 8) and at a deeper ply with a real previous move (cntcv ==
-        // 12).
+    fn fresh_tables_apply_the_profile_continuation_correction() {
+        // Fresh shared channels are zero. With a real previous move,
+        // the nonzero continuation seed contributes one point in V4.
         let net = zero_net();
         let table = fresh_tt();
         let mut q = QSearch::new(&net, &table);
@@ -3892,7 +3928,11 @@ mod tests {
             let prev = Move::make(from, occupied, piece);
             q.stack[QSearch::si(2) - 1].current_move = prev;
             let cv2 = q.correction_value(&p, 2);
-            assert_eq!(cv2 / 131072, 0, "cv/131072 must be 0 at ply 2 (`{sfen}`)");
+            let expected_cv2 = tuned!(12 * 7982, 14 * 13604);
+            assert_eq!(
+                cv2, expected_cv2,
+                "unexpected correction at ply 2 (`{sfen}`)"
+            );
 
             // And the corrected eval equals the uncorrected one for a spread of
             // static evals.
@@ -3904,7 +3944,7 @@ mod tests {
                 );
                 assert_eq!(
                     to_corrected_static_eval(v, cv2),
-                    to_corrected_static_eval(v, 0),
+                    to_corrected_static_eval(v, expected_cv2),
                 );
             }
         }
@@ -3932,8 +3972,8 @@ mod tests {
         let after = q.correction_value(&p, 0);
         assert_eq!(
             after - before,
-            12153 * 1024,
-            "correction_value must read the live worker pawn channel (+1024 × weight 12153)"
+            tuned!(12153, 6984) * 1024,
+            "correction_value must read the live worker pawn channel"
         );
     }
 
@@ -4465,29 +4505,32 @@ mod tests {
         let table = fresh_tt();
         let mut q = QSearch::new(&net, &table);
 
-        // reductions[i] == int(2763/128.0 * ln(i)), reductions[0] == 0.
+        // The release and standard profiles use different logarithm multipliers.
         assert_eq!(q.reductions[0], 0);
         assert_eq!(q.reductions[1], 0); // ln(1) == 0
-        assert_eq!(q.reductions[2], 14);
-        assert_eq!(q.reductions[3], 23);
-        assert_eq!(q.reductions[4], 29);
-        assert_eq!(q.reductions[8], 44);
-        assert_eq!(q.reductions[10], 49);
+        assert_eq!(q.reductions[2], tuned!(14, 13));
+        assert_eq!(q.reductions[3], tuned!(23, 21));
+        assert_eq!(q.reductions[4], tuned!(29, 26));
+        assert_eq!(q.reductions[8], tuned!(44, 40));
+        assert_eq!(q.reductions[10], tuned!(49, 44));
 
         // reduction(i, d, mn, delta) = rs - delta*585/rootDelta
-        //                            + (!i)*rs*206/512 + 1133, rs = red[d]*red[mn].
+        //                            + (!i)*rs*206/512 + tuned!(1133, 1030), rs = red[d]*red[mn].
         q.root_delta = 1000;
         let rs = q.reductions[8] * q.reductions[4];
-        assert_eq!(q.reduction(true, 8, 4, 100), rs - 100 * 585 / 1000 + 1133);
+        assert_eq!(
+            q.reduction(true, 8, 4, 100),
+            rs - 100 * tuned!(585, 769) / 1000 + tuned!(1133, 1030)
+        );
         assert_eq!(
             q.reduction(false, 8, 4, 100),
-            rs - 100 * 585 / 1000 + rs * 206 / 512 + 1133,
+            rs - 100 * tuned!(585, 769) / 1000 + rs * tuned!(206, 407) / 512 + tuned!(1133, 1030),
         );
         q.root_delta = 200;
         let rs2 = q.reductions[10] * q.reductions[2];
         assert_eq!(
             q.reduction(false, 10, 2, 50),
-            rs2 - 50 * 585 / 200 + rs2 * 206 / 512 + 1133,
+            rs2 - 50 * tuned!(585, 769) / 200 + rs2 * tuned!(206, 407) / 512 + tuned!(1133, 1030),
         );
     }
 
@@ -4499,12 +4542,12 @@ mod tests {
         let q = QSearch::new(&net, &table);
         let s = QSearch::si(2); // sentinels (ss-1)/(ss-2) below it exist.
 
-        // Both continuation planes are the sentinel plane, filled -523.
+        // Both continuation reads use the initialized sentinel plane.
         let bp = Piece::new(PieceKind::Pawn, Color::Black);
         let quiet = Move::make(Square::new(4, 4).unwrap(), Square::new(4, 3).unwrap(), bp);
         assert_eq!(
             q.move_stat_score(Color::Black, bp, quiet, s, false, None),
-            -523 + -523,
+            2 * tuned!(-523, -893),
         );
 
         // `863*PieceValue[pawn]/128` plus the `captureHistory` init.
@@ -4513,7 +4556,7 @@ mod tests {
         let cap = Move::make(Square::new(4, 4).unwrap(), Square::new(4, 3).unwrap(), rook);
         assert_eq!(
             q.move_stat_score(Color::Black, rook, cap, s, true, Some(wp)),
-            863 * 90 / 128 - 678,
+            tuned!(863, 1025) * 90 / 128 + tuned!(-678, -847),
         );
     }
 
@@ -4521,12 +4564,19 @@ mod tests {
     #[cfg_attr(miri, ignore)]
     fn razoring_boundary_returns_qsearch_without_do_move() {
         let net = zero_net();
-        // At `eval == 0` and depth 1, razoring fires above `alpha == 808` and
-        // returns a qsearch that, for two bare kings, makes no `do_move`.
+        // At depth 1 with eval 0, alpha must exceed the razor margin.
+        let boundary = tuned!(808, 398);
         let fired_tt = fresh_tt();
         let fired_nodes = {
             let mut q = QSearch::new(&net, &fired_tt);
-            q.run_search(&mut pos(TWO_KINGS), 809, 810, 1, false, false);
+            q.run_search(
+                &mut pos(TWO_KINGS),
+                boundary + 1,
+                boundary + 2,
+                1,
+                false,
+                false,
+            );
             q.nodes
         };
         assert_eq!(fired_nodes, 0, "razoring returns qsearch with no do_move");
@@ -4535,7 +4585,7 @@ mod tests {
         let not_tt = fresh_tt();
         let not_nodes = {
             let mut q = QSearch::new(&net, &not_tt);
-            q.run_search(&mut pos(TWO_KINGS), 808, 809, 1, false, false);
+            q.run_search(&mut pos(TWO_KINGS), boundary, boundary + 1, 1, false, false);
             q.nodes
         };
         assert!(not_nodes > 0, "at the boundary razoring must not fire");
@@ -4545,21 +4595,21 @@ mod tests {
     #[cfg_attr(miri, ignore)]
     fn futility_boundary_returns_two_beta_plus_eval_over_three() {
         let net = zero_net();
-        // At depth 1 on a TT miss the margin works out to 36, so with `eval == 0`
-        // futility fires at `beta <= -36` and returns `(2*beta + eval)/3`.
+        // At depth 1, use the TT-miss margin with fresh correction history.
+        let beta = tuned!(-36, -19);
         let tt = fresh_tt();
         let (v, n) = {
             let mut q = QSearch::new(&net, &tt);
-            let v = q.run_search(&mut pos(TWO_KINGS), -37, -36, 1, false, false);
+            let v = q.run_search(&mut pos(TWO_KINGS), beta - 1, beta, 1, false, false);
             (v, q.nodes)
         };
-        assert_eq!(v, (2 * -36) / 3); // -24
+        assert_eq!(v, 2 * beta / 3);
         assert_eq!(n, 0, "futility returns before any do_move");
 
         let tt2 = fresh_tt();
         let n2 = {
             let mut q = QSearch::new(&net, &tt2);
-            q.run_search(&mut pos(TWO_KINGS), -36, -35, 1, false, false);
+            q.run_search(&mut pos(TWO_KINGS), beta, beta + 1, 1, false, false);
             q.nodes
         };
         assert!(n2 > 0, "at the boundary futility must not fire");
@@ -4577,8 +4627,8 @@ mod tests {
             .find(|&m| !m.is_drop() && p.board().get(m.to_sq()).is_none())
             .expect("a quiet king move exists");
 
-        // At depth 1 the null fires at `beta <= -362`, and with `R = 7` the child
-        // is a qsearch, so no `do_move` happens.
+        // At depth 1 the null search reaches qsearch without a counted move.
+        let beta = tuned!(-362, -228);
         let mut tt = fresh_tt();
         prewrite(
             &mut tt,
@@ -4592,7 +4642,7 @@ mod tests {
         );
         let (v, n) = {
             let mut q = QSearch::new(&net, &tt);
-            let v = q.run_search(&mut p.clone(), -363, -362, 1, true, false);
+            let v = q.run_search(&mut p.clone(), beta - 1, beta, 1, true, false);
             (v, q.nodes)
         };
         assert_eq!(v, 0, "null search of two kings returns 0");
@@ -4611,7 +4661,7 @@ mod tests {
         );
         let n2 = {
             let mut q = QSearch::new(&net, &tt2);
-            q.run_search(&mut p.clone(), -362, -361, 1, true, false);
+            q.run_search(&mut p.clone(), beta, beta + 1, 1, true, false);
             q.nodes
         };
         assert!(n2 > 0, "at the boundary null move must not fire");
@@ -4647,7 +4697,7 @@ mod tests {
             let v = q.run_search(&mut p.clone(), -225, -224, 4, false, false);
             (v, q.nodes)
         };
-        assert_eq!(v, -163);
+        assert_eq!(v, tuned!(-163, -73));
         assert_eq!(n, 1, "one ProbCut capture is searched");
     }
 
@@ -4691,8 +4741,8 @@ mod tests {
         let v = q.search(&mut p, 1, 1, 2, 1, false, false, None, None);
         assert_eq!(v, 0);
 
-        // The scaled bonus works out to 660, which moves `mainHistory` by 4.
-        assert_eq!(q.histories.main.get(Color::Black, prev), 4);
+        // The scaled bonus changes mainHistory according to the selected profile.
+        assert_eq!(q.histories.main.get(Color::Black, prev), tuned!(4, 66));
         // The same bonus moves the pawn plane by 23 off its -1238 init.
         assert_ne!(
             q.histories.shared.pawn_get(pawn_key, bk, prev_sq),

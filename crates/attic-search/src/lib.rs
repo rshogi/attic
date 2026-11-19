@@ -7,6 +7,14 @@
 //! It may depend on Evaluation and State, never on Protocol. Protocol calls
 //! into this crate and so never reaches Evaluation directly.
 
+const NAGISA_V4: bool = cfg!(feature = "sfnn_halfkahm2_2304_15_64_progress8");
+
+macro_rules! tuned {
+    ($standard:expr, $nagisa:expr) => {
+        if crate::NAGISA_V4 { $nagisa } else { $standard }
+    };
+}
+
 use std::path::Path;
 
 use attic_eval::{Accumulator, NnueError, NnueNetwork, evaluate_with, load_network};

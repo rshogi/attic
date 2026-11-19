@@ -1590,6 +1590,18 @@ fn emit_bestmove<W: Write>(writer: &Arc<Mutex<W>>, mv: &str) {
     let _ = Formatter::new(&mut *guard).bestmove(mv);
 }
 
+/// NAGISA V4 reports the terminal score and PV before bestmove.
+fn emit_terminal<W: Write>(writer: &Arc<Mutex<W>>, mv: &str, mate: i32) {
+    let mut guard = writer.lock().unwrap_or_else(|e| e.into_inner());
+    let mut output = Formatter::new(&mut *guard);
+    if cfg!(feature = "sfnn_halfkahm2_2304_15_64_progress8") {
+        let _ = output.info(&format!(
+            "depth 0 multipv 1 score mate {mate} nodes 0 pv {mv}"
+        ));
+    }
+    let _ = output.bestmove(mv);
+}
+
 /// Emit one `info string <msg>` from the coordinator (best-effort).
 fn emit_info_string<W: Write>(writer: &Arc<Mutex<W>>, msg: &str) {
     let mut guard = writer.lock().unwrap_or_else(|e| e.into_inner());
@@ -2427,7 +2439,7 @@ fn run_coordinated<W: Write + Send + 'static>(job: CoordinatorJob<W>) -> Coordin
     // `threads.start_searching()`.
     let root_moves = generate_root_moves(&pos, generate_all_legal_moves);
     if root_moves.is_empty() {
-        emit_bestmove(&writer, "resign");
+        emit_terminal(&writer, "resign", -1);
         return CoordinatedOutcome {
             histories,
             nodes: 0,
@@ -2439,9 +2451,9 @@ fn run_coordinated<W: Write + Send + 'static>(job: CoordinatorJob<W>) -> Coordin
     // must be emitted verbatim so the host plays it.
     if let Some(mv) = declaration_win(&pos, &entering_king) {
         if mv == Move::win() {
-            emit_bestmove(&writer, "win");
+            emit_terminal(&writer, "win", 1);
         } else {
-            emit_bestmove(&writer, &format_usi_move(mv));
+            emit_terminal(&writer, &format_usi_move(mv), 1);
         }
         return CoordinatedOutcome {
             histories,

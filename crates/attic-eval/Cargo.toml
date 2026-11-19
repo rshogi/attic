@@ -32,6 +32,7 @@ quick-draw = ["attic-state/quick-draw"]
 sfnn_halfkahm2_1536_15_32_k3k3 = ["sfnn"]
 sfnn_halfkahm2_1024_15_64_progress8kpabs = ["sfnn_progress"]
 sfnn_halfkahm2_1024_15_64_progress8ek = ["sfnn_progress_ek"]
+sfnn_halfkahm2_2304_15_64_progress8 = ["sfnn_halfkahm2_2304_15_64_progress8ek"]
 sfnn_halfkahm2_2304_15_64_progress8ek = ["sfnn_progress_ek"]
 # YaneuraOu's standard shapes. One dense stack, no bucketing, and the
 # perspectives concatenated rather than multiplied — see `NetDims::KP256`. The
