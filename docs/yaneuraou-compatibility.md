@@ -30,7 +30,24 @@ cargo build --release -p attic --no-default-features --features <shape>,ref_chec
 | `sfnn_ka2_2048_8_64_progress8x` | 21,884/21,884 (100%) | 20,233/20,233 (100%) |
 | `sfnn_ka2_4096_8_64_progress8x` | 21,884/21,884 (100%) | 20,233/20,233 (100%) |
 
-## 評価関数別のパラメータ調整
+## 評価関数別のチューニング
 
-- **NAGISA V4**（`sfnn_halfkahm2_2304_15_64_progress8`）の専用互換ブランチでは、探索係数、指し手の採点、千日手判定、置換表を NAGISA V4 の公開実行ファイルに合わせています。上の表は YaneuraOu V9.96 との照合結果です。 [NAGISA V4](https://github.com/keinoda/YaneuraOu/releases/tag/nagisa-v4) · [調整内容（PR #66）](https://github.com/rshogi/attic/pull/66)
-- **Sirius**（`sfnn_halfkahm2_threat_1024_15_64_8gp`）では、層スタックの選択と境界での補間、`FV_SCALE` を Sirius 本体に合わせています。 [Sirius](https://yfamate.booth.pm/items/9158204) · [調整内容（PR #51）](https://github.com/rshogi/attic/pull/51)
+### `sfnn_halfkahm2_2304_15_64_progress8`
+
+このネットワークでは、専用互換ブランチで NAGISA V4 が採用しているパフォーマンスチューニングを行っています。
+
+- 探索係数と指し手の採点
+- 千日手判定
+- 置換表の構成
+
+[NAGISA V4](https://github.com/keinoda/YaneuraOu/releases/tag/nagisa-v4) · [調整内容（PR #66）](https://github.com/rshogi/attic/pull/66)
+
+### `sfnn_halfkahm2_threat_1024_15_64_8gp`
+
+このネットワークでは、Sirius が採用している評価パラメータに合わせています。
+
+- 進行度による層スタックの選択
+- 層スタックの境界での補間
+- 評価値のスケーリング（`FV_SCALE`）
+
+[Sirius](https://yfamate.booth.pm/items/9158204) · [調整内容（PR #51）](https://github.com/rshogi/attic/pull/51)
