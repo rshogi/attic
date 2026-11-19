@@ -10,12 +10,11 @@ Attic の基準は [YaneuraOu V9.96](https://github.com/yaneurao/YaneuraOu/commi
 cargo build --release -p attic --no-default-features --features <shape>,ref_check_time
 ```
 
+- 1スレッド、置換表16 MiB、`go nodes 10000`
+- 9ネットワーク × 21,884局面。評価設定は両エンジンで統一
+- 探索結果は `time`、`nps`、`hashfull` を除く全 `info depth` 行と `bestmove` を比較
+
 ## AVX2
-
-- Linux AVX2、1スレッド、置換表16 MiB、`go nodes 10000`
-- 9ネットワーク × 21,884局面。各ネットワークの評価設定は両エンジンで統一
-
-探索は `time`、`nps`、`hashfull` を除く全 `info depth` 行と `bestmove` を比較しました。
 
 | ネットワーク | 静的評価 | 探索結果 |
 |---|---:|---:|
