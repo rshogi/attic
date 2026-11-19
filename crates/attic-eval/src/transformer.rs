@@ -285,6 +285,10 @@ impl Accumulator {
             Self::derive_into(src, dst, net, post_pos, delta);
             return;
         }
+        // The added columns are the reads most likely to miss: start them now, so they
+        // arrive while the threat lists are built.
+        #[cfg(feature = "sfnn_threat")]
+        prefetch_added_columns(net, delta);
         #[cfg(feature = "sfnn_threat")]
         let lists = build_lists(post_pos);
         for color in [Color::Black, Color::White] {
@@ -405,6 +409,36 @@ const FORCE_REFRESH: bool = cfg!(all(
     feature = "sfnn_threat",
     feature = "threat_force_refresh"
 ));
+
+/// Hint the cache to fetch every column `delta` adds, in either half. A pure
+/// hardware hint with no architectural effect, so it changes no value.
+#[cfg(feature = "sfnn_threat")]
+fn prefetch_added_columns(net: &NnueNetwork, delta: &MoveDelta) {
+    #[cfg(target_arch = "x86_64")]
+    for color in [Color::Black, Color::White] {
+        let Some(pd) = delta.half(color) else {
+            continue;
+        };
+        for &feature in pd.added() {
+            let base = feature as usize * HIDDEN_SIZE;
+            let Some(column) = net.ft_weights.get(base..base + HIDDEN_SIZE) else {
+                continue;
+            };
+            // One hint per 64-byte line.
+            for line in column.chunks(32) {
+                // SAFETY: `_mm_prefetch` is a hint that neither reads nor writes
+                // the pointed-to memory in any observable way and cannot fault, and
+                // `line` is a live, in-bounds part of the weights.
+                unsafe {
+                    use core::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
+                    _mm_prefetch::<_MM_HINT_T0>(line.as_ptr().cast());
+                }
+            }
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = (net, delta);
+}
 
 /// Put every row of `list` on `out`: the refresh of the threat part of a half.
 #[cfg(feature = "sfnn_threat")]
