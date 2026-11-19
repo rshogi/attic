@@ -10,7 +10,7 @@ Attic の基準は [YaneuraOu V9.96](https://github.com/yaneurao/YaneuraOu/commi
 cargo build --release -p attic --no-default-features --features <shape>,ref_check_time
 ```
 
-## V9.96 系との AVX2 照合
+## AVX2
 
 - 比較対象は Attic と YaneuraOu V9.96の検証ビルド
 - Linux AVX2、1スレッド、置換表16 MiB、`go nodes 10000`
@@ -29,6 +29,10 @@ cargo build --release -p attic --no-default-features --features <shape>,ref_chec
 | `sfnn_halfkahm2_threat_1024_15_64_8gp` | 21,884/21,884 (100%) | 20,233/20,233 (100%) |
 | `sfnn_ka2_2048_8_64_progress8x` | 21,884/21,884 (100%) | 20,233/20,233 (100%) |
 | `sfnn_ka2_4096_8_64_progress8x` | 21,884/21,884 (100%) | 20,233/20,233 (100%) |
+
+## WASM
+
+21,884局面での照合は未実施です。
 
 ## 評価関数別のチューニング
 
