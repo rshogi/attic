@@ -31,7 +31,17 @@ cargo build --release -p attic --no-default-features --features <shape>,ref_chec
 
 ## WASM
 
-21,884局面での照合は未実施です。
+| ネットワーク | 静的評価 | 探索結果 |
+|---|---:|---:|
+| `nnue_kp_256x2_32_32` | - | - |
+| `nnue_halfkp_128x2_32_32` | - | - |
+| `nnue_halfkp_256x2_32_32` | - | - |
+| `nnue_halfkp_768x2_16_64` | - | - |
+| `sfnn_halfkahm2_1024_15_64_progress8kpabs` | - | - |
+| `sfnn_halfkahm2_2304_15_64_progress8` | - | - |
+| `sfnn_halfkahm2_threat_1024_15_64_8gp` | - | - |
+| `sfnn_ka2_2048_8_64_progress8x` | - | - |
+| `sfnn_ka2_4096_8_64_progress8x` | - | - |
 
 ## 評価関数別のチューニング
 
