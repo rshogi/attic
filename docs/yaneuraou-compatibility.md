@@ -12,7 +12,7 @@ cargo build --release -p attic --no-default-features --features <shape>,ref_chec
 
 ## V9.96 系との AVX2 照合
 
-- 比較対象は Attic と YaneuraOu V9.96（`b707119b` ベース）の検証ビルド
+- 比較対象は Attic と YaneuraOu V9.96の検証ビルド
 - Linux AVX2、1スレッド、置換表16 MiB、`go nodes 10000`
 - 9ネットワーク × 21,884局面。各ネットワークの評価設定は両エンジンで統一
 
