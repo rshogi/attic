@@ -42,28 +42,32 @@ sfen +B4g1nl/2g2k3/ppnppsbpp/4r1p2/5p2P/3S2P2/PPPPPP1P1/2GS2S2/LN2KG1NL w Lrp 32
 
 ## 探索結果の照合
 
-時間、NPS、hashfull を除く `info depth` と `bestmove` を比較しました。出力が異なる行では、速度比に探索内容の違いも反映されます。
+各条件で同じ局面を探索した 10 回を実行順に照合しました。「探索出力」は、時間・NPS・hashfull を除いた全 `info depth` 行と `bestmove` 行が一致した割合です。探索木の全ノードは記録していません。
 
-| 評価関数 | 環境 | 最終ノード数 | bestmove | 探索出力全体 |
-|---|---|---:|---:|---:|
-| `nnue_kp_256x2_32_32` | Linux AVX2 | 10/10 | 10/10 | 10/10 |
-| `nnue_kp_256x2_32_32` | WASM SIMD128 | 10/10 | 10/10 | 10/10 |
-| `nnue_halfkp_128x2_32_32` | Linux AVX2 | 10/10 | 10/10 | 10/10 |
-| `nnue_halfkp_128x2_32_32` | WASM SIMD128 | 10/10 | 10/10 | 10/10 |
-| `nnue_halfkp_256x2_32_32` | Linux AVX2 | 10/10 | 10/10 | 10/10 |
-| `nnue_halfkp_256x2_32_32` | WASM SIMD128 | 10/10 | 10/10 | 10/10 |
-| `nnue_halfkp_768x2_16_64` | Linux AVX2 | 10/10 | 10/10 | 10/10 |
-| `nnue_halfkp_768x2_16_64` | WASM SIMD128 | 10/10 | 10/10 | 10/10 |
-| `sfnn_halfkahm2_1024_15_64_progress8kpabs` | Linux AVX2 | 0/10 | 10/10 | 0/10 |
-| `sfnn_halfkahm2_1024_15_64_progress8kpabs` | WASM SIMD128 | 0/10 | 8/10 | 0/10 |
-| `sfnn_halfkahm2_2304_15_64_progress8ek` | Linux AVX2 | 0/10 | 10/10 | 0/10 |
-| `sfnn_halfkahm2_2304_15_64_progress8ek` | WASM SIMD128 | 0/10 | 4/10 | 0/10 |
-| `sfnn_ka2_2048_8_64_progress8x` | Linux AVX2 | 0/10 | 10/10 | 0/10 |
-| `sfnn_ka2_2048_8_64_progress8x` | WASM SIMD128 | 0/10 | 9/10 | 0/10 |
-| `sfnn_ka2_4096_8_64_progress8x` | Linux AVX2 | 0/10 | 0/10 | 0/10 |
-| `sfnn_ka2_4096_8_64_progress8x` | WASM SIMD128 | 0/10 | 1/10 | 0/10 |
-| `sfnn_halfkahm2_threat_1024_15_64_8gp` | Linux AVX2 | 10/10 | 10/10 | 10/10 |
-| `sfnn_halfkahm2_threat_1024_15_64_8gp` | WASM SIMD128 | 10/10 | 10/10 | 10/10 |
+「最終評価値」は、最後の `info depth` 行の `score`（`cp` または `mate` とその値）が一致した割合です。探索深さや上下限のフラグが異なる場合も、報告値が同じなら一致と数えます。
+
+| ネットワーク | 環境 | 探索出力 | 最終評価値 | 最終ノード数 | bestmove |
+|---|---|---:|---:|---:|---:|
+| `nnue_kp_256x2_32_32` | Linux AVX2 | 100% (10/10) | 100% (10/10) | 100% (10/10) | 100% (10/10) |
+| `nnue_kp_256x2_32_32` | WASM SIMD128 | 100% (10/10) | 100% (10/10) | 100% (10/10) | 100% (10/10) |
+| `nnue_halfkp_128x2_32_32` | Linux AVX2 | 100% (10/10) | 100% (10/10) | 100% (10/10) | 100% (10/10) |
+| `nnue_halfkp_128x2_32_32` | WASM SIMD128 | 100% (10/10) | 100% (10/10) | 100% (10/10) | 100% (10/10) |
+| `nnue_halfkp_256x2_32_32` | Linux AVX2 | 100% (10/10) | 100% (10/10) | 100% (10/10) | 100% (10/10) |
+| `nnue_halfkp_256x2_32_32` | WASM SIMD128 | 100% (10/10) | 100% (10/10) | 100% (10/10) | 100% (10/10) |
+| `nnue_halfkp_768x2_16_64` | Linux AVX2 | 100% (10/10) | 100% (10/10) | 100% (10/10) | 100% (10/10) |
+| `nnue_halfkp_768x2_16_64` | WASM SIMD128 | 100% (10/10) | 100% (10/10) | 100% (10/10) | 100% (10/10) |
+| `sfnn_halfkahm2_1024_15_64_progress8kpabs` | Linux AVX2 | 0% (0/10) | 0% (0/10) | 0% (0/10) | 100% (10/10) |
+| `sfnn_halfkahm2_1024_15_64_progress8kpabs` | WASM SIMD128 | 0% (0/10) | 0% (0/10) | 0% (0/10) | 80% (8/10) |
+| `sfnn_halfkahm2_2304_15_64_progress8ek` | Linux AVX2 | 0% (0/10) | 0% (0/10) | 0% (0/10) | 100% (10/10) |
+| `sfnn_halfkahm2_2304_15_64_progress8ek` | WASM SIMD128 | 0% (0/10) | 0% (0/10) | 0% (0/10) | 40% (4/10) |
+| `sfnn_ka2_2048_8_64_progress8x` | Linux AVX2 | 0% (0/10) | 0% (0/10) | 0% (0/10) | 100% (10/10) |
+| `sfnn_ka2_2048_8_64_progress8x` | WASM SIMD128 | 0% (0/10) | 0% (0/10) | 0% (0/10) | 90% (9/10) |
+| `sfnn_ka2_4096_8_64_progress8x` | Linux AVX2 | 0% (0/10) | 0% (0/10) | 0% (0/10) | 0% (0/10) |
+| `sfnn_ka2_4096_8_64_progress8x` | WASM SIMD128 | 0% (0/10) | 0% (0/10) | 0% (0/10) | 10% (1/10) |
+| `sfnn_halfkahm2_threat_1024_15_64_8gp` | Linux AVX2 | 100% (10/10) | 100% (10/10) | 100% (10/10) | 100% (10/10) |
+| `sfnn_halfkahm2_threat_1024_15_64_8gp` | WASM SIMD128 | 100% (10/10) | 100% (10/10) | 100% (10/10) | 100% (10/10) |
+
+複数局面での結果は[YaneuraOu との互換性](yaneuraou-compatibility.md#v996-系との-avx2-照合)を参照してください。
 
 ## Attic 内の計測
 
