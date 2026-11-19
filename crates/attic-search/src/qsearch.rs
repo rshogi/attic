@@ -3929,7 +3929,10 @@ mod tests {
             q.stack[QSearch::si(2) - 1].current_move = prev;
             let cv2 = q.correction_value(&p, 2);
             let expected_cv2 = tuned!(12 * 7982, 14 * 13604);
-            assert_eq!(cv2, expected_cv2, "unexpected correction at ply 2 (`{sfen}`)");
+            assert_eq!(
+                cv2, expected_cv2,
+                "unexpected correction at ply 2 (`{sfen}`)"
+            );
 
             // And the corrected eval equals the uncorrected one for a spread of
             // static evals.
@@ -4515,7 +4518,10 @@ mod tests {
         //                            + (!i)*rs*206/512 + tuned!(1133, 1030), rs = red[d]*red[mn].
         q.root_delta = 1000;
         let rs = q.reductions[8] * q.reductions[4];
-        assert_eq!(q.reduction(true, 8, 4, 100), rs - 100 * tuned!(585, 769) / 1000 + tuned!(1133, 1030));
+        assert_eq!(
+            q.reduction(true, 8, 4, 100),
+            rs - 100 * tuned!(585, 769) / 1000 + tuned!(1133, 1030)
+        );
         assert_eq!(
             q.reduction(false, 8, 4, 100),
             rs - 100 * tuned!(585, 769) / 1000 + rs * tuned!(206, 407) / 512 + tuned!(1133, 1030),
@@ -4563,7 +4569,14 @@ mod tests {
         let fired_tt = fresh_tt();
         let fired_nodes = {
             let mut q = QSearch::new(&net, &fired_tt);
-            q.run_search(&mut pos(TWO_KINGS), boundary + 1, boundary + 2, 1, false, false);
+            q.run_search(
+                &mut pos(TWO_KINGS),
+                boundary + 1,
+                boundary + 2,
+                1,
+                false,
+                false,
+            );
             q.nodes
         };
         assert_eq!(fired_nodes, 0, "razoring returns qsearch with no do_move");

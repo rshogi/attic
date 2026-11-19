@@ -848,7 +848,8 @@ mod tests {
 
         let depth = 6;
         // bestMove != ttMove here (ttMove is none), so the +353 term is 0.
-        let bonus = (tuned!(128, 263) * depth - tuned!(77, 45)).min(tuned!(1529, 1566)) + stack[ss - 1].stat_score / 32;
+        let bonus = (tuned!(128, 263) * depth - tuned!(77, 45)).min(tuned!(1529, 1566))
+            + stack[ss - 1].stat_score / 32;
         let pre = hist.capture.get(rook, to, captured) as i16;
 
         update_all_stats(
@@ -889,7 +890,9 @@ mod tests {
 
         let depth = 5;
         let tt_move = best; // bestMove == ttMove ⇒ +353 in the bonus.
-        let bonus = (tuned!(128, 263) * depth - tuned!(77, 45)).min(tuned!(1529, 1566)) + tuned!(353, 711) + stack[ss - 1].stat_score / 32;
+        let bonus = (tuned!(128, 263) * depth - tuned!(77, 45)).min(tuned!(1529, 1566))
+            + tuned!(353, 711)
+            + stack[ss - 1].stat_score / 32;
         let malus = (tuned!(882, 709) * depth - tuned!(204, 205)).min(tuned!(2122, 2460));
 
         let us = pos.side_to_move();
@@ -1082,7 +1085,11 @@ mod tests {
         assert_eq!(
             hist.shared
                 .correction_get(pos2.minor_piece_key(), us, CorrChannel::Minor),
-            apply_gravity(minor_pre, bonus * tuned!(153, 189) / 128, CORRECTION_HISTORY_D) as i32,
+            apply_gravity(
+                minor_pre,
+                bonus * tuned!(153, 189) / 128,
+                CORRECTION_HISTORY_D
+            ) as i32,
         );
         assert_eq!(
             hist.shared.correction_get(
@@ -1090,7 +1097,11 @@ mod tests {
                 us,
                 CorrChannel::NonPawnWhite
             ),
-            apply_gravity(wnp_pre, bonus * tuned!(187, 147) / 128, CORRECTION_HISTORY_D) as i32,
+            apply_gravity(
+                wnp_pre,
+                bonus * tuned!(187, 147) / 128,
+                CORRECTION_HISTORY_D
+            ) as i32,
         );
         assert_eq!(
             hist.shared.correction_get(
@@ -1098,12 +1109,20 @@ mod tests {
                 us,
                 CorrChannel::NonPawnBlack
             ),
-            apply_gravity(bnp_pre, bonus * tuned!(187, 147) / 128, CORRECTION_HISTORY_D) as i32,
+            apply_gravity(
+                bnp_pre,
+                bonus * tuned!(187, 147) / 128,
+                CORRECTION_HISTORY_D
+            ) as i32,
         );
         // The two continuation-correction planes are the same plane here, so the
         // 126/128 write then the 63/128 write compose.
         let after_126 = apply_gravity(cc_pre, bonus * tuned!(126, 120) / 128, CORRECTION_HISTORY_D);
-        let after_63 = apply_gravity(after_126, bonus * tuned!(63, 61) / 128, CORRECTION_HISTORY_D);
+        let after_63 = apply_gravity(
+            after_126,
+            bonus * tuned!(63, 61) / 128,
+            CORRECTION_HISTORY_D,
+        );
         assert_eq!(
             hist.continuation_correction.get_at(plane, bp, to),
             after_63 as i32,

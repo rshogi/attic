@@ -1595,7 +1595,9 @@ fn emit_terminal<W: Write>(writer: &Arc<Mutex<W>>, mv: &str, mate: i32) {
     let mut guard = writer.lock().unwrap_or_else(|e| e.into_inner());
     let mut output = Formatter::new(&mut *guard);
     if cfg!(feature = "sfnn_halfkahm2_2304_15_64_progress8") {
-        let _ = output.info(&format!("depth 0 multipv 1 score mate {mate} nodes 0 pv {mv}"));
+        let _ = output.info(&format!(
+            "depth 0 multipv 1 score mate {mate} nodes 0 pv {mv}"
+        ));
     }
     let _ = output.bestmove(mv);
 }
