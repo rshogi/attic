@@ -5,6 +5,12 @@
 - 同一局面を各ビルドで10回計測
 - 評価ファイル読み込み後、`go nodes 1000000` から `bestmove` までを計測
 
+計測局面
+
+```text
+sfen +B4g1nl/2g2k3/ppnppsbpp/4r1p2/5p2P/3S2P2/PPPPPP1P1/2GS2S2/LN2KG1NL w Lrp 32
+```
+
 ## 探索速度比
 
 Linux AVX2 と WASM SIMD128 の測定結果です。各ネットワークで **YaneuraOu AVX2 を 1.00×** とし、その平均探索時間を各ビルドの平均探索時間で割っています。
@@ -36,12 +42,6 @@ NPS は、探索した実ノード数の合計を経過時間の合計で割っ�
 Attic は Rust release の AVX2 ビルドと単一スレッド WASI ビルドを使いました。YaneuraOu は V9.96 系の AVX2 ビルドと Emscripten ビルドを使いました。WASM は Node.js 26.5.0 で実行しました。
 
 高速化を確認したネットワークでは、累積値の遅延更新や再利用を有効にしたビルドを使っています。Relaxed SIMD は対応ビルドで有効にしました。同時に別のコアで局面照合を実行していました。
-
-計測局面
-
-```text
-sfen +B4g1nl/2g2k3/ppnppsbpp/4r1p2/5p2P/3S2P2/PPPPPP1P1/2GS2S2/LN2KG1NL w Lrp 32
-```
 
 ## 互換性
 
