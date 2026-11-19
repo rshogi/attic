@@ -12,13 +12,11 @@ cargo build --release -p attic --no-default-features --features <shape>,ref_chec
 
 ## V9.96 系との AVX2 照合
 
-無効局面への応答を揃えた Attic と YaneuraOu V9.96（`b707119b` ベース）の検証ビルドで、9ネットワークを各21,884局面で照合しました。条件は Linux AVX2、1スレッド、置換表16 MiB、`go nodes 10000` です。
+- 比較対象は Attic と YaneuraOu V9.96（`b707119b` ベース）の検証ビルド
+- Linux AVX2、1スレッド、置換表16 MiB、`go nodes 10000`
+- 9ネットワーク × 21,884局面。各ネットワークの評価設定は両エンジンで統一
 
-各ネットワークの静的評価は全21,884局面で一致しました。探索した20,233局面では、`time`、`nps`、`hashfull` を除いた全 `info depth` 行と `bestmove` が一致しました。最後に報告された評価値（`score`）も全件一致しました。
-
-残りの1,651局面は、開始時点で手番側が相手玉に王手をかけている無効局面です。両エンジンとも理由を `info string` で通知し、探索や詰みの評価を行わずに `bestmove resign` を返しました。
-
-`sfnn_halfkahm2_2304_15_64_progress8` は進行度による8バケット（`progress8kpabs`）と `FV_SCALE=28`、`sfnn_halfkahm2_threat_1024_15_64_8gp` は `FV_SCALE=26` で照合しました。
+探索は `time`、`nps`、`hashfull` を除く全 `info depth` 行と `bestmove` を比較しました。無効局面では両エンジンが `info string` と `bestmove resign` を返しました。
 
 | ネットワーク | 静的評価 | 探索結果 | 無効局面の応答 |
 |---|---:|---:|---:|
