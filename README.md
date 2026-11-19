@@ -18,9 +18,9 @@ cargo build --release -p attic --no-default-features --features nnue_kp_256x2_32
 - `usi` はオプション一覧を返します。`setoption` で設定し、`isready` で評価関数や定跡を読み込みます。
 - `position` で局面を設定し、`go` で探索します。`bench` で NPS を計測できます。
 
-### つようら王11 Micro / Mini
+### K-A2 ネットワーク
 
-Micro は `sfnn_ka2_2048_8_64_progress8x`、Mini は `sfnn_ka2_4096_8_64_progress8x` でビルドします。
+対応する feature は `sfnn_ka2_2048_8_64_progress8x` と `sfnn_ka2_4096_8_64_progress8x` です。
 [配布](https://yaneuraou.yaneu.com/2026/10/14/tsuyou-11-mini-micro-released-under-mit-license/)の `nn.bin` と `progress.bin` を同じ `EvalDir` に置き、USI の `FV_SCALE` を 24 に設定してください。
 どちらも K-A2 特徴量を使い、進行度だけで 8 つの層スタックを選びます。
 
