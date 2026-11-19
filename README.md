@@ -3,7 +3,7 @@
 Rust 製の [YaneuraOu](https://github.com/yaneurao/YaneuraOu) 互換探索エンジンです。ベースは [V9.96](https://github.com/yaneurao/YaneuraOu/commit/b707119bbeeeb1972806c3371545d6056b30e061) で、`usi` の `id name` は `Attic 9.96git` です。
 
 - [パフォーマンス](https://github.com/rshogi/attic/blob/master/docs/performance.md)
-- [YaneuraOu との互換性](https://github.com/rshogi/attic/blob/master/docs/yaneuraou-compatibility.md)
+- [YaneuraOu との互換性](docs/compatibility.md)
 
 ## ビルドと実行
 

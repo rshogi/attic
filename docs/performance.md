@@ -42,4 +42,4 @@ sfen +B4g1nl/2g2k3/ppnppsbpp/4r1p2/5p2P/3S2P2/PPPPPP1P1/2GS2S2/LN2KG1NL w Lrp 32
 
 ## 互換性
 
-[21,884局面の照合結果](yaneuraou-compatibility.md#avx2)
+[21,884局面の照合結果](compatibility.md#avx2)
