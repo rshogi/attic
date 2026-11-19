@@ -30,10 +30,10 @@ cargo build --release -p attic --no-default-features --features <shape>,ref_chec
 | `sfnn_ka2_2048_8_64_progress8x` | 21,884/21,884 (100%) | 20,233/20,233 (100%) | 1,651/1,651 (100%) |
 | `sfnn_ka2_4096_8_64_progress8x` | 21,884/21,884 (100%) | 20,233/20,233 (100%) | 1,651/1,651 (100%) |
 
-## ネットワーク別の最適化
+## ネットワーク別のパラメータ調整
 
 - `sfnn_halfkahm2_2304_15_64_progress8` の配布版互換ブランチでは、探索係数、指し手の採点、千日手判定、置換表を配布版に合わせています。上の照合表は V9.96 系での結果です。 [配布版向けの調整（PR #66）](https://github.com/rshogi/attic/pull/66)
-- `sfnn_halfkahm2_threat_1024_15_64_8gp` では、threat 特徴量の差分更新と AVX2 カーネルで評価を高速化し、専用の層スタック選択と境界での補間を再現しています。 [評価実装と検証結果（PR #51）](https://github.com/rshogi/attic/pull/51)
+- `sfnn_halfkahm2_threat_1024_15_64_8gp` では、進行度による層スタックの選択と境界での補間、`FV_SCALE` を配布版に合わせています。 [配布ページ（BOOTH）](https://yfamate.booth.pm/items/9158204) · [評価設定と検証結果（PR #51）](https://github.com/rshogi/attic/pull/51)
 
 ## `sfnn_halfkahm2_1024_15_64_progress8ek`
 
