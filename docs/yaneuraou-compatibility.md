@@ -30,19 +30,7 @@ cargo build --release -p attic --no-default-features --features <shape>,ref_chec
 | `sfnn_ka2_2048_8_64_progress8x` | 21,884/21,884 (100%) | 20,233/20,233 (100%) | 1,651/1,651 (100%) |
 | `sfnn_ka2_4096_8_64_progress8x` | 21,884/21,884 (100%) | 20,233/20,233 (100%) | 1,651/1,651 (100%) |
 
-## ネットワーク別のパラメータ調整
+## 評価関数別のパラメータ調整
 
-- `sfnn_halfkahm2_2304_15_64_progress8` の配布版互換ブランチでは、探索係数、指し手の採点、千日手判定、置換表を配布版に合わせています。上の照合表は V9.96 系での結果です。 [配布ページ（GitHub Releases）](https://github.com/keinoda/YaneuraOu/releases/tag/nagisa-v4) · [配布版向けの調整（PR #66）](https://github.com/rshogi/attic/pull/66)
-- `sfnn_halfkahm2_threat_1024_15_64_8gp` では、進行度による層スタックの選択と境界での補間、`FV_SCALE` を配布版に合わせています。 [配布ページ（BOOTH）](https://yfamate.booth.pm/items/9158204) · [評価設定と検証結果（PR #51）](https://github.com/rshogi/attic/pull/51)
-
-## `sfnn_halfkahm2_1024_15_64_progress8ek`
-
-この構成は `sfnn_halfkahm2_1024_15_64_progress8kpabs` とファイル形式や進行度係数が共通で、層スタックの選択規則が異なります。先手玉が1〜5段、後手玉が5〜9段にいる相入玉局面は、`sfnn_halfkahm2_2304_15_64_progress8ek` と同じく9番目の層スタックを使います。
-
-モデルファイルから学習時の選択規則は判別できません。Attic の選択規則はビルド時に決まり、`eval_options.txt` に `LS_BUCKET_MODE` がある場合は警告を出してその設定を無視します。
-
-## `sfnn_halfkahm2_threat_1024_15_64_8gp`
-
-HalfKA_hm2 の特徴量に、盤上の駒どうしの利き（threat 特徴量）を足します。成り駒を含む玉以外の駒がすべて攻め手になり、飛び駒は最初に当たる駒で止まります。層スタックは 8 つで、手駒と敵陣の駒から整数で出す進行度と、玉の位置と守りの駒の数から選びます。境界の近くでは、隣の層スタックとの内分をとります。`FV_SCALE` の既定値は 26 で、評価値は ±31753 に収めます。`progress.bin` は使いません。
-
-読み込めるのは、ヘッダハッシュが `0x684f7658`、アーキテクチャ文字列が空、threat プロファイルが 23 のファイルです。条件を満たさない場合は、理由を出力して読み込みを中止します。
+- **NAGISA V4**（`sfnn_halfkahm2_2304_15_64_progress8`）の専用互換ブランチでは、探索係数、指し手の採点、千日手判定、置換表を NAGISA V4 の公開実行ファイルに合わせています。上の表は YaneuraOu V9.96 との照合結果です。 [NAGISA V4](https://github.com/keinoda/YaneuraOu/releases/tag/nagisa-v4) · [調整内容（PR #66）](https://github.com/rshogi/attic/pull/66)
+- **Sirius**（`sfnn_halfkahm2_threat_1024_15_64_8gp`）では、層スタックの選択と境界での補間、`FV_SCALE` を Sirius 本体に合わせています。 [Sirius](https://yfamate.booth.pm/items/9158204) · [調整内容（PR #51）](https://github.com/rshogi/attic/pull/51)
