@@ -147,6 +147,13 @@ pub fn evaluate_with(net: &NnueNetwork, acc: &Accumulator, pos: &Position) -> i3
     let choice = crate::gp::choose(pos);
     debug_assert!(choice.stack < net.stacks.len());
 
+    if choice.blend.is_none()
+        && let Some(raw) = one_stack_from_accumulator(acc, pos, &net.stacks[choice.stack])
+    {
+        // The FV_SCALE consumption site of the fused path.
+        return (raw / fv_scale()).clamp(-SCORE_LIMIT, SCORE_LIMIT);
+    }
+
     let mut transformed = [0u8; FT_OUTPUT_DIMS];
     acc.output_transform(pos.side_to_move(), &mut transformed);
 
@@ -155,8 +162,49 @@ pub fn evaluate_with(net: &NnueNetwork, acc: &Accumulator, pos: &Position) -> i3
         let raw_other = per_layer_flow(&transformed, &net.stacks[other]);
         raw = crate::gp::blend(raw, raw_other, weight);
     }
-    // The single FV_SCALE consumption site.
+    // The FV_SCALE consumption site of the buffered path.
     (raw / fv_scale()).clamp(-SCORE_LIMIT, SCORE_LIMIT)
+}
+
+/// One stack's raw output straight from the accumulator, on AVX-512 VNNI: the
+/// output transform made in registers inside fc_0 (Cyfamate's fused rows), no
+/// transformed buffer. Bit for bit [`per_layer_flow`] on that buffer. A blend
+/// zone reads the buffer twice, so it keeps the buffered path.
+#[cfg(all(
+    feature = "sfnn_threat",
+    target_arch = "x86_64",
+    target_feature = "avx512f",
+    target_feature = "avx512bw",
+    target_feature = "avx512vnni"
+))]
+#[inline]
+fn one_stack_from_accumulator(
+    acc: &Accumulator,
+    pos: &Position,
+    stack: &NetworkStack,
+) -> Option<i32> {
+    use crate::simd::avx512_packed_tail::fc_chain_rows;
+
+    let (own, other) = acc.halves(pos.side_to_move());
+    // SAFETY: as in `per_layer_flow`: a build enabling avx512f + avx512bw +
+    // avx512vnni only runs on a host providing them. `fc_chain_rows` checks
+    // the lengths it reads by pointer.
+    Some(unsafe { fc_chain_rows(own, other, &packed_stack(stack)) })
+}
+
+/// Every other threat build: no fused path, the buffered one runs.
+#[cfg(all(
+    feature = "sfnn_threat",
+    not(all(
+        target_arch = "x86_64",
+        target_feature = "avx512f",
+        target_feature = "avx512bw",
+        target_feature = "avx512vnni"
+    ))
+))]
+#[inline]
+fn one_stack_from_accumulator(_: &Accumulator, _: &Position, _: &NetworkStack) -> Option<i32> {
+    None
 }
 
 /// The largest score magnitude Sirius lets the network produce.
@@ -199,39 +247,55 @@ fn per_layer_flow(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> 
     }
 }
 
-/// Layer-stack forward pass, a 64-wide build (the 1024s and the 2304) with
-/// AVX-512 F + BW + VNNI: the reference's packed tail, on the group-major copies
-/// of the weights. Bit for bit [`per_layer_flow_unfused`].
+/// Layer-stack forward pass, a 64-wide build (the 1024s, the 2304 and Cyfamate's
+/// threat shape) with AVX-512 F + BW + VNNI: the reference's packed tail, on the
+/// group-major copies of the weights. Bit for bit [`per_layer_flow_unfused`].
 #[cfg(all(
-    feature = "sfnn_progress",
+    any(feature = "sfnn_progress", feature = "sfnn_threat"),
     target_arch = "x86_64",
     target_feature = "avx512f",
     target_feature = "avx512bw",
     target_feature = "avx512vnni"
 ))]
 fn per_layer_flow(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> i32 {
-    use crate::simd::avx512_packed_tail::{Stack, fc_chain};
+    use crate::simd::avx512_packed_tail::fc_chain;
 
-    let packed = Stack {
+    // SAFETY: this arm is compiled only into a build enabling avx512f +
+    // avx512bw + avx512vnni, exactly the features `fc_chain` names, and such a
+    // build only ever runs on a host providing them. `fc_chain` checks the
+    // lengths it reads by pointer.
+    unsafe { fc_chain(transformed, &packed_stack(stack)) }
+}
+
+/// `stack`'s group-major weights and its biases, as the packed tail reads them.
+#[cfg(all(
+    any(feature = "sfnn_progress", feature = "sfnn_threat"),
+    target_arch = "x86_64",
+    target_feature = "avx512f",
+    target_feature = "avx512bw",
+    target_feature = "avx512vnni"
+))]
+#[inline]
+fn packed_stack(stack: &NetworkStack) -> crate::simd::avx512_packed_tail::Stack<'_> {
+    crate::simd::avx512_packed_tail::Stack {
         fc_0_biases: &stack.fc_0_biases,
         fc_0_grouped: &stack.grouped.fc_0,
         fc_1_biases: &stack.fc_1_biases,
         fc_1_grouped: &stack.grouped.fc_1,
         fc_2_biases: &stack.fc_2_biases,
         fc_2_packed: &stack.grouped.fc_2,
-    };
-    // SAFETY: this arm is compiled only into a build enabling avx512f +
-    // avx512bw + avx512vnni, exactly the features `fc_chain` names, and such a
-    // build only ever runs on a host providing them. `fc_chain` checks the
-    // lengths it reads by pointer.
-    unsafe { fc_chain(transformed, &packed) }
+    }
 }
 
 /// Layer-stack forward pass, every other SFNN build.
 #[cfg(all(
     feature = "sfnn",
     not(all(
-        any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_progress"),
+        any(
+            feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+            feature = "sfnn_progress",
+            feature = "sfnn_threat"
+        ),
         target_arch = "x86_64",
         target_feature = "avx512f",
         target_feature = "avx512bw",

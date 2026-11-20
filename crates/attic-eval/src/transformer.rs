@@ -372,6 +372,22 @@ impl Accumulator {
         post_ft_kernel::ewm_one_perspective_file_scale(other_half, &mut out[HALF..]);
     }
 
+    /// The side to move's half and the other side's, the two the output transform
+    /// reads, for the threat shape's chain that makes the transform itself.
+    #[cfg(all(
+        feature = "sfnn_threat",
+        target_arch = "x86_64",
+        target_feature = "avx512f",
+        target_feature = "avx512bw",
+        target_feature = "avx512vnni"
+    ))]
+    pub(crate) fn halves(&self, stm: Color) -> (&[i16], &[i16]) {
+        (
+            &self.perspectives[stm.index()],
+            &self.perspectives[stm.flip().index()],
+        )
+    }
+
     /// The standard shapes' output transform: clip each accumulator to a byte
     /// and lay the two perspectives side by side.
     ///
