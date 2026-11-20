@@ -1,6 +1,6 @@
-//! The dense chain of the 64-wide SFNN shapes (the 1024s and NAGISA V4's 2304)
-//! on AVX-512 VNNI: the reference's `kUsePackedTail` path, which it takes for
-//! exactly these shapes (`USE_AVX512 && kHidden2Dims == 64`).
+//! The dense chain of the 64-wide SFNN shapes (the 1024s, NAGISA V4's 2304 and
+//! Cyfamate's threat shape) on AVX-512 VNNI: the reference's `kUsePackedTail`
+//! path, which it takes for exactly these shapes (`USE_AVX512 && kHidden2Dims == 64`).
 //!
 //! [`super::avx512_post_ft::fused_fc_chain`] cannot serve them: it takes fc_1's
 //! and fc_2's inputs as one 32-byte register, and fc_2 reads 64 here. The
@@ -13,6 +13,11 @@
 //!   one `vpdpbusd`. The groups that are zero, which the element-wise multiply
 //!   leaves many of, are listed out sixteen at a time and never loaded. Their
 //!   product is zero, so skipping them changes nothing.
+//!   Cyfamate's threat shape leaves few of them (about a fifth of the groups
+//!   on its net), so its fc_0 is dense instead, as Cyfamate runs it: sixteen
+//!   registers, one per output, each 64-byte chunk of the input one load and
+//!   sixteen `vpdpbusd`s against chunk-major weights, summed across lanes at
+//!   the end ([`fc_0_dense`]).
 //! - **fc_1** (30 → 64): four registers, the eight input groups broadcast in
 //!   turn, then the clipped ReLU on all 64 outputs as two `packs`, a shift and a
 //!   `max`, left in a register.
@@ -29,10 +34,11 @@ use std::arch::x86_64::{
     __m512i, _mm512_add_epi32, _mm512_cmpneq_epi32_mask, _mm512_dpbusd_epi32, _mm512_loadu_si512,
     _mm512_maskz_compress_epi32, _mm512_max_epi8, _mm512_packs_epi16, _mm512_packs_epi32,
     _mm512_reduce_add_epi32, _mm512_set1_epi32, _mm512_setr_epi32, _mm512_setzero_si512,
-    _mm512_srai_epi16, _mm512_storeu_si512,
+    _mm512_shuffle_i32x4, _mm512_srai_epi16, _mm512_storeu_si512, _mm512_unpackhi_epi32,
+    _mm512_unpackhi_epi64, _mm512_unpacklo_epi32, _mm512_unpacklo_epi64,
 };
 
-use crate::simd::group_layout::GROUP;
+use crate::simd::group_layout::{CHUNK, GROUP};
 use crate::simd::scalar_post_ft;
 use crate::types::{
     FC_0_INPUT_DIMS, FC_0_OUTPUT_DIMS, FC_0_PADDED_INPUT_DIMS, FC_1_OUTPUT_DIMS,
@@ -52,6 +58,7 @@ const _: () = {
     assert!(FC_0_OUTPUT_DIMS == I32_LANES);
     assert!(FC_0_INPUT_DIMS == FC_0_PADDED_INPUT_DIMS);
     assert!(FC_0_INPUT_DIMS.is_multiple_of(GROUP * GROUPS_PER_MASK));
+    assert!(FC_0_INPUT_DIMS.is_multiple_of(CHUNK));
     assert!(FC_1_OUTPUT_DIMS == 4 * I32_LANES);
     assert!(FC_1_PADDED_INPUT_DIMS == 32);
     assert!(2 * HIDDEN1_DIMS <= FC_1_PADDED_INPUT_DIMS);
@@ -63,7 +70,7 @@ const _: () = {
 /// `NetworkStack` holds them.
 pub struct Stack<'a> {
     pub fc_0_biases: &'a [i32],
-    /// fc_0's weights, [`by_group`](super::group_layout::by_group).
+    /// fc_0's weights, [`fc_0_for_chain`](super::group_layout::fc_0_for_chain).
     pub fc_0_grouped: &'a [i8],
     pub fc_1_biases: &'a [i32],
     /// fc_1's weights, [`by_group`](super::group_layout::by_group).
@@ -96,7 +103,13 @@ pub unsafe fn fc_chain(transformed: &[u8; FC_0_INPUT_DIMS], stack: &Stack<'_>) -
 
     // SAFETY: the target_feature grant covers the callees; the lengths are
     // asserted above.
-    let fc_0_out = unsafe { fc_0(transformed, stack.fc_0_biases, stack.fc_0_grouped) };
+    let fc_0_out = unsafe {
+        if cfg!(feature = "sfnn_threat") {
+            fc_0_dense(transformed, stack.fc_0_biases, stack.fc_0_grouped)
+        } else {
+            fc_0(transformed, stack.fc_0_biases, stack.fc_0_grouped)
+        }
+    };
 
     // fc_1's input: [SqrClippedReLU(15) | ClippedReLU(15) | 0, 0], the 16th
     // fc_0 output being the shortcut. Fifteen lanes are below the width the
@@ -194,6 +207,91 @@ unsafe fn fc_0(
     // SAFETY: `out` is 16 `i32`, one register.
     unsafe { _mm512_storeu_si512(out.as_mut_ptr().cast::<__m512i>(), sum) };
     out
+}
+
+/// fc_0 over every input chunk, for the shape whose input has few zero groups.
+///
+/// One register per output. Each 64-byte chunk of the input is loaded once and
+/// goes into all sixteen with one `vpdpbusd` each against that output's 64
+/// weights for the chunk, so the sixteen chains run side by side and no step
+/// waits on the one before. A zero group adds zero, so leaving none out
+/// changes nothing; [`sum_lanes`] then folds each register to its output, and
+/// `i32` addition wraps and commutes, so the order changes no bit either.
+///
+/// # Safety
+/// The CPU must support `avx512f`, `avx512bw` and `avx512vnni`; `biases` must
+/// be 16 long and `chunked` `16 * FC_0_PADDED_INPUT_DIMS`, laid out
+/// [`by_chunk`](super::group_layout::by_chunk).
+#[inline]
+#[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
+unsafe fn fc_0_dense(
+    input: &[u8; FC_0_INPUT_DIMS],
+    biases: &[i32],
+    chunked: &[i8],
+) -> [i32; FC_0_OUTPUT_DIMS] {
+    let in_ptr = input.as_ptr();
+    let w_ptr = chunked.as_ptr();
+    let mut acc = [_mm512_setzero_si512(); FC_0_OUTPUT_DIMS];
+    for c in 0..FC_0_INPUT_DIMS / CHUNK {
+        // SAFETY: chunk `c` is inside the input, and its sixteen weight rows,
+        // `(c * 16 + o) * 64 ..` for `o < 16`, inside the `16 * FC_0_INPUT_DIMS`
+        // of `chunked`.
+        unsafe {
+            let x = _mm512_loadu_si512(in_ptr.add(c * CHUNK).cast::<__m512i>());
+            for (o, a) in acc.iter_mut().enumerate() {
+                let w = _mm512_loadu_si512(
+                    w_ptr
+                        .add((c * FC_0_OUTPUT_DIMS + o) * CHUNK)
+                        .cast::<__m512i>(),
+                );
+                *a = _mm512_dpbusd_epi32(*a, x, w);
+            }
+        }
+    }
+    // SAFETY: `biases` is 16 `i32`, one register; `out` the same.
+    unsafe {
+        let sum = _mm512_add_epi32(
+            sum_lanes(&acc),
+            _mm512_loadu_si512(biases.as_ptr().cast::<__m512i>()),
+        );
+        let mut out = [0i32; FC_0_OUTPUT_DIMS];
+        _mm512_storeu_si512(out.as_mut_ptr().cast::<__m512i>(), sum);
+        out
+    }
+}
+
+/// One register whose `i32` lane `o` is the sum of the sixteen lanes of
+/// `acc[o]`.
+///
+/// Three rounds pair the registers up and add, each halving their count:
+/// `unpack` of 32-bit then of 64-bit lanes leaves every 128-bit lane holding
+/// four outputs' partial sums, then two rounds of 128-bit shuffles bring the
+/// four lanes of each output together.
+#[inline]
+#[target_feature(enable = "avx512f")]
+fn sum_lanes(acc: &[__m512i; FC_0_OUTPUT_DIMS]) -> __m512i {
+    let mut b = [_mm512_setzero_si512(); 8];
+    for (i, r) in b.iter_mut().enumerate() {
+        let (x, y) = (acc[2 * i], acc[2 * i + 1]);
+        *r = _mm512_add_epi32(_mm512_unpacklo_epi32(x, y), _mm512_unpackhi_epi32(x, y));
+    }
+    let mut c = [_mm512_setzero_si512(); 4];
+    for (i, r) in c.iter_mut().enumerate() {
+        let (x, y) = (b[2 * i], b[2 * i + 1]);
+        *r = _mm512_add_epi32(_mm512_unpacklo_epi64(x, y), _mm512_unpackhi_epi64(x, y));
+    }
+    let d = [pair_lanes_128(c[0], c[1]), pair_lanes_128(c[2], c[3])];
+    pair_lanes_128(d[0], d[1])
+}
+
+/// 128-bit lanes 0 and 2 of `a` then of `b`, plus lanes 1 and 3 of each.
+#[inline]
+#[target_feature(enable = "avx512f")]
+fn pair_lanes_128(a: __m512i, b: __m512i) -> __m512i {
+    _mm512_add_epi32(
+        _mm512_shuffle_i32x4::<0x88>(a, b),
+        _mm512_shuffle_i32x4::<0xDD>(a, b),
+    )
 }
 
 /// `acc` plus input group `g` times its sixteen outputs' weights.
@@ -299,7 +397,7 @@ unsafe fn fc_2(ac_1: __m512i, bias: i32, packed: &[i8]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::simd::group_layout::{by_group, fc_2_packed};
+    use crate::simd::group_layout::{by_chunk, by_group, fc_0_for_chain, fc_2_packed};
 
     macro_rules! require_vnni {
         () => {
@@ -333,7 +431,7 @@ mod tests {
     impl RowMajor {
         fn grouped(&self) -> Grouped {
             let mut fc_0 = vec![0i8; self.fc_0_weights.len()];
-            by_group(
+            fc_0_for_chain(
                 &self.fc_0_weights,
                 FC_0_OUTPUT_DIMS,
                 FC_0_PADDED_INPUT_DIMS,
@@ -480,6 +578,57 @@ mod tests {
                     row.scalar(&t),
                     "round {round}, {zeros} per mille zeros"
                 );
+            }
+        }
+    }
+
+    /// Both forms of fc_0 against the scalar one, whichever the build's shape
+    /// runs, from inputs with no zero group to inputs of nothing else.
+    #[test]
+    fn dense_and_sparse_fc_0_match_the_scalar_affine() {
+        require_vnni!();
+        let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+        for round in 0..32 {
+            let bias = [100_000i64, i32::MAX as i64][round % 2];
+            let row = random_stack(&mut rng, |r| r.next() as i8, bias);
+            let mut grouped = vec![0i8; row.fc_0_weights.len()];
+            by_group(
+                &row.fc_0_weights,
+                FC_0_OUTPUT_DIMS,
+                FC_0_PADDED_INPUT_DIMS,
+                &mut grouped,
+            );
+            let mut chunked = vec![0i8; row.fc_0_weights.len()];
+            by_chunk(
+                &row.fc_0_weights,
+                FC_0_OUTPUT_DIMS,
+                FC_0_PADDED_INPUT_DIMS,
+                &mut chunked,
+            );
+            for zeros in [0u64, 200, 800, 1000] {
+                let t = random_input(&mut rng, zeros);
+                let mut want = [0i32; FC_0_OUTPUT_DIMS];
+                scalar_post_ft::affine(
+                    &mut want,
+                    &row.fc_0_biases,
+                    &row.fc_0_weights,
+                    &t,
+                    FC_0_INPUT_DIMS,
+                    FC_0_PADDED_INPUT_DIMS,
+                );
+                // SAFETY: guarded by `require_vnni!`; the slices are the sizes
+                // both name.
+                let (sparse, dense) = unsafe {
+                    (
+                        fc_0(&t, &row.fc_0_biases, &grouped),
+                        fc_0_dense(&t, &row.fc_0_biases, &chunked),
+                    )
+                };
+                assert_eq!(
+                    sparse, want,
+                    "sparse, round {round}, {zeros} per mille zeros"
+                );
+                assert_eq!(dense, want, "dense, round {round}, {zeros} per mille zeros");
             }
         }
     }

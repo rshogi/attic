@@ -29,15 +29,52 @@ pub const GROUP: usize = 4;
 /// Panics unless `padded_in` is a multiple of 4 and both slices are
 /// `rows * padded_in` long.
 pub fn by_group(weights: &[i8], rows: usize, padded_in: usize, out: &mut [i8]) {
+    by_block(weights, rows, padded_in, GROUP, out);
+}
+
+/// Input bytes in one 512-bit register: the block the dense fc_0 of
+/// Cyfamate's threat shape reads its input and its weights in.
+pub const CHUNK: usize = 64;
+
+/// Copy row-major `weights` into `out` chunk by chunk of [`CHUNK`] inputs:
+/// `out[(i / 64) * rows * 64 + o * 64 + i % 64] = weights[o * padded_in + i]`.
+///
+/// Chunk `c` is then `rows` registers in a row, register `o` holding output
+/// `o`'s weights for inputs `64c..64c + 64`: what one `vpdpbusd` multiplies
+/// chunk `c` of the input by for that output.
+///
+/// # Panics
+/// Panics unless `padded_in` is a multiple of 64 and both slices are
+/// `rows * padded_in` long.
+pub fn by_chunk(weights: &[i8], rows: usize, padded_in: usize, out: &mut [i8]) {
+    by_block(weights, rows, padded_in, CHUNK, out);
+}
+
+/// fc_0's weights in the order the AVX-512 chain reads them: [`by_chunk`] for
+/// Cyfamate's threat shape, whose fc_0 runs dense, [`by_group`] for the shapes
+/// whose fc_0 skips the zero groups of its input.
+///
+/// # Panics
+/// As the layout it picks.
+pub fn fc_0_for_chain(weights: &[i8], rows: usize, padded_in: usize, out: &mut [i8]) {
+    if cfg!(feature = "sfnn_threat") {
+        by_chunk(weights, rows, padded_in, out);
+    } else {
+        by_group(weights, rows, padded_in, out);
+    }
+}
+
+/// `out[(i / width) * rows * width + o * width + i % width] = weights[o * padded_in + i]`.
+fn by_block(weights: &[i8], rows: usize, padded_in: usize, width: usize, out: &mut [i8]) {
     assert!(
-        padded_in.is_multiple_of(GROUP),
-        "padded_in must be whole groups"
+        padded_in.is_multiple_of(width),
+        "padded_in must be whole blocks of {width}"
     );
     assert_eq!(weights.len(), rows * padded_in);
     assert_eq!(out.len(), rows * padded_in);
     for o in 0..rows {
         for i in 0..padded_in {
-            out[(i / GROUP) * rows * GROUP + o * GROUP + i % GROUP] = weights[o * padded_in + i];
+            out[(i / width) * rows * width + o * width + i % width] = weights[o * padded_in + i];
         }
     }
 }
@@ -99,6 +136,24 @@ mod tests {
         a.sort_unstable();
         b.sort_unstable();
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn by_chunk_puts_each_output_s_sixty_four_weights_of_a_chunk_in_one_row() {
+        let (rows, padded_in) = (16, 256);
+        let weights: Vec<i8> = (0..rows * padded_in).map(|k| (k % 251) as i8).collect();
+        let mut out = vec![0i8; weights.len()];
+        by_chunk(&weights, rows, padded_in, &mut out);
+        for c in 0..padded_in / CHUNK {
+            let block = &out[c * rows * CHUNK..][..rows * CHUNK];
+            for o in 0..rows {
+                assert_eq!(
+                    &block[o * CHUNK..][..CHUNK],
+                    &weights[o * padded_in + c * CHUNK..][..CHUNK],
+                    "chunk {c}, output {o}"
+                );
+            }
+        }
     }
 
     /// The order is the one two rounds of `packs` produce: lane `L` of

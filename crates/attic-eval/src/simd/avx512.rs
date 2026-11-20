@@ -12,6 +12,9 @@ use std::arch::x86_64::{
     __m512i, _mm512_add_epi16, _mm512_loadu_si512, _mm512_storeu_si512, _mm512_sub_epi16,
 };
 
+#[cfg(feature = "sfnn_threat")]
+use std::arch::x86_64::{__m256i, _mm256_loadu_si256, _mm512_cvtepi8_epi16, _mm512_setzero_si512};
+
 use crate::features::FeatureIndex;
 use crate::types::HIDDEN_SIZE;
 
@@ -226,6 +229,71 @@ unsafe fn derive_fixed<const A: usize, const R: usize>(
     }
 }
 
+/// Take the `removed` threat rows off `out` and put the `added` ones on, in place.
+///
+/// The AVX-512 form of [`crate::simd::avx2::apply_threat_rows`]: a row's signed bytes are
+/// widened to `i16` (`vpmovsxbw`) and added unscaled, wrapping like the feature columns.
+/// Eight registers (256 lanes) are loaded from `out`, every row of the change goes over
+/// them while they stay in registers, and they are stored back.
+///
+/// # Safety
+/// The running CPU must support `avx512f` and `avx512bw`. `out` must be `HIDDEN_SIZE`
+/// long, and every row in `removed` and `added` must be below
+/// `weights.len() / HIDDEN_SIZE` (checked).
+#[cfg(feature = "sfnn_threat")]
+#[target_feature(enable = "avx512f,avx512bw")]
+pub unsafe fn apply_threat_rows(out: &mut [i16], weights: &[i8], removed: &[u32], added: &[u32]) {
+    const TILE_REGS: usize = 8;
+    const TILE: usize = TILE_REGS * LANES;
+    const _: () = assert!(HIDDEN_SIZE.is_multiple_of(TILE));
+
+    assert_eq!(out.len(), HIDDEN_SIZE);
+    let rows = weights.len() / HIDDEN_SIZE;
+    // Checked once here so that the loops below load with plain pointers.
+    assert!(
+        removed
+            .iter()
+            .chain(added)
+            .all(|&row| (row as usize) < rows),
+        "a threat row is out of range"
+    );
+    let out_ptr = out.as_mut_ptr();
+    let w_ptr = weights.as_ptr();
+    for tile in 0..HIDDEN_SIZE / TILE {
+        let off = tile * TILE;
+        // SAFETY: `off + TILE <= HIDDEN_SIZE = out.len()`, and each row slice starts at
+        // `row * HIDDEN_SIZE + off` with `row < rows`, so its `TILE` bytes (32 per register)
+        // lie inside `weights`.
+        unsafe {
+            let mut acc = [_mm512_setzero_si512(); TILE_REGS];
+            for (k, slot) in acc.iter_mut().enumerate() {
+                *slot = _mm512_loadu_si512(out_ptr.add(off + k * LANES).cast::<__m512i>());
+            }
+            for &row in removed {
+                let base = w_ptr.add(row as usize * HIDDEN_SIZE + off);
+                for (k, slot) in acc.iter_mut().enumerate() {
+                    let w = _mm512_cvtepi8_epi16(_mm256_loadu_si256(
+                        base.add(k * LANES).cast::<__m256i>(),
+                    ));
+                    *slot = _mm512_sub_epi16(*slot, w);
+                }
+            }
+            for &row in added {
+                let base = w_ptr.add(row as usize * HIDDEN_SIZE + off);
+                for (k, slot) in acc.iter_mut().enumerate() {
+                    let w = _mm512_cvtepi8_epi16(_mm256_loadu_si256(
+                        base.add(k * LANES).cast::<__m256i>(),
+                    ));
+                    *slot = _mm512_add_epi16(*slot, w);
+                }
+            }
+            for (k, slot) in acc.iter().enumerate() {
+                _mm512_storeu_si512(out_ptr.add(off + k * LANES).cast::<__m512i>(), *slot);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -368,5 +436,68 @@ mod tests {
         // SAFETY: guarded by `require_avx512bw!`.
         unsafe { derive_features(&mut got, &src, &weights, &[4], &[4]) };
         assert_eq!(got, src);
+    }
+
+    /// The AVX-512 threat-row kernel against the scalar one, over rows with every byte
+    /// value and an accumulator near the `i16` limits, so that the widening and the wrap
+    /// both matter.
+    #[cfg(feature = "sfnn_threat")]
+    #[test]
+    fn apply_threat_rows_matches_scalar() {
+        require_avx512bw!();
+        const ROWS: usize = 12;
+        let weights: Vec<i8> = (0..ROWS * HIDDEN_SIZE)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 7) as i8)
+            .collect();
+        assert!(weights.contains(&i8::MIN) && weights.contains(&i8::MAX));
+        let init: Vec<i16> = (0..HIDDEN_SIZE)
+            .map(|i| match i % 4 {
+                0 => i16::MAX - (i % 7) as i16,
+                1 => i16::MIN + (i % 5) as i16,
+                _ => (i as i16).wrapping_mul(97),
+            })
+            .collect();
+        let shapes: [(&[u32], &[u32]); 5] = [
+            (&[], &[]),
+            (&[], &[0, 3, 11]),
+            (&[2, 5], &[]),
+            (&[1, 4, 9], &[0, 4, 10, 11]),
+            (&[7, 7], &[7, 7, 7]),
+        ];
+        for (removed, added) in shapes {
+            let mut want = init.clone();
+            scalar::apply_threat_rows(&mut want, &weights, removed, added);
+            let mut got = init.clone();
+            // SAFETY: guarded by `require_avx512bw!`.
+            unsafe { apply_threat_rows(&mut got, &weights, removed, added) };
+            assert_eq!(want, got, "removed {removed:?} added {added:?}");
+        }
+    }
+
+    /// A row put on and taken off again leaves the accumulator as it was.
+    #[cfg(feature = "sfnn_threat")]
+    #[test]
+    fn apply_threat_rows_undoes_itself() {
+        require_avx512bw!();
+        let weights: Vec<i8> = (0..3 * HIDDEN_SIZE).map(|i| (i * 31) as i8).collect();
+        let init = seeded_initial(29);
+        let mut got = init;
+        // SAFETY: guarded by `require_avx512bw!`.
+        unsafe {
+            apply_threat_rows(&mut got, &weights, &[], &[0, 1, 2]);
+            apply_threat_rows(&mut got, &weights, &[2, 0, 1], &[]);
+        }
+        assert_eq!(got, init);
+    }
+
+    #[cfg(feature = "sfnn_threat")]
+    #[test]
+    #[should_panic(expected = "out of range")]
+    fn apply_threat_rows_refuses_a_row_past_the_block() {
+        require_avx512bw!();
+        let weights = vec![0i8; 2 * HIDDEN_SIZE];
+        let mut out = seeded_initial(1);
+        // SAFETY: guarded by `require_avx512bw!`; the call panics before touching memory.
+        unsafe { apply_threat_rows(&mut out, &weights, &[], &[2]) };
     }
 }
