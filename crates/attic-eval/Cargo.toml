@@ -27,7 +27,10 @@ quick-draw = ["attic-state/quick-draw"]
 # modes always use the game-progress bucket.
 #
 # At each width the modes read the same file layout. NAGISA V3 ships with
-# `progress8kpabs` at width 1024 and NAGISA V4 with `progress8` at width 2304.
+# `progress8kpabs` at width 1024 and NAGISA V4 with `progress8ek` at width 2304
+# (the `LS_BUCKET_MODE` of each distribution's `eval_options.txt`). `progress8`
+# at width 2304 is V4 read without the entering-king stack, which is how
+# YaneuraOu reads it when told `progress8kpabs`.
 sfnn_halfkahm2_1536_15_32_k3k3 = ["sfnn"]
 sfnn_halfkahm2_1024_15_64_progress8kpabs = ["sfnn_progress"]
 sfnn_halfkahm2_1024_15_64_progress8ek = ["sfnn_progress_ek"]

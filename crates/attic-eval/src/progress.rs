@@ -1,11 +1,15 @@
 //! Progress-bucket selection for the `progress8`, `progress8kpabs` and
 //! `progress8ek` layer-stack modes.
 //!
-//! NAGISA V4's `progress8` (2304) and NAGISA V3's `progress8kpabs` (1024)
-//! select from the first eight stacks using the same game-progress estimate.
-//! Their network files have a ninth stack, which these modes never select.
-//! The `progress8ek` mode for either width uses that ninth stack for mutual
-//! entering-king positions.
+//! `progress8` (2304) and `progress8kpabs` (1024) select from the first eight
+//! stacks using the same game-progress estimate. Their network files have a
+//! ninth stack, which these modes never select. The `progress8ek` mode for
+//! either width uses that ninth stack for mutual entering-king positions.
+//!
+//! NAGISA V3 ships with `progress8kpabs` and NAGISA V4 with `progress8ek`, as
+//! the `LS_BUCKET_MODE` of each distribution's `eval_options.txt` says.
+//! YaneuraOu 9.96 reading V4 with that file evaluates mutual entering kings
+//! from the ninth stack, as a `progress8ek` build does.
 //!
 //! The two rules are separate pure functions below, [`bucket_progress8ek`] and
 //! [`bucket_progress8kpabs`], so that both are compiled and tested in every
