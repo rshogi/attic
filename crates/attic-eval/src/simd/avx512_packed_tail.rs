@@ -1,6 +1,6 @@
-//! The dense chain of the 64-wide SFNN shapes (the 1024s and NAGISA V4's 2304)
-//! on AVX-512 VNNI: the reference's `kUsePackedTail` path, which it takes for
-//! exactly these shapes (`USE_AVX512 && kHidden2Dims == 64`).
+//! The dense chain of the 64-wide SFNN shapes (the 1024s, NAGISA V4's 2304 and
+//! Cyfamate's threat shape) on AVX-512 VNNI: the reference's `kUsePackedTail`
+//! path, which it takes for exactly these shapes (`USE_AVX512 && kHidden2Dims == 64`).
 //!
 //! [`super::avx512_post_ft::fused_fc_chain`] cannot serve them: it takes fc_1's
 //! and fc_2's inputs as one 32-byte register, and fc_2 reads 64 here. The

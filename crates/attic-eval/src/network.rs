@@ -199,11 +199,11 @@ fn per_layer_flow(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> 
     }
 }
 
-/// Layer-stack forward pass, a 64-wide build (the 1024s and the 2304) with
-/// AVX-512 F + BW + VNNI: the reference's packed tail, on the group-major copies
-/// of the weights. Bit for bit [`per_layer_flow_unfused`].
+/// Layer-stack forward pass, a 64-wide build (the 1024s, the 2304 and Cyfamate's
+/// threat shape) with AVX-512 F + BW + VNNI: the reference's packed tail, on the
+/// group-major copies of the weights. Bit for bit [`per_layer_flow_unfused`].
 #[cfg(all(
-    feature = "sfnn_progress",
+    any(feature = "sfnn_progress", feature = "sfnn_threat"),
     target_arch = "x86_64",
     target_feature = "avx512f",
     target_feature = "avx512bw",
@@ -231,7 +231,11 @@ fn per_layer_flow(transformed: &[u8; FC_0_INPUT_DIMS], stack: &NetworkStack) -> 
 #[cfg(all(
     feature = "sfnn",
     not(all(
-        any(feature = "sfnn_halfkahm2_1536_15_32_k3k3", feature = "sfnn_progress"),
+        any(
+            feature = "sfnn_halfkahm2_1536_15_32_k3k3",
+            feature = "sfnn_progress",
+            feature = "sfnn_threat"
+        ),
         target_arch = "x86_64",
         target_feature = "avx512f",
         target_feature = "avx512bw",

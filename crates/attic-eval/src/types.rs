@@ -556,13 +556,13 @@ struct StackSections {
     fc_1_weights: Section<i8>,
     fc_2_biases: Section<i32>,
     fc_2_weights: Section<i8>,
-    #[cfg(feature = "sfnn_progress")]
+    #[cfg(any(feature = "sfnn_progress", feature = "sfnn_threat"))]
     grouped: GroupedSections,
 }
 
 /// Where one stack's weights live in the order the AVX-512 chain of the 64-wide
 /// shapes reads them. See [`crate::simd::group_layout`].
-#[cfg(feature = "sfnn_progress")]
+#[cfg(any(feature = "sfnn_progress", feature = "sfnn_threat"))]
 #[derive(Clone, Copy, Debug)]
 struct GroupedSections {
     fc_0_weights: Section<i8>,
@@ -605,7 +605,7 @@ impl NetLayout {
                 fc_2_weights: l.reserve::<i8>(dims.fc_2_output * dims.fc_2_padded_input),
                 // The same sizes again, for the copies `NnueNetworkBuilder::build`
                 // fills from the arrays above.
-                #[cfg(feature = "sfnn_progress")]
+                #[cfg(any(feature = "sfnn_progress", feature = "sfnn_threat"))]
                 grouped: GroupedSections {
                     fc_0_weights: l.reserve::<i8>(dims.fc_0_output * dims.fc_0_padded_input),
                     fc_1_weights: l.reserve::<i8>(dims.fc_1_output * dims.fc_1_padded_input),
@@ -681,13 +681,13 @@ pub struct NetworkStack {
     /// hold nothing of their own. Every build of these shapes carries them, so
     /// that the relayout is tested on hosts without AVX-512, but only that
     /// chain reads them.
-    #[cfg(feature = "sfnn_progress")]
+    #[cfg(any(feature = "sfnn_progress", feature = "sfnn_threat"))]
     #[allow(dead_code)]
     pub(crate) grouped: GroupedWeights,
 }
 
 /// One stack's weights in group-major order: see [`NetworkStack::grouped`].
-#[cfg(feature = "sfnn_progress")]
+#[cfg(any(feature = "sfnn_progress", feature = "sfnn_threat"))]
 #[derive(Debug)]
 #[allow(dead_code)]
 pub(crate) struct GroupedWeights {
@@ -802,7 +802,7 @@ impl NetworkStack {
             fc_2_weights,
             #[cfg(feature = "nnue_standard")]
             fc_kernels,
-            #[cfg(feature = "sfnn_progress")]
+            #[cfg(any(feature = "sfnn_progress", feature = "sfnn_threat"))]
             grouped: GroupedWeights {
                 fc_0: arena.view(sections.grouped.fc_0_weights),
                 fc_1: arena.view(sections.grouped.fc_1_weights),
@@ -818,7 +818,7 @@ impl NetworkStack {
 /// Only the layers whose sizes are this build's are copied. A hand-built
 /// network of other sizes keeps zeros there, and the AVX-512 chain refuses it
 /// on the same sizes before it reads anything.
-#[cfg(feature = "sfnn_progress")]
+#[cfg(any(feature = "sfnn_progress", feature = "sfnn_threat"))]
 fn fill_grouped(arena: &mut LargePageArena, layout: &NetLayout) {
     use crate::simd::group_layout::{by_group, fc_2_packed};
 
@@ -998,9 +998,12 @@ impl NnueNetworkBuilder {
     /// Consume the filled arena and produce the network. Nothing is copied but,
     /// in the 64-wide SFNN shapes, the dense weights into their group-major
     /// order (a few hundred kilobytes).
-    #[cfg_attr(not(feature = "sfnn_progress"), allow(unused_mut))]
+    #[cfg_attr(
+        not(any(feature = "sfnn_progress", feature = "sfnn_threat")),
+        allow(unused_mut)
+    )]
     pub fn build(mut self) -> NnueNetwork {
-        #[cfg(feature = "sfnn_progress")]
+        #[cfg(any(feature = "sfnn_progress", feature = "sfnn_threat"))]
         fill_grouped(&mut self.arena, &self.layout);
         NnueNetwork::from_arena(self.header, self.arena, self.layout, self.sha256)
     }
